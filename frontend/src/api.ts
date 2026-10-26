@@ -1,6 +1,12 @@
-import type { Board, Cue, Media, Profile, ProfileIn, Settings, LightState } from './types'
+import type { Board, Cue, Media, Profile, ProfileIn, Settings, LightState, ThumbsMeta, Waveform } from './types'
 
-export class ApiError extends Error {}
+export class ApiError extends Error {
+  status: number
+  constructor(message: string, status = 0) {
+    super(message)
+    this.status = status
+  }
+}
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   const r = await fetch(path, {
@@ -14,7 +20,7 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
       const j = await r.json()
       if (j?.detail) msg = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail)
     } catch { /* not json */ }
-    throw new ApiError(msg)
+    throw new ApiError(msg, r.status)
   }
   return (await r.json()) as T
 }
@@ -32,6 +38,8 @@ export const api = {
     identify: (mac: string) => post(`/api/boards/${mac}/identify`),
     setState: (mac: string, s: LightState) => post(`/api/boards/${mac}/state`, s),
     refresh: (mac: string) => post<Board>(`/api/boards/${mac}/refresh`),
+    /** Board's current live state as a LightState (for 'capture from board'). */
+    capture: (mac: string) => req<LightState>('GET', `/api/boards/${mac}/capture`),
   },
   profiles: {
     list: () => req<Profile[]>('GET', '/api/profiles'),
@@ -42,6 +50,8 @@ export const api = {
     duplicate: (id: number) => post<Profile>(`/api/profiles/${id}/duplicate`),
     activate: (id: number) => post(`/api/profiles/${id}/activate`),
     setCues: (id: number, cues: Cue[]) => req<Profile>('PUT', `/api/profiles/${id}/cues`, cues),
+    /** Start the real show on the projector at a position (activates the profile). */
+    playFrom: (id: number, from_s: number) => post(`/api/profiles/${id}/play_from`, { from_s }),
   },
   show: {
     trigger: () => post<{ ok: boolean; message: string }>('/api/trigger'),
@@ -52,6 +62,10 @@ export const api = {
     next: () => post('/api/show/next'),
     deactivate: () => post('/api/show/deactivate'),
     blackout: (on: boolean) => post('/api/blackout', { on }),
+    /** Live audition: report preview playhead; call on play/pause/seek and every ~1 s. */
+    audition: (profile_id: number, t: number, playing: boolean) =>
+      post<{ ok: boolean; message: string }>('/api/audition', { profile_id, t, playing }),
+    auditionStop: () => post('/api/audition/stop'),
   },
   settings: {
     get: () => req<Settings>('GET', '/api/settings'),
@@ -61,6 +75,9 @@ export const api = {
     list: () => req<Media[]>('GET', '/api/media'),
     remove: (id: number) => req<{ ok: boolean }>('DELETE', `/api/media/${id}`),
     fileUrl: (id: number) => `/api/media/${id}/file`,
+    thumbsUrl: (id: number) => `/api/media/${id}/thumbs.jpg`,
+    thumbs: (id: number) => req<ThumbsMeta>('GET', `/api/media/${id}/thumbs`),
+    waveform: (id: number) => req<Waveform>('GET', `/api/media/${id}/waveform`),
     /** XHR instead of fetch: fetch has no upload progress events. */
     upload: (file: File, onProgress: (frac: number) => void) =>
       new Promise<Media>((resolve, reject) => {

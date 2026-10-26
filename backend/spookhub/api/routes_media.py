@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -11,8 +12,10 @@ from sqlmodel import col, or_, select
 from spookhub import db
 from spookhub.api.deps import get_hub
 from spookhub.hub import Hub
+from spookhub.media import derive
 from spookhub.media.upload import UploadError, save_upload
 from spookhub.models import Media, Profile
+from spookhub.tasks import spawn
 
 router = APIRouter(prefix="/api/media", tags=["media"])
 HubDep = Annotated[Hub, Depends(get_hub)]
@@ -65,7 +68,41 @@ async def upload(file: UploadFile, hub: HubDep) -> MediaOut:
         raise HTTPException(422, str(e)) from e
     hub.bus.event("info", f"Uploaded {m.filename}")
     hub.bus.publish("media_changed")
+    spawn(derive.ensure(hub.cfg.paths.media_dir, m.id or 0, Path(m.path), m.duration_s))
     return _out(m, [])
+
+
+async def _derived(hub: Hub, mid: int) -> dict[str, Path]:
+    with db.session() as s:
+        m = s.get(Media, mid)
+    if m is None or not Path(m.path).exists():
+        raise HTTPException(404, "media not found")
+    await derive.ensure(hub.cfg.paths.media_dir, mid, Path(m.path), m.duration_s)
+    return derive.paths(hub.cfg.paths.media_dir, mid)
+
+
+@router.get("/{mid}/thumbs")
+async def thumbs_meta(mid: int, hub: HubDep) -> dict[str, Any]:
+    p = await _derived(hub, mid)
+    if not p["thumbs"].exists():
+        raise HTTPException(404, "thumbnails unavailable")
+    return json.loads(p["thumbs"].read_text())
+
+
+@router.get("/{mid}/thumbs.jpg")
+async def thumbs_sprite(mid: int, hub: HubDep) -> FileResponse:
+    p = await _derived(hub, mid)
+    if not p["sprite"].exists():
+        raise HTTPException(404, "thumbnails unavailable")
+    return FileResponse(p["sprite"], media_type="image/jpeg")
+
+
+@router.get("/{mid}/waveform")
+async def waveform(mid: int, hub: HubDep) -> dict[str, Any]:
+    p = await _derived(hub, mid)
+    if not p["wave"].exists():
+        return {"rate": 0, "peaks": []}
+    return json.loads(p["wave"].read_text())
 
 
 @router.get("/{mid}/file")
@@ -88,6 +125,7 @@ def delete(mid: int, hub: HubDep) -> dict[str, bool]:
         if m is None:
             raise HTTPException(404, "media not found")
         Path(m.path).unlink(missing_ok=True)
+        derive.remove(hub.cfg.paths.media_dir, mid)
         s.delete(m)
         s.commit()
     hub.bus.publish("media_changed")

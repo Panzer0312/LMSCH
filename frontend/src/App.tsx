@@ -6,6 +6,7 @@ import Profiles from './pages/Profiles'
 import Boards from './pages/Boards'
 import MediaPage from './pages/Media'
 import SettingsPage from './pages/Settings'
+import TimelineEditor from './pages/TimelineEditor'
 
 const nav = [
   ['/', 'Dashboard'],
@@ -39,6 +40,7 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/profiles" element={<Profiles />} />
           <Route path="/profiles/:id" element={<Profiles />} />
+          <Route path="/profiles/:id/timeline" element={<TimelineEditor />} />
           <Route path="/boards" element={<Boards />} />
           <Route path="/media" element={<MediaPage />} />
           <Route path="/settings" element={<SettingsPage />} />

@@ -81,6 +81,7 @@ export interface ShowState {
   position: number | null
   duration: number | null
   cooldown_remaining: number
+  audition: { profile_id: number; playing: boolean } | null
   player: { ready: boolean; path: string | null; time_pos: number | null; duration: number | null; paused: boolean; eof: boolean }
 }
 
@@ -96,3 +97,6 @@ export interface Settings {
 }
 
 export interface ShowEvent { ts: number; level: 'info' | 'warn' | 'error'; message: string; mac?: string }
+
+export interface ThumbsMeta { count: number; interval: number; tile_w: number; tile_h: number }
+export interface Waveform { rate: number; peaks: number[] } // peaks per second, 0..1

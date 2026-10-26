@@ -96,3 +96,46 @@ async def test_cues_hit_boards_on_time(cfg, farm, video):
             assert abs(err) < TOLERANCE_S, f"board {s.index} cue {i}: off by {err * 1000:.0f} ms"
     print(f"cue timing error ms: max={max(map(abs, errors)) * 1000:.1f} "
           f"mean={statistics.mean(errors) * 1000:.1f}")  # fmt: skip
+
+
+async def test_play_from_position_applies_state_at_that_time(cfg, farm, video):
+    cfg.mpv = MpvCfg(
+        enabled=True, vo="null", gpu_context=None, ao="null", hwdec="no",
+        socket_path=cfg.paths.data_dir / "mpv.sock",
+    )  # fmt: skip
+    sim = await farm.add(0)
+    app = create_app(cfg)
+    async with LifespanManager(app) as m:
+        hub = app.state.hub
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=m.app), base_url="http://hub"
+        ) as c:
+            mac = (await c.post("/api/boards/add", json={"ip": f"127.0.0.1:{sim.port}"})).json()[
+                "mac"
+            ]
+            await c.post(f"/api/boards/{mac}/adopt", json={"name": "B"})
+            with video.open("rb") as f:
+                mid = (await c.post("/api/media", files={"file": ("t.mp4", f)})).json()["id"]
+            pid = (
+                await c.post(
+                    "/api/profiles",
+                    json={
+                        "name": "P",
+                        "type": "video",
+                        "media_id": mid,
+                        "playback_mode": "idle_trigger",
+                        "base_state": {"bri": 5},
+                    },
+                )  # fmt: skip
+            ).json()["id"]
+            cues = [{"start_s": 1.0, "state": {"bri": 61}}, {"start_s": 4.5, "state": {"bri": 62}}]
+            await c.put(f"/api/profiles/{pid}/cues", json=cues)
+            await hub.player.ready.wait()
+            r = await c.post(f"/api/profiles/{pid}/play_from", json={"from_s": 2.0})
+            assert r.status_code == 200
+            # Cue 1 started before 2.0 s, so it must be applied right away (no replay needed).
+            await wait_for(lambda: sim.state["bri"] == 61, timeout=2)
+            pos = hub.player.position()
+            assert pos is not None and pos >= 2.0
+            await wait_for(lambda: sim.state["bri"] == 62, timeout=4)
+            assert hub.engine.active.id == pid

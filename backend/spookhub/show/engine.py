@@ -6,6 +6,7 @@ import asyncio
 import enum
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -28,10 +29,30 @@ from spookhub.models import (
 from spookhub.player.process import MpvPlayer
 from spookhub.settings_store import SettingsStore
 from spookhub.show.resolve import CueSpec, Timeline
+from spookhub.tasks import spawn
 
 log = logging.getLogger(__name__)
 
 SEEK_JUMP_S = 0.5
+AUDITION_TIMEOUT_S = 3.0
+
+
+@dataclass
+class AuditionClock:
+    """Playhead reported by the browser preview; interpolated between reports."""
+
+    profile_id: int
+    t: float
+    playing: bool
+    recv: float
+    deadline: float
+
+    def position(self) -> tuple[float | None, bool]:
+        if not self.playing:
+            return self.t, True
+        return self.t + min(time.monotonic() - self.recv, AUDITION_TIMEOUT_S), False
+
+
 POSITION_PUBLISH_S = 0.25
 
 
@@ -127,6 +148,11 @@ class ShowEngine:
         self.cooldown_until = 0.0
         self.playing_main = False
         self._last_cue: dict[str, int | None] = {}
+        # What the scheduler is currently driving: main show or browser audition.
+        self._sched_prof: ActiveProfile | None = None
+        self._sched_tl: Timeline | None = None
+        self._clock: Callable[[], tuple[float | None, bool]] = self._player_clock
+        self.audition: AuditionClock | None = None
         self._last_t: float | None = None
         self._sched: asyncio.Task[None] | None = None
         self._pub: asyncio.Task[None] | None = None
@@ -162,6 +188,9 @@ class ShowEngine:
             "position": self.player.position() if self.playing_main else None,
             "duration": self.player.duration or (a.media_duration if a else None),
             "cooldown_remaining": max(0.0, self.cooldown_until - time.monotonic()),
+            "audition": None
+            if self.audition is None
+            else {"profile_id": self.audition.profile_id, "playing": self.audition.playing},
             "player": self.player.state(),
         }
 
@@ -176,12 +205,13 @@ class ShowEngine:
 
     # ----- profile activation -----
 
-    async def activate(self, profile_id: int) -> None:
+    async def activate(self, profile_id: int, autostart: bool = True) -> None:
         async with self._lock:
             prof = load_active(profile_id)
             if prof is None:
                 raise KeyError(profile_id)
             await self._stop_scheduler()
+            self.audition = None
             self.active = prof
             self.timeline = Timeline(prof.cues, self.boards.adopted_macs())
             if self.settings.value.active_profile_id != profile_id:
@@ -194,7 +224,7 @@ class ShowEngine:
             elif prof.type == ProfileType.light:
                 self.phase = Phase.lights
                 await self._safe(self.player.black())
-            elif prof.mode == PlaybackMode.idle_trigger:
+            elif prof.mode == PlaybackMode.idle_trigger or not autostart:
                 await self._go_idle()
             else:
                 await self._play_main(0.0)
@@ -210,8 +240,10 @@ class ShowEngine:
             return
         self.active = prof
         self.timeline = Timeline(prof.cues, self.boards.adopted_macs())
+        if self.playing_main:
+            self._sched_prof, self._sched_tl = prof, self.timeline
         self._last_cue.clear()  # forces re-apply on next tick
-        if not self.playing_main:
+        if not self.playing_main and self.audition is None:
             self._apply_base(critical=False)
         self._publish()
 
@@ -230,8 +262,10 @@ class ShowEngine:
         if not self.active:
             return
         self.timeline = Timeline(self.active.cues, self.boards.adopted_macs())
+        if self.playing_main:
+            self._sched_prof, self._sched_tl = self.active, self.timeline
         self._last_cue.clear()
-        if not self.playing_main:
+        if not self.playing_main and self.audition is None:
             self._apply_base(critical=False)
 
     async def next_profile(self) -> None:
@@ -305,9 +339,9 @@ class ShowEngine:
             await self._go_idle()
             return False
         await self._stop_scheduler()
-        # Boards already show base; a missing entry (after seek/edit) forces a re-send.
-        self._last_cue = {m: None for m in a.macs(self.boards.adopted_macs())}
-        self._last_t = None
+        if self.audition is not None:
+            self.audition = None
+            self._apply_base(critical=False)
         loop = a.mode == PlaybackMode.loop
         ok = await self._safe(self.player.load(a.media_path, start=from_s, loop=loop))
         if not ok:
@@ -316,7 +350,8 @@ class ShowEngine:
             return False
         self.playing_main = True
         self.phase = Phase.playing
-        self._sched = asyncio.create_task(self._scheduler())
+        assert self.timeline
+        self._start_scheduler(a, self.timeline, self._player_clock)
         return True
 
     async def _go_idle(self) -> None:
@@ -351,10 +386,10 @@ class ShowEngine:
         if not self.playing_main:
             return
         if prop == "eof-reached" and self.player.eof:
-            asyncio.create_task(self._finish("ended"))
+            spawn(self._finish("ended"))
         elif prop == "restart":
             # mpv crashed mid-show: return to a defined state rather than guess.
-            asyncio.create_task(self._finish("interrupted (player restarted)"))
+            spawn(self._finish("interrupted (player restarted)"))
         elif prop == "pause":
             self.phase = Phase.paused if self.player.paused else Phase.playing
             self._publish()
@@ -367,6 +402,21 @@ class ShowEngine:
 
     # ----- scheduler -----
 
+    def _player_clock(self) -> tuple[float | None, bool]:
+        return self.player.position(), self.player.paused
+
+    def _start_scheduler(
+        self,
+        prof: ActiveProfile,
+        tl: Timeline,
+        clock: Callable[[], tuple[float | None, bool]],
+    ) -> None:
+        self._sched_prof, self._sched_tl, self._clock = prof, tl, clock
+        # Boards already show base; a missing entry (after seek/edit) forces a re-send.
+        self._last_cue = {m: None for m in prof.macs(self.boards.adopted_macs())}
+        self._last_t = None
+        self._sched = asyncio.create_task(self._scheduler())
+
     async def _scheduler(self) -> None:
         """Fire board states from the interpolated mpv playhead.
 
@@ -375,8 +425,12 @@ class ShowEngine:
         """
         while True:
             await asyncio.sleep(self.tick_s)
-            t = self.player.position()
-            if t is None or self.timeline is None or self.active is None:
+            if self.audition is not None and time.monotonic() > self.audition.deadline:
+                # Browser tab went away mid-audition: give the boards back.
+                spawn(self.audition_stop())
+                return
+            t, paused = self._clock()
+            if t is None or self._sched_tl is None or self._sched_prof is None:
                 continue
             seek = self._last_t is not None and (
                 t < self._last_t - 0.25 or t > self._last_t + SEEK_JUMP_S
@@ -384,13 +438,13 @@ class ShowEngine:
             self._last_t = t
             if seek:
                 self._last_cue.clear()
-            if self.player.paused:
+            if paused and not seek:
                 continue
             self._tick(t)
 
     def _tick(self, t: float) -> None:
-        a = self.active
-        tl = self.timeline
+        a = self._sched_prof
+        tl = self._sched_tl
         assert a and tl
         offset = self.settings.value.sync_offset_ms
         for mac in a.macs(self.boards.adopted_macs()):
@@ -400,6 +454,65 @@ class ShowEngine:
                 continue
             self._last_cue[mac] = cue_id
             self.boards.set_show_state(mac, state, critical=True)
+
+    # ----- audition & play from here -----
+
+    async def audition_update(self, profile_id: int, t: float, playing: bool) -> tuple[bool, str]:
+        """Browser preview playhead → fire that profile's cues on the real boards."""
+        if self.blackout:
+            return False, "blackout active"
+        if self.playing_main:
+            return False, "show is playing on the projector"
+        now = time.monotonic()
+        aud = self.audition
+        if aud is not None and aud.profile_id == profile_id:
+            aud.t, aud.playing, aud.recv = t, playing, now
+            aud.deadline = now + AUDITION_TIMEOUT_S
+            return True, "ok"
+        async with self._lock:
+            prof = load_active(profile_id)
+            if prof is None:
+                return False, "profile not found"
+            await self._stop_scheduler()
+            self.audition = AuditionClock(profile_id, t, playing, now, now + AUDITION_TIMEOUT_S)
+            tl = Timeline(prof.cues, self.boards.adopted_macs())
+            for mac in prof.macs(self.boards.adopted_macs()):
+                self.boards.set_show_state(mac, prof.base_for(mac), critical=True)
+            self._start_scheduler(prof, tl, self.audition.position)
+            self._last_cue.clear()  # apply state at the current position immediately
+        self.bus.event("info", f"Live audition started ({prof.name})")
+        self._publish()
+        return True, "started"
+
+    async def audition_stop(self) -> None:
+        if self.audition is None:
+            return
+        async with self._lock:
+            prof = self._sched_prof
+            await self._stop_scheduler()
+            self.audition = None
+            # Boards go back to the active profile's base; boards outside it get the
+            # auditioned profile's base rather than a frozen cue.
+            adopted = self.boards.adopted_macs()
+            active = set(self.active.macs(adopted)) if self.active else set()
+            if prof:
+                for mac in prof.macs(adopted):
+                    if mac not in active:
+                        self.boards.set_show_state(mac, prof.base_for(mac), critical=False)
+            if self.playing_main:
+                self._last_cue.clear()
+            else:
+                self._apply_base(critical=False)
+        self.bus.event("info", "Live audition stopped")
+        self._publish()
+
+    async def play_profile_from(self, profile_id: int, t: float) -> None:
+        if self.blackout:
+            raise RuntimeError("blackout active")
+        await self.audition_stop()
+        if not self.active or self.active.id != profile_id:
+            await self.activate(profile_id, autostart=False)
+        await self.play(t)
 
     # ----- blackout / master -----
 
@@ -412,6 +525,7 @@ class ShowEngine:
             async with self._lock:
                 await self._stop_scheduler()
                 self.playing_main = False
+                self.audition = None
                 await self._safe(self.player.black())
             self.phase = Phase.blackout
             self.bus.event("warn", "BLACKOUT engaged")

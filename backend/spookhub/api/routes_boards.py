@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from spookhub.api.deps import get_hub
+from spookhub.boards.client import WledError
 from spookhub.hub import Hub
 from spookhub.models import LightState
+from spookhub.tasks import spawn
 
 router = APIRouter(prefix="/api/boards", tags=["boards"])
 HubDep = Annotated[Hub, Depends(get_hub)]
@@ -73,7 +74,7 @@ async def remove(mac: str, hub: HubDep) -> dict[str, bool]:
 @router.post("/{mac}/identify")
 def identify(mac: str, hub: HubDep) -> dict[str, bool]:
     _board(hub, mac)
-    asyncio.create_task(hub.boards.identify(mac))
+    spawn(hub.boards.identify(mac))
     return {"ok": True}
 
 
@@ -92,3 +93,26 @@ async def refresh(mac: str, hub: HubDep) -> dict[str, Any]:
     _board(hub, mac)
     await hub.boards.refresh_meta(mac)
     return hub.boards.boards[mac].snapshot()
+
+
+@router.get("/{mac}/capture")
+async def capture(mac: str, hub: HubDep) -> LightState:
+    """Current live state of a board as a LightState (tweak in WLED UI, then grab it)."""
+    b = _board(hub, mac)
+    try:
+        data, _ = await hub.wled.state_info(b.ip, 2.0)
+    except WledError as e:
+        raise HTTPException(502, f"board unreachable: {e}") from e
+    st = data.get("state", {})
+    segs = st.get("seg") or [{}]
+    main = next((s for s in segs if s.get("id") == st.get("mainseg", 0)), segs[0])
+    cols = [tuple(c[:3]) for c in main.get("col", []) if isinstance(c, list) and len(c) >= 3]
+    return LightState(
+        on=st.get("on"),
+        bri=st.get("bri"),
+        fx=main.get("fx"),
+        pal=main.get("pal"),
+        sx=main.get("sx"),
+        ix=main.get("ix"),
+        colors=cols[:3] or None,  # type: ignore[arg-type]
+    )

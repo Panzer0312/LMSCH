@@ -98,3 +98,35 @@ def put_settings(body: dict[str, Any], hub: HubDep) -> RuntimeSettings:
         return hub.settings.update(**body)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
+
+
+class AuditionIn(BaseModel):
+    profile_id: int
+    t: float = Field(ge=0)
+    playing: bool
+
+
+@router.post("/audition")
+async def audition(body: AuditionIn, hub: HubDep) -> dict[str, Any]:
+    """Browser preview reports its playhead (on play/pause/seek and ~1 s heartbeat)."""
+    ok, msg = await hub.engine.audition_update(body.profile_id, body.t, body.playing)
+    if not ok:
+        raise HTTPException(409, msg)
+    return {"ok": True, "message": msg}
+
+
+@router.post("/audition/stop")
+async def audition_stop(hub: HubDep) -> dict[str, bool]:
+    await hub.engine.audition_stop()
+    return {"ok": True}
+
+
+@router.post("/profiles/{pid}/play_from")
+async def play_from(pid: int, body: PlayIn, hub: HubDep) -> dict[str, bool]:
+    try:
+        await hub.engine.play_profile_from(pid, body.from_s)
+    except KeyError as e:
+        raise HTTPException(404, "profile not found") from e
+    except RuntimeError as e:
+        raise HTTPException(409, str(e)) from e
+    return {"ok": True}

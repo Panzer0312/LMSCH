@@ -4,9 +4,30 @@ Self-hosted Halloween controller. It plays a video on a projector with mpv and k
 WLED LED boards (ESP32) in sync over WiFi. Everything runs on one small Debian box. You control it
 from a phone or desktop browser.
 
-**Status: Milestone 1 (core show).** Board discovery and health, light profiles, video profiles with
-a list-form cue editor, the time-pos-driven cue scheduler, dashboard with trigger and blackout,
-installer and systemd. The visual timeline editor (M2) and polish items (M3) are not built yet.
+**Status: Milestones 1 and 2.** Board discovery and health, light profiles, video profiles, the
+time-pos-driven cue scheduler, dashboard with trigger and blackout, installer and systemd (M1).
+Visual timeline editor with waveform, thumbnails, drag editing, live audition and capture from
+board (M2). Polish items (M3) are not built yet.
+
+## Timeline editor
+
+Open a video profile and choose "Open timeline editor". It works best on a desktop. On a phone it
+opens read-only.
+
+- **Lanes.** One "All selected" lane on top, then one lane per board in the profile.
+- **Editing.** Drag a cue to move it, drag its edges to resize. Double-click empty lane space to add
+  a cue. Shift or Ctrl-click to multi-select. Cues snap to other cues and to the playhead; hold Alt
+  to drag without snapping. Ctrl + mouse wheel zooms.
+- **Keyboard.** Space plays or pauses. Arrow keys step 0.1 s, Shift + arrow steps one frame. C adds
+  a cue at the playhead. Delete removes, Ctrl+D duplicates, Ctrl+Z and Ctrl+Shift+Z undo and redo.
+- **Overlaps.** Cues that overlap on a board get a warning badge.
+- **Live audition.** With the toggle on, the browser preview drives the real boards. The browser
+  reports its playhead every second and on play, pause and seek; the backend interpolates between
+  reports. If the tab closes, the boards return to base after 3 s.
+- **Capture from board.** Tweak an effect in the WLED UI, then grab the board's live state into the
+  selected cue.
+- **Play on projector from here.** Starts the real show on the hub at the playhead position.
+- **Autosave.** Changes save 0.8 s after the last edit. The indicator shows the save state.
 
 ## Architecture
 
@@ -21,7 +42,7 @@ installer and systemd. The visual timeline editor (M2) and polish items (M3) are
  │  boards/     BoardManager: registry, health checks, desired-state reconciliation   │
  │              queue.py: per-board latest-wins mailbox · discovery.py: mDNS + scan   │
  │  player/     mpv supervisor + own async JSON-IPC client                            │
- │  media/      upload (streamed to disk) + ffprobe                                   │
+ │  media/      upload (streamed to disk), ffprobe, thumbnail sprite + waveform        │
  │  SQLite (SQLModel + Alembic) in /var/lib/spookhub                                 │
  └───────┬──────────────────────────────────────────────┬──────────────────────────────┘
          │ JSON IPC (unix socket)                       │ HTTP JSON API, concurrent

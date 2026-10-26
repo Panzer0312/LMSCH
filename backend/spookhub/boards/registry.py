@@ -24,6 +24,7 @@ from spookhub.boards.queue import Command, LatestWinsQueue
 from spookhub.config import TimingCfg
 from spookhub.events import EventBus
 from spookhub.models import OFF_STATE, Board, LightState
+from spookhub.tasks import spawn
 
 log = logging.getLogger(__name__)
 
@@ -299,7 +300,7 @@ class BoardManager:
         )
         if prev in (BoardStatus.offline, BoardStatus.unknown) and b.adopted:
             if not b.effects or not b.presets:
-                asyncio.create_task(self.refresh_meta(b.mac))
+                spawn(self.refresh_meta(b.mac))
             self._reconcile(b, reconnect=prev == BoardStatus.offline)
         self._maybe_persist_seen(b)
         self._publish(b)
@@ -393,7 +394,7 @@ class BoardManager:
             self._persist(b)
             self.bus.event("info", f"Discovered {b.name or mac} at {ip} ({source})", mac=mac)
             self._publish(b)
-            asyncio.create_task(self.check(b))
+            spawn(self.check(b))
             return b
         if b.ip != ip:
             old = b.ip
@@ -403,7 +404,7 @@ class BoardManager:
             if b.adopted:
                 self._reconcile(b, reconnect=True, reason=f"found at new IP {ip}")
             self._publish(b)
-            asyncio.create_task(self.check(b))
+            spawn(self.check(b))
         return b
 
     async def adopt(self, mac: str, name: str) -> BoardRuntime:

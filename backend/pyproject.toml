@@ -43,4 +43,4 @@ asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["ASYNC110"]
+"tests/*" = ["ASYNC110", "ASYNC221"]

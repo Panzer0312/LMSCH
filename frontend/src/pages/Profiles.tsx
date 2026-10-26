@@ -58,6 +58,7 @@ function ProfileList() {
             <div className="flex flex-wrap gap-2">
               <button className="btn btn-primary" disabled={busy || p.id === activeId} onClick={() => act(() => api.profiles.activate(p.id))}>Activate</button>
               <button className="btn" onClick={() => navigate(`/profiles/${p.id}`)}>Edit</button>
+              {p.type === 'video' && <button className="btn" onClick={() => navigate(`/profiles/${p.id}/timeline`)}>Timeline</button>}
               <button className="btn" disabled={busy} onClick={() => act(() => api.profiles.duplicate(p.id))}>Duplicate</button>
               <button className="btn btn-danger" disabled={busy}
                 onClick={() => confirm(`Delete profile "${p.name}"?`) && act(() => api.profiles.remove(p.id))}>Delete</button>
@@ -244,7 +245,13 @@ function ProfileEditor({ id }: { id: string }) {
       </Section>
 
       {!isNew && profile && profile.type === 'video' && (
-        <CueList profile={profile} boards={selected} onSaved={(p) => setProfile(p)} />
+        <>
+          <div className="card flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm text-mute">Edit cues visually on the timeline (desktop), or use the quick list below.</p>
+            <button type="button" className="btn btn-primary" onClick={() => navigate(`/profiles/${profile.id}/timeline`)}>Open timeline editor</button>
+          </div>
+          <CueList profile={profile} boards={selected} onSaved={(p) => setProfile(p)} />
+        </>
       )}
     </div>
   )

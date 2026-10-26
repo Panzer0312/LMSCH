@@ -17,6 +17,7 @@ from spookhub.models import RuntimeSettings
 from spookhub.player.process import MpvPlayer
 from spookhub.settings_store import SettingsStore
 from spookhub.show.engine import ShowEngine
+from spookhub.tasks import spawn
 
 log = logging.getLogger(__name__)
 
@@ -89,5 +90,5 @@ class Hub:
         if (old.mpv_vo, old.mpv_gpu_context) != (new.mpv_vo, new.mpv_gpu_context):
             self.player.vo_override = new.mpv_vo
             self.player.gpu_context_override = new.mpv_gpu_context
-            asyncio.create_task(self.player.restart())
+            spawn(self.player.restart())
         self.bus.publish("settings", new.model_dump())
