@@ -1,0 +1,33 @@
+[Unit]
+Description=Spookhub Halloween light & projection controller
+Documentation=file:///opt/spookhub/README.md
+Wants=network-online.target
+After=network-online.target sound.target systemd-udev-settle.service
+
+[Service]
+Type=simple
+User=spookhub
+Group=spookhub
+# DRM/KMS output, VA-API decode and ALSA audio for the mpv child process.
+SupplementaryGroups=video render audio
+Environment=SPOOKHUB_CONFIG=/etc/spookhub/config.toml
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=/opt/spookhub/backend
+ExecStart=/opt/spookhub/venv/bin/spookhub
+Restart=always
+RestartSec=2
+# /run/spookhub holds the mpv IPC socket.
+RuntimeDirectory=spookhub
+RuntimeDirectoryMode=0750
+StateDirectory=spookhub
+StateDirectoryMode=0750
+# Give mpv time to exit cleanly before SIGKILL.
+TimeoutStopSec=10
+KillMode=mixed
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,283 @@
+import { useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { api } from '../api'
+import { useAdoptedBoards, useLive } from '../live'
+import type { Phase, Profile, ShowEvent } from '../types'
+import { BlackoutButton } from '../components/BlackoutButton'
+import { ErrorText, Section, StatusDot } from '../components/ui'
+import { fmtTime, useAction } from '../lib'
+
+const phaseStyle: Record<Phase, string> = {
+  none: 'border-line text-mute',
+  lights: 'border-ghost/60 text-ghost',
+  idle: 'border-slime/60 text-slime',
+  playing: 'border-pumpkin/70 text-pumpkin',
+  paused: 'border-pumpkin/40 text-pumpkin/70',
+  blackout: 'border-white text-white',
+}
+
+function ActiveProfile() {
+  const show = useLive().show
+  const p = show?.profile ?? null
+  if (!show || !p) {
+    return (
+      <div className="card flex items-center justify-between gap-3">
+        <span className="text-mute">No profile active</span>
+        <Link to="/profiles" className="btn">Profiles</Link>
+      </div>
+    )
+  }
+  const pos = show.position
+  const dur = show.duration
+  const pct = pos != null && dur != null && dur > 0 ? Math.max(0, Math.min(100, (pos / dur) * 100)) : 0
+  return (
+    <div className="card space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate text-xl font-semibold">{p.name}</div>
+          <div className="text-xs uppercase tracking-wide text-mute">{p.type} · {p.mode.replace('_', ' ')}</div>
+        </div>
+        <span className={`shrink-0 rounded-full border px-2.5 py-0.5 text-xs font-semibold uppercase ${phaseStyle[show.phase]}`}>
+          {show.phase}
+        </span>
+      </div>
+      {dur != null && (
+        <div className="space-y-1">
+          <div className="h-2 overflow-hidden rounded-full bg-line">
+            <div className="h-full rounded-full bg-pumpkin transition-[width] duration-200 ease-linear" style={{ width: `${pct}%` }} />
+          </div>
+          <div className="flex justify-between text-xs tabular-nums text-mute">
+            <span>{fmtTime(pos)}</span>
+            <span>{fmtTime(dur)}</span>
+          </div>
+        </div>
+      )}
+      {show.cooldown_remaining > 0 && (
+        <div className="text-sm text-pumpkin">Cooldown {show.cooldown_remaining.toFixed(1)} s</div>
+      )}
+    </div>
+  )
+}
+
+function Controls() {
+  const show = useLive().show
+  const { busy, error, run } = useAction()
+  const [msg, setMsg] = useState<string | null>(null)
+  const msgTimer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(msgTimer.current), [])
+
+  const playing = show?.phase === 'playing' || show?.phase === 'paused'
+  const isVideo = show?.profile?.type === 'video'
+
+  const trigger = async () => {
+    const r = await run(() => api.show.trigger())
+    if (r && !r.ok) {
+      setMsg(r.message)
+      window.clearTimeout(msgTimer.current)
+      msgTimer.current = window.setTimeout(() => setMsg(null), 3000)
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-3">
+        <button type="button" className="btn btn-primary h-20 text-lg font-bold" disabled={busy} onClick={trigger}>
+          TRIGGER
+        </button>
+        <button
+          type="button"
+          className="btn h-20 text-lg"
+          disabled={busy || !isVideo}
+          onClick={() => run(() => (playing ? api.show.stop() : api.show.play(0)))}
+        >
+          {playing ? 'Stop' : 'Play'}
+        </button>
+        <button type="button" className="btn h-20 text-lg" disabled={busy} onClick={() => run(() => api.show.next())}>
+          Next profile
+        </button>
+        <BlackoutButton big />
+      </div>
+      {msg && <p className="text-sm text-pumpkin">{msg}</p>}
+      <ErrorText error={error} />
+    </div>
+  )
+}
+
+function BrightnessSlider() {
+  const live = useLive().settings?.master_brightness
+  const [val, setVal] = useState(() => Math.round((live ?? 1) * 100))
+  const dragging = useRef(false)
+  const lastSent = useRef(0)
+  const timer = useRef<number | undefined>(undefined)
+  const pending = useRef<number | null>(null)
+  const { error, run } = useAction()
+
+  useEffect(() => {
+    if (!dragging.current && live != null) setVal(Math.round(live * 100))
+  }, [live])
+
+  useEffect(() => () => {
+    window.clearTimeout(timer.current)
+    if (pending.current != null) void api.settings.update({ master_brightness: pending.current / 100 }).catch(() => {})
+  }, [])
+
+  const flush = () => {
+    window.clearTimeout(timer.current)
+    timer.current = undefined
+    const v = pending.current
+    if (v == null) return
+    pending.current = null
+    lastSent.current = Date.now()
+    void run(() => api.settings.update({ master_brightness: v / 100 }))
+  }
+
+  const onInput = (v: number) => {
+    dragging.current = true
+    setVal(v)
+    pending.current = v
+    const wait = 150 - (Date.now() - lastSent.current)
+    if (wait <= 0) flush()
+    else if (timer.current === undefined) timer.current = window.setTimeout(flush, wait)
+  }
+
+  const end = () => {
+    flush()
+    dragging.current = false
+  }
+
+  return (
+    <div className="card space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="label mb-0">Master brightness</span>
+        <span className="text-sm font-semibold tabular-nums">{val} %</span>
+      </div>
+      <input
+        type="range"
+        min={0}
+        max={100}
+        step={1}
+        value={val}
+        disabled={live == null}
+        onChange={(e) => onInput(Number(e.target.value))}
+        onPointerUp={end}
+        onPointerCancel={end}
+        onTouchEnd={end}
+        onKeyUp={end}
+        onBlur={end}
+        className="h-8 w-full accent-pumpkin"
+      />
+      <ErrorText error={error} />
+    </div>
+  )
+}
+
+function ProfileSwitcher() {
+  const { profilesRev, show } = useLive()
+  const activeId = show?.profile?.id ?? null
+  const [profiles, setProfiles] = useState<Profile[]>([])
+  const load = useAction()
+  const act = useAction()
+  const runLoad = load.run
+
+  useEffect(() => {
+    let cancelled = false
+    void runLoad(() => api.profiles.list()).then((ps) => {
+      if (!cancelled && ps) setProfiles(ps)
+    })
+    return () => { cancelled = true }
+  }, [profilesRev, runLoad])
+
+  return (
+    <Section title="Profiles" actions={<Link to="/profiles" className="btn">Manage</Link>}>
+      {profiles.length === 0 && !load.busy ? (
+        <p className="text-sm text-mute">No profiles yet.</p>
+      ) : (
+        <div className="-mx-4 flex snap-x gap-2 overflow-x-auto px-4 pb-1">
+          {profiles.map((p) => {
+            const active = p.id === activeId
+            return (
+              <button
+                key={p.id}
+                type="button"
+                disabled={act.busy}
+                onClick={() => void act.run(() => api.profiles.activate(p.id))}
+                className={`btn h-14 shrink-0 snap-start flex-col gap-0 px-4 ${active ? 'border-pumpkin bg-pumpkin/15 text-pumpkin' : ''}`}
+              >
+                <span className="max-w-40 truncate">{p.name}</span>
+                <span className="text-[10px] uppercase tracking-wide text-mute">{p.type}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+      <ErrorText error={load.error ?? act.error} />
+    </Section>
+  )
+}
+
+function BoardStrip() {
+  const boards = useAdoptedBoards()
+  return (
+    <Section title="Boards" actions={<Link to="/boards" className="btn">All boards</Link>}>
+      {boards.length === 0 ? (
+        <p className="text-sm text-mute">No adopted boards.</p>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          {boards.map((b) => (
+            <Link
+              key={b.mac}
+              to="/boards"
+              className="inline-flex items-center gap-2 rounded-full border border-line bg-panel px-3 py-1 text-sm"
+            >
+              <StatusDot status={b.status} />
+              <span className="max-w-32 truncate">{b.name}</span>
+              <span className="text-xs tabular-nums text-mute">{b.latency_ms != null ? `${Math.round(b.latency_ms)} ms` : '–'}</span>
+            </Link>
+          ))}
+        </div>
+      )}
+    </Section>
+  )
+}
+
+const levelColor: Record<ShowEvent['level'], string> = { info: 'text-ink', warn: 'text-pumpkin', error: 'text-blood' }
+
+function hms(ts: number) {
+  const d = new Date(ts * 1000)
+  return [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, '0')).join(':')
+}
+
+function EventLog() {
+  const events = useLive().events.slice(-20).reverse()
+  return (
+    <Section title="Events">
+      <div className="card p-0">
+        {events.length === 0 ? (
+          <p className="p-4 text-sm text-mute">Nothing yet.</p>
+        ) : (
+          <ul className="divide-y divide-line font-mono text-xs">
+            {events.map((e, i) => (
+              <li key={`${e.ts}-${i}`} className="flex gap-3 px-3 py-2">
+                <span className="shrink-0 tabular-nums text-mute">{hms(e.ts)}</span>
+                <span className={`min-w-0 break-words ${levelColor[e.level]}`}>{e.message}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </Section>
+  )
+}
+
+export default function Dashboard() {
+  return (
+    <div className="mx-auto max-w-3xl space-y-6">
+      <ActiveProfile />
+      <Controls />
+      <BrightnessSlider />
+      <ProfileSwitcher />
+      <BoardStrip />
+      <EventLog />
+    </div>
+  )
+}

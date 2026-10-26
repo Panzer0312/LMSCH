@@ -1,0 +1,335 @@
+"""mpv process supervisor plus the high-level playback API used by the show engine."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import os
+import tempfile
+import time
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+from spookhub.config import MpvCfg
+from spookhub.events import EventBus
+from spookhub.player.ipc import MpvError, MpvIpc
+
+MAX_EXTRAPOLATE_S = 0.5
+
+log = logging.getLogger("spookhub.mpv")
+
+OBSERVED = ("time-pos", "pause", "eof-reached", "path", "duration")
+READY_TIMEOUT_S = 5.0
+QUICK_CRASH_S = 5.0
+MAX_RESTART_DELAY_S = 10.0
+STOP_GRACE_S = 3.0
+
+
+class MpvPlayer:
+    def __init__(self, cfg: MpvCfg, bus: EventBus) -> None:
+        self.cfg = cfg
+        self.bus = bus
+        self._loading: bool = False
+        self.time_pos: float | None = None
+        self.paused: bool = False
+        self.eof: bool = False
+        self.duration: float | None = None
+        self.path: str | None = None
+        self.pos_mono: float = time.monotonic()
+        self.on_change: Callable[[str], None] | None = None
+        self.vo_override: str | None = None
+        self.gpu_context_override: str | None = None
+        self.ready: asyncio.Event = asyncio.Event()
+        self._ipc: MpvIpc | None = None
+        self._proc: asyncio.subprocess.Process | None = None
+        self._task: asyncio.Task[None] | None = None
+        self._stopping: bool = False
+        self._restart_requested: bool = False
+
+    # ---- lifecycle ---------------------------------------------------------------------------
+
+    @property
+    def socket_path(self) -> Path:
+        # sun_path is limited to 108 bytes; mpv fails silently beyond that.
+        p = self.cfg.socket_path
+        if len(str(p)) <= 100:
+            return p
+        return Path(tempfile.gettempdir()) / f"spookhub-{os.getuid()}-mpv.sock"
+
+    def args(self) -> list[str]:
+        cfg = self.cfg
+        vo = self.vo_override or cfg.vo
+        ctx = self.gpu_context_override or cfg.gpu_context
+        out = [
+            cfg.binary,
+            "--idle=yes",
+            "--keep-open=yes",
+            "--force-window=yes",
+            "--background-color=#000000",
+            "--osd-level=0",
+            "--osc=no",
+            "--no-input-default-bindings",
+            "--input-terminal=no",
+            "--no-terminal",
+            "--cursor-autohide=always",
+            "--fullscreen",
+            f"--vo={vo}",
+        ]
+        if ctx:
+            out.append(f"--gpu-context={ctx}")
+        out.append(f"--hwdec={cfg.hwdec}")
+        if cfg.ao:
+            out.append(f"--ao={cfg.ao}")
+        out.append(f"--input-ipc-server={self.socket_path}")
+        out.append("--hr-seek=yes")
+        out.extend(cfg.extra_args)
+        return out
+
+    async def start(self) -> None:
+        if not self.cfg.enabled or self._task is not None:
+            return
+        self._stopping = False
+        self._task = asyncio.create_task(self._supervise(), name="mpv-supervisor")
+
+    async def stop(self) -> None:
+        self._stopping = True
+        if not self.cfg.enabled:
+            return
+        ipc = self._ipc
+        if ipc is not None and ipc.connected:
+            with contextlib.suppress(MpvError):
+                await ipc.command("quit", timeout=1.0)
+        proc = self._proc
+        if proc is not None and proc.returncode is None:
+            try:
+                async with asyncio.timeout(STOP_GRACE_S):
+                    await proc.wait()
+            except TimeoutError:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                await proc.wait()
+        task = self._task
+        self._task = None
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    async def restart(self) -> None:
+        if not self.cfg.enabled:
+            return
+        # Supervisor sees the exit and respawns with current args (picks up vo overrides).
+        self._restart_requested = True
+        proc = self._proc
+        if proc is not None and proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+
+    async def _supervise(self) -> None:
+        delay = self.cfg.restart_delay_s
+        while not self._stopping:
+            started = time.monotonic()
+            rc = await self._run_once()
+            self._reset_state()
+            if self._stopping:
+                break
+            if self._restart_requested:
+                self._restart_requested = False
+                delay = self.cfg.restart_delay_s
+                continue
+            self.bus.event("error", f"mpv exited (code {rc}), restarting")
+            if time.monotonic() - started >= QUICK_CRASH_S:
+                delay = self.cfg.restart_delay_s
+            await asyncio.sleep(delay)
+            # Back off only while mpv keeps dying right after launch (e.g. no DRM master).
+            delay = min(delay * 2, MAX_RESTART_DELAY_S)
+
+    async def _run_once(self) -> int | None:
+        sock = self.socket_path
+        try:
+            sock.parent.mkdir(parents=True, exist_ok=True)
+            # A stale socket from a crashed mpv would make connect() hit a dead endpoint.
+            sock.unlink(missing_ok=True)
+        except OSError as exc:
+            log.warning("cannot prepare mpv socket %s: %s", sock, exc)
+        args = self.args()
+        log.info("starting mpv: %s", " ".join(args))
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError as exc:
+            log.error("cannot launch mpv (%s): %s", self.cfg.binary, exc)
+            return None
+        self._proc = proc
+        stderr_task = asyncio.create_task(self._drain_stderr(proc), name="mpv-stderr")
+        ipc = MpvIpc()
+        ipc.on_event = self._on_event
+        self._ipc = ipc
+        try:
+            try:
+                await ipc.connect(sock)
+                for name in OBSERVED:
+                    await ipc.observe(name)
+            except MpvError as exc:
+                log.warning("mpv ipc setup failed: %s", exc)
+            else:
+                self.ready.set()
+                self._notify("restart")
+                waiters = {
+                    asyncio.create_task(proc.wait()),
+                    asyncio.create_task(ipc.closed.wait()),
+                }
+                try:
+                    await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    for w in waiters:
+                        w.cancel()
+            # Without a working socket the process is uncontrollable, so never leave it running.
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                await proc.wait()
+            return proc.returncode
+        finally:
+            self.ready.clear()
+            await ipc.close()
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+            stderr_task.cancel()
+            self._ipc = None
+
+    async def _drain_stderr(self, proc: asyncio.subprocess.Process) -> None:
+        stream = proc.stderr
+        if stream is None:
+            return
+        # Must keep reading: a full stderr pipe would block mpv mid-playback.
+        while True:
+            try:
+                line = await stream.readline()
+            except ValueError:
+                # Over-long line: asyncio already discarded it, keep draining.
+                continue
+            except OSError:
+                return
+            if not line:
+                return
+            log.debug("%s", line.decode(errors="replace").rstrip())
+
+    def _reset_state(self) -> None:
+        self.time_pos = None
+        self.path = None
+        self.eof = False
+        self.pos_mono = time.monotonic()
+
+    # ---- property tracking -------------------------------------------------------------------
+
+    def _on_event(self, msg: dict[str, Any]) -> None:
+        ev = msg.get("event")
+        if ev == "start-file":
+            # Old file's positions may still trickle in; ignore until the new one really plays.
+            self._loading = True
+            self.time_pos = None
+            return
+        if ev == "playback-restart":
+            self._loading = False
+            return
+        if ev != "property-change":
+            return
+        name = msg.get("name")
+        data = msg.get("data")
+        match name:
+            case "time-pos":
+                if self._loading:
+                    return
+                self.time_pos = float(data) if isinstance(data, (int, float)) else None
+                self.pos_mono = time.monotonic()
+            case "pause":
+                self.paused = bool(data)
+            case "eof-reached":
+                self.eof = bool(data)
+            case "path":
+                self.path = data if isinstance(data, str) else None
+            case "duration":
+                self.duration = float(data) if isinstance(data, (int, float)) else None
+            case _:
+                return
+        self._notify(name)
+
+    def _notify(self, name: str) -> None:
+        if self.on_change is None:
+            return
+        try:
+            self.on_change(name)
+        except Exception:
+            log.exception("mpv on_change handler failed")
+
+    def position(self) -> float | None:
+        if self.time_pos is None:
+            return None
+        if self.paused or self.eof:
+            return self.time_pos
+        # Cap extrapolation: if mpv stalls, hold instead of running ahead of the picture.
+        return self.time_pos + min(time.monotonic() - self.pos_mono, MAX_EXTRAPOLATE_S)
+
+    def state(self) -> dict[str, Any]:
+        return {
+            "ready": self.ready.is_set(),
+            "path": self.path,
+            "time_pos": self.position(),
+            "duration": self.duration,
+            "paused": self.paused,
+            "eof": self.eof,
+        }
+
+    # ---- high-level API ----------------------------------------------------------------------
+
+    async def _ready_ipc(self) -> MpvIpc:
+        try:
+            async with asyncio.timeout(READY_TIMEOUT_S):
+                await self.ready.wait()
+        except TimeoutError as exc:
+            raise MpvError("mpv not ready") from exc
+        ipc = self._ipc
+        if ipc is None or not ipc.connected:
+            raise MpvError("mpv not ready")
+        return ipc
+
+    async def load(self, path: str, start: float = 0.0, loop: bool = False) -> None:
+        if not self.cfg.enabled:
+            return
+        ipc = await self._ready_ipc()
+        # Per-file options (mpv >= 0.38 signature: url, flags, index, options) reset after the
+        # file, so a loop restarts at 0 rather than at a global --start.
+        self._loading = True
+        self.time_pos = None
+        self.eof = False
+        opts = f"start={start:.3f},loop-file={'inf' if loop else 'no'}"
+        await ipc.command("loadfile", path, "replace", -1, opts)
+        await ipc.set_property("pause", False)
+        self.paused = False
+
+    async def black(self) -> None:
+        if not self.cfg.enabled:
+            return
+        ipc = await self._ready_ipc()
+        # With --idle and --force-window, "stop" leaves an empty black window up.
+        await ipc.command("stop")
+
+    async def seek(self, t: float) -> None:
+        if not self.cfg.enabled:
+            return
+        ipc = await self._ready_ipc()
+        await ipc.command("seek", t, "absolute+exact")
+
+    async def set_pause(self, p: bool) -> None:
+        if not self.cfg.enabled:
+            return
+        ipc = await self._ready_ipc()
+        await ipc.set_property("pause", p)

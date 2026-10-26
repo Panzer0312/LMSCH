@@ -1,0 +1,195 @@
+from __future__ import annotations
+
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlmodel import Session, col, select
+
+from spookhub import db
+from spookhub.api.deps import get_hub
+from spookhub.hub import Hub
+from spookhub.models import (
+    Cue,
+    CueIn,
+    CueOut,
+    CueTarget,
+    LightState,
+    Media,
+    Profile,
+    ProfileIn,
+    ProfileOut,
+    ProfileType,
+)
+
+router = APIRouter(prefix="/api/profiles", tags=["profiles"])
+HubDep = Annotated[Hub, Depends(get_hub)]
+
+
+def to_out(s: Session, p: Profile) -> ProfileOut:
+    cues = s.exec(
+        select(Cue).where(Cue.profile_id == p.id).order_by(col(Cue.start_s), col(Cue.id))
+    ).all()
+    return ProfileOut(
+        id=p.id or 0,
+        sort=p.sort,
+        name=p.name,
+        type=p.type,
+        selection=p.selection,  # type: ignore[arg-type]
+        base_state=LightState.model_validate(p.base_state or {}),
+        overrides={k: LightState.model_validate(v) for k, v in (p.overrides or {}).items()},
+        media_id=p.media_id,
+        idle_media_id=p.idle_media_id,
+        playback_mode=p.playback_mode,
+        cooldown_s=p.cooldown_s,
+        cues=[
+            CueOut(
+                id=c.id or 0,
+                start_s=c.start_s,
+                duration_s=c.duration_s,
+                target=CueTarget.model_validate(c.target or {}),
+                state=LightState.model_validate(c.state or {}),
+                transition_ms=c.transition_ms,
+            )
+            for c in cues
+        ],
+    )
+
+
+def _apply(p: Profile, body: ProfileIn, s: Session) -> None:
+    for mid in (body.media_id, body.idle_media_id):
+        if mid is not None and s.get(Media, mid) is None:
+            raise HTTPException(422, f"media {mid} not found")
+    if body.type == ProfileType.video and body.media_id is None:
+        raise HTTPException(422, "video profile needs a video")
+    p.name = body.name
+    p.type = body.type
+    p.selection = body.selection.model_dump()
+    p.base_state = body.base_state.model_dump(exclude_none=True)
+    p.overrides = {k: v.model_dump(exclude_none=True) for k, v in body.overrides.items()}
+    p.media_id = body.media_id if body.type == ProfileType.video else None
+    p.idle_media_id = body.idle_media_id if body.type == ProfileType.video else None
+    p.playback_mode = body.playback_mode
+    p.cooldown_s = body.cooldown_s
+
+
+def _get(s: Session, pid: int) -> Profile:
+    p = s.get(Profile, pid)
+    if p is None:
+        raise HTTPException(404, "profile not found")
+    return p
+
+
+def _changed(hub: Hub) -> None:
+    hub.bus.publish("profiles_changed")
+
+
+@router.get("")
+def list_profiles() -> list[ProfileOut]:
+    with db.session() as s:
+        ps = s.exec(select(Profile).order_by(col(Profile.sort), col(Profile.id))).all()
+        return [to_out(s, p) for p in ps]
+
+
+@router.post("", status_code=201)
+def create(body: ProfileIn, hub: HubDep) -> ProfileOut:
+    with db.session() as s:
+        last = s.exec(select(Profile).order_by(col(Profile.sort).desc())).first()
+        p = Profile(name=body.name, sort=(last.sort + 1) if last else 0)
+        _apply(p, body, s)
+        s.add(p)
+        s.commit()
+        s.refresh(p)
+        out = to_out(s, p)
+    _changed(hub)
+    return out
+
+
+@router.get("/{pid}")
+def get(pid: int) -> ProfileOut:
+    with db.session() as s:
+        return to_out(s, _get(s, pid))
+
+
+@router.put("/{pid}")
+async def update(pid: int, body: ProfileIn, hub: HubDep) -> ProfileOut:
+    with db.session() as s:
+        p = _get(s, pid)
+        _apply(p, body, s)
+        s.add(p)
+        s.commit()
+        out = to_out(s, p)
+    await hub.engine.reload_if_active(pid)
+    _changed(hub)
+    return out
+
+
+@router.delete("/{pid}")
+async def delete(pid: int, hub: HubDep) -> dict[str, bool]:
+    with db.session() as s:
+        p = _get(s, pid)
+        for c in s.exec(select(Cue).where(Cue.profile_id == pid)).all():
+            s.delete(c)
+        s.delete(p)
+        s.commit()
+    if hub.engine.active and hub.engine.active.id == pid:
+        await hub.engine.deactivate()
+    _changed(hub)
+    return {"ok": True}
+
+
+@router.post("/{pid}/duplicate", status_code=201)
+def duplicate(pid: int, hub: HubDep) -> ProfileOut:
+    with db.session() as s:
+        src = to_out(s, _get(s, pid))
+        body = ProfileIn.model_validate(src.model_dump(exclude={"id", "sort", "cues"}))
+        body.name = f"{src.name} (copy)"
+        last = s.exec(select(Profile).order_by(col(Profile.sort).desc())).first()
+        p = Profile(name=body.name, sort=(last.sort + 1) if last else 0)
+        _apply(p, body, s)
+        s.add(p)
+        s.commit()
+        s.refresh(p)
+        for c in src.cues:
+            s.add(_cue_row(p.id or 0, c))
+        s.commit()
+        out = to_out(s, p)
+    _changed(hub)
+    return out
+
+
+@router.post("/{pid}/activate")
+async def activate(pid: int, hub: HubDep) -> dict[str, bool]:
+    try:
+        await hub.engine.activate(pid)
+    except KeyError as e:
+        raise HTTPException(404, "profile not found") from e
+    return {"ok": True}
+
+
+def _cue_row(pid: int, c: CueIn) -> Cue:
+    return Cue(
+        profile_id=pid,
+        start_s=c.start_s,
+        duration_s=c.duration_s,
+        target=c.target.model_dump(),
+        state=c.state.model_dump(exclude_none=True),
+        transition_ms=c.transition_ms,
+    )
+
+
+@router.put("/{pid}/cues")
+async def replace_cues(pid: int, cues: list[CueIn], hub: HubDep) -> ProfileOut:
+    """Replace the whole cue list (list-form editor saves atomically)."""
+    with db.session() as s:
+        p = _get(s, pid)
+        if p.type != ProfileType.video:
+            raise HTTPException(422, "only video profiles have cues")
+        for c in s.exec(select(Cue).where(Cue.profile_id == pid)).all():
+            s.delete(c)
+        for c in cues:
+            s.add(_cue_row(pid, c))
+        s.commit()
+        out = to_out(s, p)
+    await hub.engine.reload_if_active(pid)
+    _changed(hub)
+    return out

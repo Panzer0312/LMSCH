@@ -1,0 +1,432 @@
+"""Show engine: active profile, cue scheduler driven by mpv's time-pos, triggers, blackout."""
+
+from __future__ import annotations
+
+import asyncio
+import enum
+import logging
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from sqlmodel import select
+
+from spookhub import db
+from spookhub.boards.registry import BoardManager
+from spookhub.events import EventBus
+from spookhub.models import (
+    BoardSelection,
+    Cue,
+    CueTarget,
+    LightState,
+    Media,
+    PlaybackMode,
+    Profile,
+    ProfileType,
+)
+from spookhub.player.process import MpvPlayer
+from spookhub.settings_store import SettingsStore
+from spookhub.show.resolve import CueSpec, Timeline
+
+log = logging.getLogger(__name__)
+
+SEEK_JUMP_S = 0.5
+POSITION_PUBLISH_S = 0.25
+
+
+class Phase(enum.StrEnum):
+    none = "none"  # no active profile
+    lights = "lights"  # light profile active
+    idle = "idle"  # video profile, waiting (idle video or black)
+    playing = "playing"
+    paused = "paused"
+    blackout = "blackout"
+
+
+@dataclass
+class ActiveProfile:
+    id: int
+    name: str
+    type: ProfileType
+    selection: BoardSelection
+    base: LightState
+    overrides: dict[str, LightState]
+    mode: PlaybackMode
+    cooldown_s: float
+    media_path: str | None
+    media_duration: float | None
+    idle_path: str | None
+    cues: list[CueSpec] = field(default_factory=list)
+
+    def macs(self, adopted: list[str]) -> list[str]:
+        # "All boards" is resolved at use time so boards adopted later join automatically.
+        if self.selection.all:
+            return list(adopted)
+        return [m for m in self.selection.macs if m in adopted]
+
+    def base_for(self, mac: str) -> LightState:
+        return self.base.merged(self.overrides.get(mac))
+
+
+def load_active(profile_id: int) -> ActiveProfile | None:
+    with db.session() as s:
+        p = s.get(Profile, profile_id)
+        if p is None:
+            return None
+        media = s.get(Media, p.media_id) if p.media_id else None
+        idle = s.get(Media, p.idle_media_id) if p.idle_media_id else None
+        cues = s.exec(select(Cue).where(Cue.profile_id == profile_id)).all()
+        specs = []
+        for c in cues:
+            tgt = CueTarget.model_validate(c.target or {})
+            specs.append(
+                CueSpec(
+                    id=c.id or 0,
+                    start=c.start_s,
+                    duration=c.duration_s,
+                    targets=None if tgt.all else frozenset(tgt.macs),
+                    state=LightState.model_validate(c.state or {}),
+                    transition_ms=c.transition_ms,
+                )
+            )
+        return ActiveProfile(
+            id=profile_id,
+            name=p.name,
+            type=ProfileType(p.type),
+            selection=BoardSelection.model_validate(p.selection or {}),
+            base=LightState.model_validate(p.base_state or {}),
+            overrides={k: LightState.model_validate(v) for k, v in (p.overrides or {}).items()},
+            mode=PlaybackMode(p.playback_mode),
+            cooldown_s=p.cooldown_s,
+            media_path=media.path if media and Path(media.path).exists() else None,
+            media_duration=media.duration_s if media else None,
+            idle_path=idle.path if idle and Path(idle.path).exists() else None,
+            cues=specs,
+        )
+
+
+class ShowEngine:
+    def __init__(
+        self,
+        boards: BoardManager,
+        player: MpvPlayer,
+        bus: EventBus,
+        settings: SettingsStore,
+        tick_s: float = 0.01,
+    ) -> None:
+        self.boards = boards
+        self.player = player
+        self.bus = bus
+        self.settings = settings
+        self.tick_s = tick_s
+        self.active: ActiveProfile | None = None
+        self.timeline: Timeline | None = None
+        self.phase = Phase.none
+        self.blackout = False
+        self.cooldown_until = 0.0
+        self.playing_main = False
+        self._last_cue: dict[str, int | None] = {}
+        self._last_t: float | None = None
+        self._sched: asyncio.Task[None] | None = None
+        self._pub: asyncio.Task[None] | None = None
+        self._lock = asyncio.Lock()
+        player.on_change = self._on_player_change
+
+    # ----- lifecycle -----
+
+    async def start(self) -> None:
+        self._pub = asyncio.create_task(self._publish_loop())
+        pid = self.settings.value.active_profile_id
+        if pid is not None:
+            try:
+                await self.activate(pid)
+            except Exception:  # noqa: BLE001
+                log.exception("could not restore active profile %s", pid)
+
+    async def stop(self) -> None:
+        for t in (self._sched, self._pub):
+            if t:
+                t.cancel()
+
+    # ----- state for UI -----
+
+    def snapshot(self) -> dict[str, Any]:
+        a = self.active
+        return {
+            "phase": self.phase.value,
+            "blackout": self.blackout,
+            "profile": None
+            if a is None
+            else {"id": a.id, "name": a.name, "type": a.type.value, "mode": a.mode.value},
+            "position": self.player.position() if self.playing_main else None,
+            "duration": self.player.duration or (a.media_duration if a else None),
+            "cooldown_remaining": max(0.0, self.cooldown_until - time.monotonic()),
+            "player": self.player.state(),
+        }
+
+    def _publish(self) -> None:
+        self.bus.publish("show", self.snapshot())
+
+    async def _publish_loop(self) -> None:
+        while True:
+            await asyncio.sleep(POSITION_PUBLISH_S)
+            if self.playing_main:
+                self._publish()
+
+    # ----- profile activation -----
+
+    async def activate(self, profile_id: int) -> None:
+        async with self._lock:
+            prof = load_active(profile_id)
+            if prof is None:
+                raise KeyError(profile_id)
+            await self._stop_scheduler()
+            self.active = prof
+            self.timeline = Timeline(prof.cues, self.boards.adopted_macs())
+            if self.settings.value.active_profile_id != profile_id:
+                self.settings.update(active_profile_id=profile_id)
+            self.boards.clear_show_states()
+            self._apply_base(critical=False)
+            self.bus.event("info", f"Profile '{prof.name}' activated")
+            if self.blackout:
+                self.phase = Phase.blackout
+            elif prof.type == ProfileType.light:
+                self.phase = Phase.lights
+                await self._safe(self.player.black())
+            elif prof.mode == PlaybackMode.idle_trigger:
+                await self._go_idle()
+            else:
+                await self._play_main(0.0)
+            self._publish()
+
+    async def reload_if_active(self, profile_id: int) -> None:
+        """Profile edited: refresh cues/base live without interrupting a running video."""
+        if not self.active or self.active.id != profile_id:
+            return
+        prof = load_active(profile_id)
+        if prof is None:
+            await self.deactivate()
+            return
+        self.active = prof
+        self.timeline = Timeline(prof.cues, self.boards.adopted_macs())
+        self._last_cue.clear()  # forces re-apply on next tick
+        if not self.playing_main:
+            self._apply_base(critical=False)
+        self._publish()
+
+    async def deactivate(self) -> None:
+        async with self._lock:
+            await self._stop_scheduler()
+            self.active = None
+            self.timeline = None
+            self.phase = Phase.blackout if self.blackout else Phase.none
+            self.settings.update(active_profile_id=None)
+            await self._safe(self.player.black())
+            self._publish()
+
+    def boards_changed(self) -> None:
+        """Adoption/removal: 'All boards' selections pick up new boards immediately."""
+        if not self.active:
+            return
+        self.timeline = Timeline(self.active.cues, self.boards.adopted_macs())
+        self._last_cue.clear()
+        if not self.playing_main:
+            self._apply_base(critical=False)
+
+    async def next_profile(self) -> None:
+        with db.session() as s:
+            ids = [p.id for p in s.exec(select(Profile).order_by(Profile.sort, Profile.id))]
+        if not ids:
+            return
+        cur = self.active.id if self.active else None
+        nxt = ids[(ids.index(cur) + 1) % len(ids)] if cur in ids else ids[0]
+        await self.activate(nxt)  # type: ignore[arg-type]
+
+    def _apply_base(self, critical: bool) -> None:
+        a = self.active
+        if not a:
+            return
+        for mac in a.macs(self.boards.adopted_macs()):
+            self.boards.set_show_state(mac, a.base_for(mac), critical)
+
+    # ----- playback -----
+
+    async def trigger(self, source: str = "button") -> tuple[bool, str]:
+        a = self.active
+        if self.blackout:
+            return False, "blackout active"
+        if not a or a.type != ProfileType.video:
+            return False, "no video profile active"
+        if a.mode != PlaybackMode.idle_trigger:
+            return False, "profile is not in idle + trigger mode"
+        if self.playing_main:
+            return False, "already playing"
+        remaining = self.cooldown_until - time.monotonic()
+        if remaining > 0:
+            return False, f"cooldown ({remaining:.0f} s left)"
+        async with self._lock:
+            started = await self._play_main(0.0)
+        self._publish()
+        if not started:
+            return False, "video could not start (see event log)"
+        self.bus.event("info", f"Triggered ({source})")
+        return True, "triggered"
+
+    async def play(self, from_s: float = 0.0) -> None:
+        a = self.active
+        if self.blackout or not a or a.type != ProfileType.video:
+            raise RuntimeError("no video profile active")
+        async with self._lock:
+            started = await self._play_main(from_s)
+        self._publish()
+        if not started:
+            raise RuntimeError("video could not start (see event log)")
+
+    async def stop_show(self) -> None:
+        async with self._lock:
+            if self.playing_main:
+                await self._end_show("stopped")
+        self._publish()
+
+    async def seek(self, t: float) -> None:
+        if self.playing_main:
+            await self._safe(self.player.seek(t))
+
+    async def pause(self, paused: bool) -> None:
+        if self.playing_main:
+            await self._safe(self.player.set_pause(paused))
+
+    async def _play_main(self, from_s: float) -> bool:
+        a = self.active
+        assert a
+        if not a.media_path:
+            self.bus.event("error", f"Profile '{a.name}' has no playable video")
+            await self._go_idle()
+            return False
+        await self._stop_scheduler()
+        # Boards already show base; a missing entry (after seek/edit) forces a re-send.
+        self._last_cue = {m: None for m in a.macs(self.boards.adopted_macs())}
+        self._last_t = None
+        loop = a.mode == PlaybackMode.loop
+        ok = await self._safe(self.player.load(a.media_path, start=from_s, loop=loop))
+        if not ok:
+            self.bus.event("error", "Video player not ready")
+            await self._go_idle()
+            return False
+        self.playing_main = True
+        self.phase = Phase.playing
+        self._sched = asyncio.create_task(self._scheduler())
+        return True
+
+    async def _go_idle(self) -> None:
+        self.playing_main = False
+        a = self.active
+        self.phase = Phase.idle
+        if a and a.idle_path:
+            await self._safe(self.player.load(a.idle_path, loop=True))
+        else:
+            await self._safe(self.player.black())
+
+    async def _end_show(self, reason: str) -> None:
+        await self._stop_scheduler()
+        self.playing_main = False
+        a = self.active
+        if a:
+            self.cooldown_until = time.monotonic() + a.cooldown_s
+        self._apply_base(critical=True)
+        self.bus.event("info", f"Show {reason}, boards back to base")
+        await self._go_idle()
+
+    async def _stop_scheduler(self) -> None:
+        if self._sched and self._sched is not asyncio.current_task():
+            self._sched.cancel()
+            try:
+                await self._sched
+            except asyncio.CancelledError:
+                pass
+        self._sched = None
+
+    def _on_player_change(self, prop: str) -> None:
+        if not self.playing_main:
+            return
+        if prop == "eof-reached" and self.player.eof:
+            asyncio.create_task(self._finish("ended"))
+        elif prop == "restart":
+            # mpv crashed mid-show: return to a defined state rather than guess.
+            asyncio.create_task(self._finish("interrupted (player restarted)"))
+        elif prop == "pause":
+            self.phase = Phase.paused if self.player.paused else Phase.playing
+            self._publish()
+
+    async def _finish(self, reason: str) -> None:
+        async with self._lock:
+            if self.playing_main:
+                await self._end_show(reason)
+        self._publish()
+
+    # ----- scheduler -----
+
+    async def _scheduler(self) -> None:
+        """Fire board states from the interpolated mpv playhead.
+
+        Comparing the resolved cue per board against what we last sent handles cue starts,
+        duration ends, loop wrap-around and seeks with one mechanism.
+        """
+        while True:
+            await asyncio.sleep(self.tick_s)
+            t = self.player.position()
+            if t is None or self.timeline is None or self.active is None:
+                continue
+            seek = self._last_t is not None and (
+                t < self._last_t - 0.25 or t > self._last_t + SEEK_JUMP_S
+            )
+            self._last_t = t
+            if seek:
+                self._last_cue.clear()
+            if self.player.paused:
+                continue
+            self._tick(t)
+
+    def _tick(self, t: float) -> None:
+        a = self.active
+        tl = self.timeline
+        assert a and tl
+        offset = self.settings.value.sync_offset_ms
+        for mac in a.macs(self.boards.adopted_macs()):
+            lead = (self.boards.latency_comp_ms(mac) + offset) / 1000.0
+            cue_id, state = tl.state_at(mac, t + lead, a.base_for(mac))
+            if mac in self._last_cue and self._last_cue[mac] == cue_id:
+                continue
+            self._last_cue[mac] = cue_id
+            self.boards.set_show_state(mac, state, critical=True)
+
+    # ----- blackout / master -----
+
+    async def set_blackout(self, on: bool) -> None:
+        if on == self.blackout:
+            return
+        self.blackout = on
+        self.boards.set_blackout(on)
+        if on:
+            async with self._lock:
+                await self._stop_scheduler()
+                self.playing_main = False
+                await self._safe(self.player.black())
+            self.phase = Phase.blackout
+            self.bus.event("warn", "BLACKOUT engaged")
+        else:
+            self.bus.event("info", "Blackout released")
+            if self.active:
+                await self.activate(self.active.id)
+            else:
+                self.phase = Phase.none
+        self._publish()
+
+    async def _safe(self, coro: Any) -> bool:
+        try:
+            await coro
+            return True
+        except Exception as e:  # noqa: BLE001
+            log.warning("player command failed: %s", e)
+            return False
