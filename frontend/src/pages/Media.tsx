@@ -16,8 +16,20 @@ function fmtSize(b: number): string {
 
 function MediaCard({ m }: { m: MediaItem }) {
   const del = useAction()
+  const tx = useAction()
+  const { transcodes } = useLive()
   const inUse = m.used_by.length > 0
   const hwRisk = !HW_CODECS.includes(m.codec.toLowerCase()) || m.height > 1080
+  const tc = m.transcode
+  const tcProgress = tc && tc.state === 'running' ? (transcodes[m.id] ?? tc.progress) : null
+  const running = tcProgress !== null
+  const pct = running ? Math.round(Math.min(1, Math.max(0, tcProgress)) * 100) : 0
+  const failed = tc?.state === 'failed'
+
+  const startTranscode = () => {
+    if (!confirm(`Transcode "${m.filename}" to H.264 1080p? This can take a while; the original is replaced when done.`)) return
+    void tx.run(() => api.media.transcode(m.id))
+  }
 
   const togglePlay = (v: HTMLVideoElement) => {
     if (v.paused) v.play().catch(() => {})
@@ -46,7 +58,7 @@ function MediaCard({ m }: { m: MediaItem }) {
           <span>{m.width}×{m.height}</span>
           <span>{m.codec}</span>
           <span>{fmtSize(m.size)}</span>
-          {hwRisk && (
+          {(hwRisk || m.needs_transcode) && !running && (
             <span className="rounded-md border border-pumpkin/60 bg-pumpkin/15 px-1.5 py-0.5 text-xs text-pumpkin">
               may not hardware-decode
             </span>
@@ -55,13 +67,30 @@ function MediaCard({ m }: { m: MediaItem }) {
         <p className="text-sm text-mute">
           Used by: {inUse ? <span className="text-ink">{m.used_by.join(', ')}</span> : 'none'}
         </p>
-        <div className="pt-1">
+        {running && (
+          <div className="space-y-1">
+            <div className="h-2 w-full overflow-hidden rounded-full bg-line">
+              <div className="h-full bg-pumpkin transition-all" style={{ width: `${pct}%` }} />
+            </div>
+            <p className="text-sm text-mute">Converting to H.264 1080p… {pct} %</p>
+          </div>
+        )}
+        {failed && (
+          <p className="text-sm text-blood">Conversion failed: {tc?.error ?? 'unknown error'}</p>
+        )}
+        <div className="flex flex-wrap gap-2 pt-1">
+          {(m.needs_transcode || running || failed) && (
+            <button className="btn" disabled={running || tx.busy} onClick={startTranscode}>
+              {running ? `Converting… ${pct} %` : failed ? 'Retry conversion' : 'Convert to H.264 1080p'}
+            </button>
+          )}
           <span title={inUse ? 'In use by a profile; remove it there first' : undefined} className="inline-block">
             <button className="btn btn-danger" disabled={inUse || del.busy} onClick={remove}>
               Delete
             </button>
           </span>
         </div>
+        <ErrorText error={tx.error} />
         <ErrorText error={del.error} />
       </div>
     </div>

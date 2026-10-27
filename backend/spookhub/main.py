@@ -11,7 +11,16 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from spookhub.api import routes_boards, routes_media, routes_profiles, routes_show, ws
+from spookhub.api import (
+    routes_admin,
+    routes_auth,
+    routes_boards,
+    routes_media,
+    routes_profiles,
+    routes_show,
+    ws,
+)
+from spookhub.auth import AuthMiddleware
 from spookhub.config import Config, get_config
 from spookhub.hub import Hub
 
@@ -40,7 +49,16 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     app = FastAPI(title="Spookhub", version="0.1.0", lifespan=lifespan)
     app.state.hub = hub
-    for r in (routes_boards, routes_profiles, routes_show, routes_media, ws):
+    app.add_middleware(AuthMiddleware, store=hub.auth)
+    for r in (
+        routes_auth,
+        routes_admin,
+        routes_boards,
+        routes_profiles,
+        routes_show,
+        routes_media,
+        ws,
+    ):
         app.include_router(r.router)
 
     dist = cfg.server.frontend_dir

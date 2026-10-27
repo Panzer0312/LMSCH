@@ -7,7 +7,8 @@ import logging
 
 import httpx
 
-from spookhub import db
+from spookhub import backup, db
+from spookhub.auth import AuthStore
 from spookhub.boards.client import WledClient
 from spookhub.boards.discovery import MdnsDiscovery, scan_subnet
 from spookhub.boards.registry import BoardManager
@@ -43,12 +44,18 @@ class Hub:
         self.engine = ShowEngine(
             self.boards, self.player, self.bus, self.settings, tick_s=cfg.timing.scheduler_tick_s
         )
+        self.auth = AuthStore()
+        # media id -> {state: running|failed, progress, error}
+        self.transcodes: dict[int, dict[str, object]] = {}
         self.mdns: MdnsDiscovery | None = None
         self._scan: asyncio.Task[int] | None = None
         self.settings.listeners.append(self._on_settings)
 
     async def start(self) -> None:
+        if backup.apply_staged_restore(self.cfg.paths.db_path):
+            log.warning("restored database from backup")
         db.init_engine(self.cfg.paths.db_path)
+        self.auth.load()
         self.cfg.paths.media_dir.mkdir(parents=True, exist_ok=True)
         s = self.settings.load()
         logging.getLogger("spookhub").setLevel(s.log_level.upper())

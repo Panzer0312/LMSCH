@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from spookhub.api.deps import get_hub
@@ -36,8 +36,22 @@ def state(hub: HubDep) -> dict[str, Any]:
 
 
 @router.post("/trigger")
-async def trigger(hub: HubDep) -> dict[str, Any]:
-    ok, msg = await hub.engine.trigger("api")
+async def trigger(
+    hub: HubDep,
+    token: str | None = None,
+    x_trigger_token: Annotated[str | None, Header()] = None,
+) -> dict[str, Any]:
+    """External trigger (PIR sensor etc.). Optional token via ?token= or X-Trigger-Token."""
+    if not hub.auth.valid_trigger(x_trigger_token or token):
+        raise HTTPException(401, "invalid trigger token")
+    ok, msg = await hub.engine.trigger("external")
+    return {"ok": ok, "message": msg}
+
+
+@router.post("/show/trigger")
+async def ui_trigger(hub: HubDep) -> dict[str, Any]:
+    """Dashboard TRIGGER button (covered by the UI PIN, not the external token)."""
+    ok, msg = await hub.engine.trigger("button")
     return {"ok": ok, "message": msg}
 
 

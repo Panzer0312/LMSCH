@@ -1,4 +1,4 @@
-import type { Board, Cue, Media, Profile, ProfileIn, Settings, LightState, ThumbsMeta, Waveform } from './types'
+import type { Board, Cue, Media, Profile, ProfileIn, Settings, LightState, ThumbsMeta, Waveform, Recommendation, ProfileExport } from './types'
 
 export class ApiError extends Error {
   status: number
@@ -40,6 +40,9 @@ export const api = {
     refresh: (mac: string) => post<Board>(`/api/boards/${mac}/refresh`),
     /** Board's current live state as a LightState (for 'capture from board'). */
     capture: (mac: string) => req<LightState>('GET', `/api/boards/${mac}/capture`),
+    recommendations: (mac: string) => req<Recommendation[]>('GET', `/api/boards/${mac}/recommendations`),
+    /** Writes to the board's /json/cfg — confirm with the user first. */
+    applyRecommendation: (mac: string, id: string) => post(`/api/boards/${mac}/recommendations/${id}/apply`),
   },
   profiles: {
     list: () => req<Profile[]>('GET', '/api/profiles'),
@@ -52,9 +55,13 @@ export const api = {
     setCues: (id: number, cues: Cue[]) => req<Profile>('PUT', `/api/profiles/${id}/cues`, cues),
     /** Start the real show on the projector at a position (activates the profile). */
     playFrom: (id: number, from_s: number) => post(`/api/profiles/${id}/play_from`, { from_s }),
+    /** Download URL (Content-Disposition attachment). */
+    exportUrl: (id: number) => `/api/profiles/${id}/export`,
+    /** 422 with a message mentioning the video when it can't be matched by filename: retry with media_id. */
+    import: (data: ProfileExport, media_id?: number | null) => post<Profile>('/api/profiles/import', { data, media_id: media_id ?? null }),
   },
   show: {
-    trigger: () => post<{ ok: boolean; message: string }>('/api/trigger'),
+    trigger: () => post<{ ok: boolean; message: string }>('/api/show/trigger'),
     play: (from_s = 0) => post('/api/show/play', { from_s }),
     stop: () => post('/api/show/stop'),
     seek: (t: number) => post('/api/show/seek', { t }),
@@ -66,6 +73,7 @@ export const api = {
     audition: (profile_id: number, t: number, playing: boolean) =>
       post<{ ok: boolean; message: string }>('/api/audition', { profile_id, t, playing }),
     auditionStop: () => post('/api/audition/stop'),
+    testPattern: (on: boolean) => post('/api/show/test_pattern', { on }),
   },
   settings: {
     get: () => req<Settings>('GET', '/api/settings'),
@@ -78,6 +86,7 @@ export const api = {
     thumbsUrl: (id: number) => `/api/media/${id}/thumbs.jpg`,
     thumbs: (id: number) => req<ThumbsMeta>('GET', `/api/media/${id}/thumbs`),
     waveform: (id: number) => req<Waveform>('GET', `/api/media/${id}/waveform`),
+    transcode: (id: number) => post(`/api/media/${id}/transcode`),
     /** XHR instead of fetch: fetch has no upload progress events. */
     upload: (file: File, onProgress: (frac: number) => void) =>
       new Promise<Media>((resolve, reject) => {
@@ -97,5 +106,26 @@ export const api = {
         fd.append('file', file)
         xhr.send(fd)
       }),
+  },
+  auth: {
+    status: () => req<{ pin_enabled: boolean }>('GET', '/api/auth/status'),
+    login: (pin: string) => post('/api/auth/login', { pin }),
+    logout: () => post('/api/auth/logout'),
+    /** null/empty clears the PIN. */
+    setPin: (pin: string | null) => req<{ pin_enabled: boolean }>('PUT', '/api/auth/pin', { pin }),
+    getTriggerToken: () => req<{ token: string | null }>('GET', '/api/auth/trigger_token'),
+    setTriggerToken: (token: string | null) => req<{ token: string | null }>('PUT', '/api/auth/trigger_token', { token }),
+  },
+  backup: {
+    downloadUrl: '/api/backup',
+    /** Server restarts after a successful restore; reload the page a few seconds later. */
+    restore: async (file: File): Promise<{ ok: boolean; notes: string[] }> => {
+      const fd = new FormData()
+      fd.append('file', file)
+      const r = await fetch('/api/backup/restore', { method: 'POST', body: fd })
+      const j = await r.json().catch(() => ({}))
+      if (!r.ok) throw new ApiError(j?.detail ?? `${r.status}`, r.status)
+      return j
+    },
   },
 }

@@ -4,10 +4,13 @@ Self-hosted Halloween controller. It plays a video on a projector with mpv and k
 WLED LED boards (ESP32) in sync over WiFi. Everything runs on one small Debian box. You control it
 from a phone or desktop browser.
 
-**Status: Milestones 1 and 2.** Board discovery and health, light profiles, video profiles, the
-time-pos-driven cue scheduler, dashboard with trigger and blackout, installer and systemd (M1).
-Visual timeline editor with waveform, thumbnails, drag editing, live audition and capture from
-board (M2). Polish items (M3) are not built yet.
+**Status: Milestones 1–3 built.**
+- **M1, core show.** Board discovery and health, light profiles, video profiles, the
+  time-pos-driven cue scheduler, dashboard with trigger and blackout, installer and systemd.
+- **M2, timeline.** Visual editor with waveform, thumbnails, drag editing, live audition and
+  capture from board.
+- **M3, polish.** Recommended-settings helper, transcoding, profile export and import, UI PIN and
+  trigger token, projector test pattern, backups, cue templates, PIR trigger sketches.
 
 ## Timeline editor
 
@@ -92,6 +95,35 @@ opens read-only.
 | Health check | Polling `/json/si`; the WLED WebSocket is not used (one code path, robust). |
 | Audio | ALSA directly. PipeWire needs a user session, which a system service doesn't have. |
 | Boards outside the new profile's selection | Left as they are on profile switch. |
+| Trigger token vs. dashboard | Separate endpoints. The token guards only the external trigger. |
+| Live audition while the show plays | Rejected. The projector show has priority. |
+
+## Operations features
+
+- **Recommended settings.** Boards page, "Check settings". Spookhub reads each board's `/json/cfg`
+  and offers a one-click fix after you confirm. The check today is "WiFi sleep disabled".
+- **Transcoding.** The Media page offers "Convert to H.264 1080p" for videos that are not H.264 or
+  HEVC, or are larger than 1080p. The media id stays the same, so profiles keep working.
+- **Export and import.** A profile exports as JSON with its cues. Videos are referenced by
+  filename. On import, Spookhub matches the filename or asks you to pick a video. Board-specific
+  targets for unknown boards are dropped.
+- **UI PIN.** Set it in Settings. Every API call and the WebSocket then need a session cookie,
+  which lasts a year per browser. Changing or removing the PIN logs everyone out. No PIN is set by
+  default.
+- **External trigger.** `POST /api/trigger` stays outside the PIN. It takes an optional token via
+  `?token=` or the `X-Trigger-Token` header. The dashboard button uses its own endpoint, so a token
+  never locks you out of it. ESPHome and Arduino examples for a PIR sensor are in `docs/trigger/`.
+  ```bash
+  curl -X POST http://spookhub.local:8080/api/trigger -H "X-Trigger-Token: <token>"
+  ```
+- **Test pattern.** Settings, "Test pattern" shows an alignment grid for keystone and focus. It
+  stops any running show. Turning it off returns to the active profile's idle state.
+- **Backups.** Settings has a download for a zip with the database and config, without media.
+  Restoring stages the database and restarts the service; the swap happens at startup. The
+  service sees `/etc` read-only, so a restored config is saved to
+  `/var/lib/spookhub/config.restored.toml` for you to copy by hand.
+- **Cue templates.** Flicker, Strobe, Blackout, Blood red and Lightning flash are in the timeline
+  toolbar and the cue list. To add one, append an entry to `frontend/src/timeline/templates.ts`.
 
 ## Development
 

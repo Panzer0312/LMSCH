@@ -44,6 +44,12 @@ class WledClient:
         _, ms = await self._req("POST", ip, "/json/state", timeout, json=payload)
         return ms
 
+    async def get_cfg(self, ip: str, timeout: float = 3.0) -> dict[str, Any]:
+        return (await self._req("GET", ip, "/json/cfg", timeout))[0]
+
+    async def set_cfg(self, ip: str, body: dict[str, Any], timeout: float = 5.0) -> None:
+        await self._req("POST", ip, "/json/cfg", timeout, json=body)
+
     async def effects(self, ip: str, timeout: float = 3.0) -> list[str]:
         return (await self._req("GET", ip, "/json/effects", timeout))[0]
 

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ValidationError
 from sqlmodel import Session, col, select
 
 from spookhub import db
@@ -191,5 +193,84 @@ async def replace_cues(pid: int, cues: list[CueIn], hub: HubDep) -> ProfileOut:
         s.commit()
         out = to_out(s, p)
     await hub.engine.reload_if_active(pid)
+    _changed(hub)
+    return out
+
+
+EXPORT_FORMAT = "spookhub-profile"
+
+
+@router.get("/{pid}/export")
+def export_profile(pid: int) -> JSONResponse:
+    """Profile + cues as JSON. Videos are referenced by filename only (files are not included)."""
+    with db.session() as s:
+        p = to_out(s, _get(s, pid))
+        media = s.get(Media, p.media_id) if p.media_id else None
+        idle = s.get(Media, p.idle_media_id) if p.idle_media_id else None
+    data = {
+        "format": EXPORT_FORMAT,
+        "version": 1,
+        "profile": p.model_dump(exclude={"id", "sort", "cues", "media_id", "idle_media_id"}),
+        "cues": [c.model_dump(exclude={"id"}) for c in p.cues],
+        "media_filename": media.filename if media else None,
+        "idle_media_filename": idle.filename if idle else None,
+    }
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in p.name)[:40] or "profile"
+    return JSONResponse(
+        data, headers={"Content-Disposition": f'attachment; filename="{safe}.spookhub.json"'}
+    )
+
+
+class ImportIn(BaseModel):
+    data: dict[str, Any]
+    media_id: int | None = None  # overrides filename matching
+    idle_media_id: int | None = None
+
+
+def _media_by_name(s: Session, name: str | None) -> int | None:
+    if not name:
+        return None
+    m = s.exec(select(Media).where(Media.filename == name).order_by(col(Media.id).desc())).first()
+    return m.id if m else None
+
+
+@router.post("/import", status_code=201)
+def import_profile(body: ImportIn, hub: HubDep) -> ProfileOut:
+    d = body.data
+    if d.get("format") != EXPORT_FORMAT:
+        raise HTTPException(422, "not a Spookhub profile export")
+    try:
+        prof = ProfileIn.model_validate(d.get("profile", {}))
+        cues = [CueIn.model_validate(c) for c in d.get("cues", [])]
+    except ValidationError as e:
+        raise HTTPException(422, f"invalid profile data: {e.errors()[0]['msg']}") from e
+    with db.session() as s:
+        if prof.type == ProfileType.video:
+            prof.media_id = body.media_id or _media_by_name(s, d.get("media_filename"))
+            prof.idle_media_id = body.idle_media_id or _media_by_name(
+                s, d.get("idle_media_filename")
+            )
+            if prof.media_id is None:
+                raise HTTPException(
+                    422, f"video '{d.get('media_filename')}' not found; choose a video to use"
+                )
+        # Board-specific targets only make sense on the same boards; unknown MACs are dropped.
+        known = set(hub.boards.boards)
+        prof.selection.macs = [m for m in prof.selection.macs if m in known]
+        prof.overrides = {k: v for k, v in prof.overrides.items() if k in known}
+        last = s.exec(select(Profile).order_by(col(Profile.sort).desc())).first()
+        p = Profile(name=prof.name, sort=(last.sort + 1) if last else 0)
+        _apply(p, prof, s)
+        s.add(p)
+        s.commit()
+        s.refresh(p)
+        for c in cues:
+            if not c.target.all:
+                c.target.macs = [m for m in c.target.macs if m in known]
+                if not c.target.macs:
+                    continue
+            s.add(_cue_row(p.id or 0, c))
+        s.commit()
+        out = to_out(s, p)
     _changed(hub)
     return out

@@ -70,6 +70,8 @@ export interface Media {
   height: number
   codec: string
   used_by: string[]
+  needs_transcode: boolean // not H.264/HEVC or above 1080p
+  transcode: { state: 'running' | 'failed'; progress: number; error: string | null } | null
 }
 
 export type Phase = 'none' | 'lights' | 'idle' | 'playing' | 'paused' | 'blackout'
@@ -77,6 +79,7 @@ export type Phase = 'none' | 'lights' | 'idle' | 'playing' | 'paused' | 'blackou
 export interface ShowState {
   phase: Phase
   blackout: boolean
+  test_pattern: boolean
   profile: { id: number; name: string; type: ProfileType; mode: PlaybackMode } | null
   position: number | null
   duration: number | null
@@ -100,3 +103,15 @@ export interface ShowEvent { ts: number; level: 'info' | 'warn' | 'error'; messa
 
 export interface ThumbsMeta { count: number; interval: number; tile_w: number; tile_h: number }
 export interface Waveform { rate: number; peaks: number[] } // peaks per second, 0..1
+
+export interface Recommendation { id: string; title: string; ok: boolean; detail: string; fixable: boolean }
+
+/** Contents of a profile export file (GET /api/profiles/:id/export). */
+export interface ProfileExport {
+  format: 'spookhub-profile'
+  version: number
+  profile: Omit<ProfileIn, 'media_id' | 'idle_media_id'>
+  cues: Cue[]
+  media_filename: string | null
+  idle_media_filename: string | null
+}

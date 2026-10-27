@@ -1,12 +1,12 @@
-import { useCallback, useEffect, useState } from 'react'
+import { type ChangeEvent, useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { api } from '../api'
+import { api, ApiError } from '../api'
 import { CueList } from '../components/CueList'
 import { LightStateEditor } from '../components/LightStateEditor'
 import { ErrorText, Section, Toggle } from '../components/ui'
 import { fmtTime, useAction } from '../lib'
 import { useAdoptedBoards, useLive } from '../live'
-import type { LightState, Media, PlaybackMode, Profile, ProfileIn } from '../types'
+import type { LightState, Media, PlaybackMode, Profile, ProfileExport, ProfileIn } from '../types'
 
 const modeLabel: Record<PlaybackMode, string> = { once: 'Play once', loop: 'Loop', idle_trigger: 'Idle + trigger' }
 
@@ -37,9 +37,70 @@ function ProfileList() {
 
   const act = (fn: () => Promise<unknown>) => run(async () => { await fn(); await load() })
 
+  const [pending, setPending] = useState<{ data: ProfileExport; message: string } | null>(null)
+  const [importMedia, setImportMedia] = useState<Media[]>([])
+  const [mediaId, setMediaId] = useState<number | ''>('')
+
+  const onImportFile = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    setPending(null)
+    const p = await run(async () => {
+      let data: ProfileExport
+      try {
+        data = JSON.parse(await file.text()) as ProfileExport
+      } catch {
+        throw new Error('Not a valid export file')
+      }
+      try {
+        return await api.profiles.import(data)
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 422 && data?.profile?.type === 'video') {
+          setImportMedia(await api.media.list())
+          setMediaId('')
+          setPending({ data, message: err.message })
+          return undefined
+        }
+        throw err
+      }
+    })
+    if (p) navigate(`/profiles/${p.id}`)
+  }
+
+  const importWithMedia = async () => {
+    if (!pending || mediaId === '') return
+    const p = await run(() => api.profiles.import(pending.data, mediaId))
+    if (p) navigate(`/profiles/${p.id}`)
+  }
+
   return (
-    <Section title="Profiles" actions={<button className="btn btn-primary" onClick={() => navigate('/profiles/new')}>New profile</button>}>
+    <Section title="Profiles" actions={
+      <>
+        <label className={`btn cursor-pointer ${busy ? 'pointer-events-none opacity-40' : ''}`}>
+          Import…
+          <input type="file" accept=".json,application/json" hidden onChange={onImportFile} />
+        </label>
+        <button className="btn btn-primary" onClick={() => navigate('/profiles/new')}>New profile</button>
+      </>
+    }>
       <ErrorText error={error} />
+      {pending && (
+        <div className="card space-y-3">
+          <p className="text-sm">{pending.message}</p>
+          <div>
+            <span className="label">Video</span>
+            <select className="input" value={mediaId} onChange={(e) => setMediaId(e.target.value === '' ? '' : Number(e.target.value))}>
+              <option value="">Select a video…</option>
+              {importMedia.map((m) => <option key={m.id} value={m.id}>{m.filename}</option>)}
+            </select>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button className="btn btn-primary" disabled={busy || mediaId === ''} onClick={importWithMedia}>Import with this video</button>
+            <button className="btn" onClick={() => setPending(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
       {profiles == null && <p className="text-sm text-mute">Loading…</p>}
       {profiles?.length === 0 && <p className="text-sm text-mute">No profiles yet.</p>}
       <div className="space-y-2">
@@ -60,6 +121,7 @@ function ProfileList() {
               <button className="btn" onClick={() => navigate(`/profiles/${p.id}`)}>Edit</button>
               {p.type === 'video' && <button className="btn" onClick={() => navigate(`/profiles/${p.id}/timeline`)}>Timeline</button>}
               <button className="btn" disabled={busy} onClick={() => act(() => api.profiles.duplicate(p.id))}>Duplicate</button>
+              <a className="btn" href={api.profiles.exportUrl(p.id)} download>Export</a>
               <button className="btn btn-danger" disabled={busy}
                 onClick={() => confirm(`Delete profile "${p.name}"?`) && act(() => api.profiles.remove(p.id))}>Delete</button>
             </div>
@@ -239,6 +301,7 @@ function ProfileEditor({ id }: { id: string }) {
           <ErrorText error={save.error} />
           <div className="flex flex-wrap items-center gap-3">
             <button type="submit" className="btn btn-primary" disabled={save.busy}>{save.busy ? 'Saving…' : isNew ? 'Create' : 'Save'}</button>
+            {!isNew && <a className="btn" href={api.profiles.exportUrl(Number(id))} download>Export</a>}
             {saved && <span className="text-sm text-slime">Saved</span>}
           </div>
         </form>

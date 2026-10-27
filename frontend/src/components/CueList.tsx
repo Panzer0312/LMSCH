@@ -4,6 +4,7 @@ import type { Board, Cue, LightState, Profile } from '../types'
 import { LightStateEditor } from './LightStateEditor'
 import { ErrorText } from './ui'
 import { useAction } from '../lib'
+import { CUE_TEMPLATES, resolveTemplate } from '../timeline/templates'
 
 interface Row { key: number; cue: Cue }
 
@@ -76,12 +77,12 @@ export function CueList({ profile, boards, onSaved }: { profile: Profile; boards
     setRows((rs) => rs.map((r) => (r.key === key ? { ...r, cue: { ...r.cue, ...patch } } : r)))
   }
 
-  const add = () => {
+  const add = (state: LightState = { on: true, bri: 255 }, duration_s: number | null = null) => {
     setSaved(false)
     const last = rows.reduce((m, r) => Math.max(m, isFinite(r.cue.start_s) ? r.cue.start_s : 0), -1)
     const cue: Cue = {
-      start_s: last < 0 ? 0 : last + 1, duration_s: null, target: { all: true, macs: [] },
-      state: { on: true, bri: 255 }, transition_ms: null,
+      start_s: last < 0 ? 0 : last + 1, duration_s, target: { all: true, macs: [] },
+      state, transition_ms: null,
     }
     setRows((rs) => [...rs, { key: nextKey++, cue }])
   }
@@ -122,7 +123,15 @@ export function CueList({ profile, boards, onSaved }: { profile: Profile; boards
           {!dirty && saved && <span className="ml-2 text-sm font-normal text-slime">Saved</span>}
         </h2>
         <div className="flex flex-wrap gap-2">
-          <button type="button" className="btn" onClick={add}>Add cue</button>
+          <button type="button" className="btn" onClick={() => add()}>Add cue</button>
+          <select className="input w-auto" value="" aria-label="Add from template"
+            onChange={(e) => {
+              const t = CUE_TEMPLATES.find((x) => x.id === e.target.value)
+              if (t) add(resolveTemplate(t, boards), t.duration_s)
+            }}>
+            <option value="">Add from template ▾</option>
+            {CUE_TEMPLATES.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
           <button type="button" className="btn btn-primary" disabled={busy || !dirty || errors.size > 0} onClick={save}>
             {busy ? 'Saving…' : 'Save cues'}
           </button>

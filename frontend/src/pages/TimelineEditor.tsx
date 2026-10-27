@@ -6,8 +6,9 @@ import { fmtTime, useAction } from '../lib'
 import { useAdoptedBoards } from '../live'
 import { CuePanel, MultiPanel } from '../timeline/CuePanel'
 import { ALL_LANE, clamp, fromServer, newKey, overlapKeys, round3, toServer, useHistory, type Lane, type TLCue, isDragging } from '../timeline/model'
+import { CUE_TEMPLATES, resolveTemplate } from '../timeline/templates'
 import { TimelineView } from '../timeline/TimelineView'
-import type { CueTarget, Media, Profile } from '../types'
+import type { CueTarget, LightState, Media, Profile } from '../types'
 
 const FRAME = 1 / 30
 const MOBILE_Q = '(max-width: 767px)'
@@ -149,14 +150,19 @@ function Editor({ profile, media, mediaId }: { profile: Profile; media: Media | 
   const zoom = (f: number) => setPxPerSec((p) => clamp(p * f, 5, 400))
 
   const selCues = doc.filter((c) => selected.has(c.key))
-  const addCue = (t: number, target: CueTarget) => {
-    const c: TLCue = { key: newKey(), start_s: round3(Math.max(0, t)), duration_s: null, target, state: { on: true, bri: 255 }, transition_ms: null }
+  const addCue = (t: number, target: CueTarget, state: LightState = { on: true, bri: 255 }, duration_s: number | null = null) => {
+    const c: TLCue = { key: newKey(), start_s: round3(Math.max(0, t)), duration_s, target, state, transition_ms: null }
     commit([...doc, c])
     setSelected(new Set([c.key]))
   }
-  const addAtPlayhead = () => {
+  const playheadTarget = () => {
     const one = selCues.length === 1 ? selCues[0] : null
-    addCue(now(), one && !one.target.all && one.target.macs.length ? laneTarget(one.target.macs[0]) : laneTarget(ALL_LANE))
+    return one && !one.target.all && one.target.macs.length ? laneTarget(one.target.macs[0]) : laneTarget(ALL_LANE)
+  }
+  const addAtPlayhead = () => addCue(now(), playheadTarget())
+  const addTemplate = (tid: string) => {
+    const t = CUE_TEMPLATES.find((x) => x.id === tid)
+    if (t) addCue(now(), playheadTarget(), resolveTemplate(t, boards), t.duration_s)
   }
   const deleteSel = () => {
     if (!selCues.length) return
@@ -279,6 +285,10 @@ function Editor({ profile, media, mediaId }: { profile: Profile; media: Media | 
                 <button type="button" className="btn" title="Undo (Ctrl+Z)" disabled={!canUndo} onClick={undo}>Undo</button>
                 <button type="button" className="btn" title="Redo (Ctrl+Shift+Z)" disabled={!canRedo} onClick={redo}>Redo</button>
                 <button type="button" className="btn" title="C" onClick={addAtPlayhead}>Add cue at playhead</button>
+                <select className="btn" value="" title="Insert template cue at playhead" onChange={(e) => addTemplate(e.target.value)}>
+                  <option value="">Template ▾</option>
+                  {CUE_TEMPLATES.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
               </>
             )}
           </div>

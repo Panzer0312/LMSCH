@@ -1,13 +1,15 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { api } from '../api'
 import { useLive } from '../live'
-import type { Board, BoardStatus } from '../types'
+import type { Board, BoardStatus, Recommendation } from '../types'
 import { ErrorText, Section, SignalBars, StatusDot } from '../components/ui'
 import { ago, useAction } from '../lib'
 
 const statusText: Record<BoardStatus, string> = {
   online: 'text-slime', degraded: 'text-pumpkin', offline: 'text-blood', unknown: 'text-mute',
 }
+
+type CheckResult = Recommendation[] | 'loading' | { error: string }
 
 function fmtMac(mac: string): string {
   const hex = mac.toLowerCase().replace(/[^0-9a-f]/g, '')
@@ -120,7 +122,49 @@ function DiscoveredRow({ board }: { board: Board }) {
   )
 }
 
-function BoardCard({ board }: { board: Board }) {
+function CheckList({ board, check, onCheck }: { board: Board; check: CheckResult; onCheck: () => Promise<void> }) {
+  const fix = useAction()
+
+  const doFix = async (rec: Recommendation) => {
+    if (!window.confirm(`Write this setting to ${board.name}? The board may reconnect briefly.`)) return
+    const r = await fix.run(() => api.boards.applyRecommendation(board.mac, rec.id))
+    if (r) await onCheck()
+  }
+
+  return (
+    <div className="space-y-2 rounded-lg border border-line p-3 text-xs">
+      {check === 'loading' ? (
+        <p className="text-mute">Checking settings…</p>
+      ) : !Array.isArray(check) ? (
+        <ErrorText error={check.error} />
+      ) : check.length === 0 ? (
+        <p className="text-mute">No checks available for this board.</p>
+      ) : (
+        <ul className="space-y-2">
+          {check.map((rec) => (
+            <li key={rec.id} className="flex items-start gap-2">
+              <span className={rec.ok ? 'text-slime' : 'text-pumpkin'} aria-label={rec.ok ? 'ok' : 'needs attention'}>
+                {rec.ok ? '✓' : '⚠'}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="font-medium">{rec.title}</p>
+                {rec.detail && <p className="text-mute">{rec.detail}</p>}
+              </div>
+              {!rec.ok && rec.fixable && (
+                <button className="btn shrink-0 px-2 py-1 text-xs" disabled={fix.busy} onClick={() => void doFix(rec)}>
+                  Fix
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      <ErrorText error={fix.error} />
+    </div>
+  )
+}
+
+function BoardCard({ board, check, onCheck }: { board: Board; check: CheckResult | undefined; onCheck: () => Promise<void> }) {
   const act = useAction()
   const [renaming, setRenaming] = useState(false)
   const [name, setName] = useState(board.name)
@@ -221,9 +265,13 @@ function BoardCard({ board }: { board: Board }) {
         {!renaming && (
           <button className="btn" onClick={() => { setName(board.name); setRenaming(true) }}>Rename</button>
         )}
+        <button className="btn" disabled={check === 'loading'} onClick={() => void onCheck()}>
+          {check === 'loading' ? 'Checking…' : 'Check settings'}
+        </button>
         <button className="btn btn-danger" disabled={act.busy} onClick={doRemove}>Remove</button>
       </div>
       <ErrorText error={act.error} />
+      {check !== undefined && <CheckList board={board} check={check} onCheck={onCheck} />}
     </li>
   )
 }
@@ -260,14 +308,59 @@ export default function Boards() {
     return () => window.clearInterval(t)
   }, [])
 
+  const [checks, setChecks] = useState<Record<string, CheckResult>>({})
+  const [checkedAll, setCheckedAll] = useState<string[] | null>(null)
+
+  const runCheck = useCallback(async (mac: string) => {
+    setChecks((p) => ({ ...p, [mac]: 'loading' }))
+    try {
+      const r = await api.boards.recommendations(mac)
+      setChecks((p) => ({ ...p, [mac]: r }))
+    } catch (e) {
+      setChecks((p) => ({ ...p, [mac]: { error: e instanceof Error ? e.message : String(e) } }))
+    }
+  }, [])
+
   const all = Object.values(boards).sort((a, b) => a.name.localeCompare(b.name))
   const discovered = all.filter((b) => !b.adopted)
   const adopted = all.filter((b) => b.adopted)
+  const onlineMacs = adopted.filter((b) => b.status === 'online').map((b) => b.mac)
+
+  const checkAll = async () => {
+    setCheckedAll(onlineMacs)
+    await Promise.all(onlineMacs.map((mac) => runCheck(mac)))
+  }
+
+  let summary: string | null = null
+  if (checkedAll) {
+    const res = checkedAll.map((mac) => checks[mac]).filter((r) => r !== undefined)
+    if (checkedAll.length === 0) summary = 'No online boards to check.'
+    else if (res.some((r) => r === 'loading')) summary = `Checking ${checkedAll.length} board${checkedAll.length === 1 ? '' : 's'}…`
+    else {
+      const need = res.filter((r) => Array.isArray(r) && r.some((x) => !x.ok)).length
+      const failed = res.filter((r) => r !== 'loading' && !Array.isArray(r)).length
+      const parts = [need === 0 ? 'All checked boards look good' : `${need} board${need === 1 ? '' : 's'} need${need === 1 ? 's' : ''} attention`]
+      if (failed > 0) parts.push(`${failed} could not be checked`)
+      summary = parts.join(' · ')
+    }
+  }
+  const anyLoading = checkedAll?.some((mac) => checks[mac] === 'loading') ?? false
 
   return (
     <div className="space-y-6">
       <Section title="Boards" actions={<Toolbar />}>
-        {null}
+        <div className="card space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-medium">Recommended settings</span>
+            <button className="btn ml-auto" disabled={anyLoading || onlineMacs.length === 0} onClick={() => void checkAll()}>
+              {anyLoading ? 'Checking…' : 'Check all boards'}
+            </button>
+          </div>
+          {summary && <p className="text-sm text-mute">{summary}</p>}
+          <p className="rounded-lg border border-pumpkin/40 bg-pumpkin/10 p-2 text-xs">
+            <b>Recommended:</b> give every board a DHCP reservation / static IP in your router, so it keeps the same address and doesn't drop out of shows.
+          </p>
+        </div>
       </Section>
 
       {discovered.length > 0 && (
@@ -283,7 +376,9 @@ export default function Boards() {
           <p className="text-sm text-mute">No boards adopted yet. Scan the network or add one by IP.</p>
         ) : (
           <ul className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {adopted.map((b) => <BoardCard key={b.mac} board={b} />)}
+            {adopted.map((b) => (
+              <BoardCard key={b.mac} board={b} check={checks[b.mac]} onCheck={() => runCheck(b.mac)} />
+            ))}
           </ul>
         )}
       </Section>

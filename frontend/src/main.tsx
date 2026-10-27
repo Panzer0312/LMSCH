@@ -4,13 +4,16 @@ import { BrowserRouter } from 'react-router-dom'
 import './index.css'
 import App from './App'
 import { LiveProvider } from './store'
+import { LoginGate } from './components/LoginGate'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <BrowserRouter>
-      <LiveProvider>
-        <App />
-      </LiveProvider>
+      <LoginGate>
+        <LiveProvider>
+          <App />
+        </LiveProvider>
+      </LoginGate>
     </BrowserRouter>
   </StrictMode>,
 )

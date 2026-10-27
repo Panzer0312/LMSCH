@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ChangeEvent } from 'react'
 import { api } from '../api'
 import { useLive } from '../live'
 import type { Settings as SettingsT } from '../types'
-import { ErrorText, Section } from '../components/ui'
+import { ErrorText, Section, Toggle } from '../components/ui'
 import { useAction } from '../lib'
 
 const LOG_LEVELS = ['debug', 'info', 'warning', 'error']
@@ -31,6 +31,26 @@ export default function Settings() {
   const [saved, setSaved] = useState(false)
   const load = useAction()
   const save = useAction()
+  const tp = useAction()
+  const sec = useAction()
+  const tok = useAction()
+  const bak = useAction()
+  const [pinEnabled, setPinEnabled] = useState<boolean | null>(null)
+  const [pin, setPin] = useState('')
+  const [token, setToken] = useState('')
+  const [tokenSaved, setTokenSaved] = useState(false)
+  const [restoreNotes, setRestoreNotes] = useState<string[] | null>(null)
+
+  const { run: secRun } = sec
+  const { run: tokRun } = tok
+  useEffect(() => {
+    void secRun(() => api.auth.status()).then((r) => {
+      if (r) setPinEnabled(r.pin_enabled)
+    })
+    void tokRun(() => api.auth.getTriggerToken()).then((r) => {
+      if (r) setToken(r.token ?? '')
+    })
+  }, [secRun, tokRun])
 
   const [hadLiveSettings] = useState(() => live.settings != null)
 
@@ -87,6 +107,50 @@ export default function Settings() {
     }
   }
 
+  const onSetPin = async () => {
+    if (!pin.trim()) return sec.setError('Enter a PIN first.')
+    const r = await sec.run(() => api.auth.setPin(pin.trim()))
+    if (r) {
+      setPinEnabled(r.pin_enabled)
+      setPin('')
+    }
+  }
+
+  const onRemovePin = async () => {
+    if (!confirm('Remove the UI PIN? Anyone on the WLAN can then control Spookhub.')) return
+    const r = await sec.run(() => api.auth.setPin(null))
+    if (r) setPinEnabled(r.pin_enabled)
+  }
+
+  const onSaveToken = async () => {
+    setTokenSaved(false)
+    const r = await tok.run(() => api.auth.setTriggerToken(token.trim() || null))
+    if (r) {
+      setToken(r.token ?? '')
+      setTokenSaved(true)
+    }
+  }
+
+  const onGenerateToken = () => {
+    const b = new Uint8Array(12)
+    crypto.getRandomValues(b)
+    setTokenSaved(false)
+    setToken(Array.from(b, (x) => x.toString(16).padStart(2, '0')).join(''))
+  }
+
+  const onRestore = async (e: ChangeEvent<HTMLInputElement>) => {
+    const input = e.currentTarget
+    const file = input.files?.[0]
+    input.value = ''
+    if (!file) return
+    if (!confirm('Replace all profiles, cues and settings with this backup? Spookhub restarts.')) return
+    const r = await bak.run(() => api.backup.restore(file))
+    if (r) {
+      setRestoreNotes(r.notes ?? [])
+      window.setTimeout(() => location.reload(), 8000)
+    }
+  }
+
   return (
     <div className="space-y-6">
       <Section title="Settings">
@@ -137,8 +201,84 @@ export default function Settings() {
           {saved && <span className="text-sm text-slime">Saved</span>}
         </div>
         <ErrorText error={save.error} />
+      </Section>
 
-        <p className="text-xs text-mute">UI PIN, test pattern, backups arrive in a later version.</p>
+      <Section title="Projector">
+        <div className="card space-y-2">
+          <Toggle checked={live.show?.test_pattern ?? false} label="Test pattern"
+            onChange={(v) => void tp.run(() => api.show.testPattern(v))} />
+          <p className="text-xs text-mute">Alignment grid for keystone/focus. Stops any running show.</p>
+          <ErrorText error={tp.error} />
+        </div>
+      </Section>
+
+      <Section title="Security">
+        <div className="card space-y-3">
+          <div>
+            <label className="label" htmlFor="pin">UI PIN</label>
+            <p className="mb-2 text-sm">
+              {pinEnabled == null ? 'Checking…' : pinEnabled
+                ? <span className="text-slime">PIN enabled</span>
+                : <span className="text-pumpkin">No PIN set</span>}
+            </p>
+            <input id="pin" className="input" type="password" inputMode="numeric" autoComplete="new-password"
+              value={pin} onChange={(e) => setPin(e.target.value)} />
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button className="btn btn-primary" disabled={sec.busy || !pin.trim()} onClick={() => void onSetPin()}>Set PIN</button>
+            <button className="btn btn-danger" disabled={sec.busy || !pinEnabled} onClick={() => void onRemovePin()}>Remove PIN</button>
+          </div>
+          <p className="text-xs text-mute">No PIN = anyone on the WLAN can control Spookhub.</p>
+          <ErrorText error={sec.error} />
+        </div>
+
+        <div className="card space-y-3">
+          <div>
+            <label className="label" htmlFor="token">Trigger token</label>
+            <input id="token" className="input font-mono" type="text" autoComplete="off" spellCheck={false}
+              placeholder="empty = no token required"
+              value={token} onChange={(e) => { setTokenSaved(false); setToken(e.target.value) }} />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button className="btn btn-primary" disabled={tok.busy} onClick={() => void onSaveToken()}>Save</button>
+            <button className="btn" disabled={tok.busy} onClick={onGenerateToken}>Generate</button>
+            {tokenSaved && <span className="text-sm text-slime">Saved</span>}
+          </div>
+          <ErrorText error={tok.error} />
+          <div>
+            <p className="mb-1 text-xs text-mute">Example usage:</p>
+            <code className="block whitespace-pre-wrap break-all rounded-lg border border-line bg-bg p-2 text-xs">
+              {`curl -X POST http://${location.host}/api/trigger -H "X-Trigger-Token: ${token.trim() || '<token>'}"`}
+            </code>
+            <p className="mt-1 text-xs text-mute">ESPHome/Arduino sketches: see docs/trigger.</p>
+          </div>
+        </div>
+      </Section>
+
+      <Section title="Backup">
+        <div className="card space-y-3">
+          <div className="space-y-1">
+            <a className="btn" href={api.backup.downloadUrl} download>Download backup</a>
+            <p className="text-xs text-mute">database + config, without media files</p>
+          </div>
+          <div>
+            <label className="label" htmlFor="restore">Restore</label>
+            <input id="restore" className="input" type="file" accept=".zip" disabled={bak.busy || restoreNotes != null}
+              onChange={(e) => void onRestore(e)} />
+          </div>
+          {bak.busy && <p className="text-sm text-mute">Restoring…</p>}
+          {restoreNotes && (
+            <div className="space-y-1">
+              {restoreNotes.length > 0 && (
+                <ul className="list-disc pl-5 text-sm">
+                  {restoreNotes.map((n, i) => <li key={i}>{n}</li>)}
+                </ul>
+              )}
+              <p className="text-sm text-pumpkin">Restarting… the page reloads in 8 s</p>
+            </div>
+          )}
+          <ErrorText error={bak.error} />
+        </div>
       </Section>
     </div>
   )

@@ -1,0 +1,76 @@
+# Spookhub PIR trigger (ESPHome, ESP32 esp32dev)
+#
+# When the PIR sensor (HC-SR501 / AM312) on GPIO13 detects motion, this posts
+# to Spookhub's /api/trigger endpoint and flashes the status LED on GPIO2.
+#
+# Flash:   esphome run esphome-pir.yaml
+#          (first time over USB, then OTA updates work over WiFi)
+#
+# secrets.yaml (same directory):
+#   wifi_ssid: "MyNetwork"
+#   wifi_password: "supersecret"
+#   spookhub_token: "token-from-spookhub-settings"
+#   ota_password: "another-secret"
+#
+# Notes:
+# - Cooldown/retrigger lockout is enforced by Spookhub, so this node fires
+#   on every motion edge and does not debounce beyond delayed_off.
+# - If spookhub.local does not resolve (mDNS is flaky on some routers/ESP
+#   builds), replace it with the Spookhub host's IP, e.g. 192.168.1.10.
+# - ESPHome < 2025.x uses `headers:` instead of `request_headers:`.
+
+esphome:
+  name: spookhub-pir
+  friendly_name: Spookhub PIR
+
+esp32:
+  board: esp32dev
+
+logger:
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+# Optional: enable for Home Assistant integration.
+# api:
+#   encryption:
+#     key: !secret api_key
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  fast_connect: true
+  # Low latency: modem sleep adds 100+ ms to the first packet after idle.
+  power_save_mode: none
+
+http_request:
+  # User-Agent cannot be disabled; keep it short and identifiable.
+  useragent: spookhub-pir
+  timeout: 2s
+  # Plain HTTP on the LAN; no certificate bundle needed.
+  verify_ssl: false
+
+output:
+  - platform: gpio
+    id: status_led
+    pin: GPIO2
+
+binary_sensor:
+  - platform: gpio
+    name: "PIR Motion"
+    device_class: motion
+    pin: GPIO13
+    filters:
+      - delayed_off: 2s
+    on_press:
+      - output.turn_on: status_led
+      - http_request.post:
+          url: http://spookhub.local:8080/api/trigger
+          request_headers:
+            Content-Type: application/json
+            # Remove the next line if no trigger token is set in Spookhub.
+            X-Trigger-Token: !secret spookhub_token
+          body: "{}"
+      - delay: 200ms
+      - output.turn_off: status_led

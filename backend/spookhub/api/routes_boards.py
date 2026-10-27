@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from spookhub.api.deps import get_hub
 from spookhub.boards.client import WledError
+from spookhub.boards.recommend import run_checks
 from spookhub.hub import Hub
 from spookhub.models import LightState
 from spookhub.tasks import spawn
@@ -116,3 +117,33 @@ async def capture(mac: str, hub: HubDep) -> LightState:
         ix=main.get("ix"),
         colors=cols[:3] or None,  # type: ignore[arg-type]
     )
+
+
+@router.get("/{mac}/recommendations")
+async def recommendations(mac: str, hub: HubDep) -> list[dict[str, Any]]:
+    b = _board(hub, mac)
+    try:
+        cfg = await hub.wled.get_cfg(b.ip)
+    except WledError as e:
+        raise HTTPException(502, f"board unreachable: {e}") from e
+    return [
+        {"id": c.id, "title": c.title, "ok": c.ok, "detail": c.detail, "fixable": c.fix is not None}
+        for c in run_checks(cfg)
+    ]
+
+
+@router.post("/{mac}/recommendations/{check_id}/apply")
+async def apply_recommendation(mac: str, check_id: str, hub: HubDep) -> dict[str, bool]:
+    b = _board(hub, mac)
+    try:
+        cfg = await hub.wled.get_cfg(b.ip)
+        check = next((c for c in run_checks(cfg) if c.id == check_id), None)
+        if check is None:
+            raise HTTPException(404, "unknown check")
+        if check.fix is None:
+            return {"ok": True}
+        await hub.wled.set_cfg(b.ip, check.fix)
+    except WledError as e:
+        raise HTTPException(502, f"board unreachable: {e}") from e
+    hub.bus.event("info", f"Applied '{check.title}' on {b.name or mac}", mac=mac)
+    return {"ok": True}

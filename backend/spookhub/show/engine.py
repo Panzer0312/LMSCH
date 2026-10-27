@@ -63,6 +63,7 @@ class Phase(enum.StrEnum):
     playing = "playing"
     paused = "paused"
     blackout = "blackout"
+    test_pattern = "test_pattern"
 
 
 @dataclass
@@ -145,6 +146,7 @@ class ShowEngine:
         self.timeline: Timeline | None = None
         self.phase = Phase.none
         self.blackout = False
+        self.test_pattern = False
         self.cooldown_until = 0.0
         self.playing_main = False
         self._last_cue: dict[str, int | None] = {}
@@ -182,6 +184,7 @@ class ShowEngine:
         return {
             "phase": self.phase.value,
             "blackout": self.blackout,
+            "test_pattern": self.test_pattern,
             "profile": None
             if a is None
             else {"id": a.id, "name": a.name, "type": a.type.value, "mode": a.mode.value},
@@ -212,6 +215,7 @@ class ShowEngine:
                 raise KeyError(profile_id)
             await self._stop_scheduler()
             self.audition = None
+            self.test_pattern = False
             self.active = prof
             self.timeline = Timeline(prof.cues, self.boards.adopted_macs())
             if self.settings.value.active_profile_id != profile_id:
@@ -290,6 +294,8 @@ class ShowEngine:
         a = self.active
         if self.blackout:
             return False, "blackout active"
+        if self.test_pattern:
+            return False, "test pattern showing"
         if not a or a.type != ProfileType.video:
             return False, "no video profile active"
         if a.mode != PlaybackMode.idle_trigger:
@@ -513,6 +519,35 @@ class ShowEngine:
         if not self.active or self.active.id != profile_id:
             await self.activate(profile_id, autostart=False)
         await self.play(t)
+
+    # ----- test pattern -----
+
+    async def set_test_pattern(self, on: bool, image: str | None = None) -> None:
+        """Projector alignment grid. Stops any show; lights stay as they are."""
+        if on:
+            assert image
+            async with self._lock:
+                await self._stop_scheduler()
+                if self.playing_main:
+                    self.playing_main = False
+                    self._apply_base(critical=False)
+                self.audition = None
+                self.test_pattern = True
+                self.phase = Phase.test_pattern
+                await self._safe(self.player.load(image, loop=True))
+            self.bus.event("info", "Test pattern on")
+        elif self.test_pattern:
+            self.test_pattern = False
+            self.bus.event("info", "Test pattern off")
+            if self.blackout:
+                self.phase = Phase.blackout
+                await self._safe(self.player.black())
+            elif self.active:
+                await self.activate(self.active.id, autostart=False)
+            else:
+                self.phase = Phase.none
+                await self._safe(self.player.black())
+        self._publish()
 
     # ----- blackout / master -----
 

@@ -11,11 +11,13 @@ export interface Live {
   profilesRev: number
   mediaRev: number
   boardsRev: number
+  /** media id -> transcode progress 0..1 (live, from WS) */
+  transcodes: Record<number, number>
 }
 
 export const initial: Live = {
   connected: false, boards: {}, show: null, settings: null, events: [],
-  profilesRev: 0, mediaRev: 0, boardsRev: 0,
+  profilesRev: 0, mediaRev: 0, boardsRev: 0, transcodes: {},
 }
 export const Ctx = createContext<Live>(initial)
 
@@ -42,6 +44,7 @@ export function reduce(s: Live, m: Msg): Live {
     case 'event': return { ...s, events: [...s.events, m.data].slice(-20) }
     case 'profiles_changed': return { ...s, profilesRev: s.profilesRev + 1 }
     case 'media_changed': return { ...s, mediaRev: s.mediaRev + 1 }
+    case 'transcode': return { ...s, transcodes: { ...s.transcodes, [m.data.id]: m.data.progress } }
     default: return s
   }
 }

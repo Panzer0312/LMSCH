@@ -5,6 +5,7 @@ import contextlib
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from spookhub.auth import COOKIE
 from spookhub.hub import Hub
 
 router = APIRouter()
@@ -13,6 +14,9 @@ router = APIRouter()
 @router.websocket("/ws")
 async def ws(websocket: WebSocket) -> None:
     hub: Hub = websocket.app.state.hub
+    if not hub.auth.valid_session(websocket.cookies.get(COOKIE)):
+        await websocket.close(code=4401)
+        return
     await websocket.accept()
     q = hub.bus.subscribe()
     try:
