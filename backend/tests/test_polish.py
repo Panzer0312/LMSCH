@@ -136,3 +136,23 @@ async def test_transcode_keeps_media_id(client, tmp_path):  # noqa: F811
     after = next(i for i in items if i["id"] == m["id"])
     assert after["codec"] == "h264" and not after["needs_transcode"]
     assert after["transcode"] is None
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
+async def test_transcode_odd_dimensions(tmp_path):
+    # Screencasts often have odd sizes; libx264 with yuv420p refuses those.
+    from spookhub.media.transcode import transcode
+
+    src, dest = tmp_path / "cast.webm", tmp_path / "cast.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=321x241:rate=25",
+         "-t", "1", "-c:v", "libvpx-vp9", str(src)],
+        check=True,
+    )  # fmt: skip
+    await transcode(src, dest, 1.0, lambda _: None)
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0",
+         str(dest)],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()  # fmt: skip
+    assert out == "320,240"

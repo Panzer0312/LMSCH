@@ -21,7 +21,11 @@ def needs_transcode(m: Media) -> bool:
 async def transcode(
     src: Path, dest: Path, duration: float, on_progress: Callable[[float], None]
 ) -> None:
-    vf = "scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease,format=yuv420p"
+    # yuv420p needs even dimensions; screencasts often have odd ones.
+    vf = (
+        "scale='min(1920,iw)':'min(1080,ih)'"
+        ":force_original_aspect_ratio=decrease:force_divisible_by=2,format=yuv420p"
+    )
     proc = await asyncio.create_subprocess_exec(
         "ffmpeg", "-v", "error", "-y", "-i", str(src),
         "-vf", vf, "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-profile:v", "high",
