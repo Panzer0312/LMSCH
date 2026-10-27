@@ -34,14 +34,13 @@ def init_engine(db_path: Path) -> Engine:
 
 
 def _run_migrations(db_path: Path) -> None:
+    from alembic import command
     from alembic.config import Config as AlembicConfig
 
-    from alembic import command
-
-    ini = Path(__file__).resolve().parent.parent / "alembic.ini"
-    cfg = AlembicConfig(str(ini))
+    # Migrations ship inside the package so a non-editable install (the hub) finds them too.
+    cfg = AlembicConfig()
     cfg.attributes["skip_logging"] = True
-    cfg.set_main_option("script_location", str(ini.parent / "alembic"))
+    cfg.set_main_option("script_location", str(Path(__file__).resolve().parent / "migrations"))
     cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
     command.upgrade(cfg, "head")
 
