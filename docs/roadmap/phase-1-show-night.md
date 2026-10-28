@@ -10,6 +10,9 @@ devices takes minutes and needs no SSH. Sound and light can be adjusted fast fro
 - [ ] **SPIKE** DRM: which connector and mode mpv picks, and if DRM master conflicts with getty.
 - [ ] **SPIKE** ALSA: device names from `aplay -L` vs mpv `audio-device-list`; HDMI vs analog.
 - [ ] **SPIKE** WLED `/json/cfg` key for WiFi sleep on the installed firmware. Fix `recommend.py` if it differs.
+- [ ] Fit `install.sh` to the git-pull workflow: install `nodejs npm`, rebuild `frontend/dist` whenever
+  `frontend/src`, `package-lock.json` or the build config changed (hash stamp file), not only when missing.
+  Print the deployed git commit at the end and expose it in `GET /api/state` + Settings footer.
 - [ ] `scripts/hubcheck.sh`: prints mpv version, `vainfo` summary, DRM connectors
   (`/sys/class/drm/card*-*/status`), `aplay -l`, free disk, time sync status. Used for bug reports.
 - **Accept:** e2e show (trigger → video + 3 boards in sync) runs on real hardware for 1 h without errors in journal.

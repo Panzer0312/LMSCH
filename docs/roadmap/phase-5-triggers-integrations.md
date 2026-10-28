@@ -1,7 +1,10 @@
 # Phase 5: Named triggers, schedule, integrations
 
-**Assumed scope.** The request listed phase 4 and was cut off before phase 5. This phase collects
-the remaining brainstorm items. Re-scope freely.
+> **OPTIONAL. Out of scope for now.** Setting up additional triggers and integrations is not planned
+> currently. Do not start this phase without an explicit go from the user. Manual buttons for
+> one-shot moments are covered by phase 4, task 4.5.
+
+Collects the remaining brainstorm items for later.
 
 ## 5.1 Named triggers
 

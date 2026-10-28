@@ -2,13 +2,24 @@
 
 ## Deploy to mini PC
 
-1. Debian 13 minimal with SSH, a sudo user.
-2. First time: `scripts/deploy.sh user@minipc --install`. Builds frontend, rsyncs, runs
-   `scripts/install.sh` (idempotent): apt packages (mpv, ffmpeg, avahi, alsa-utils, VA-API driver),
-   `spookhub` user (groups video, render, audio), venv, `/etc/spookhub/config.toml`, systemd unit,
-   console blanking off, sleep targets masked. Prints URL.
-3. Updates: `scripts/deploy.sh user@minipc` (sync, reinstall, restart).
-4. Reboot once so `consoleblank=0` applies.
+**Current workflow (in use):** clone the repo on the hub once, then for every update:
+
+```bash
+cd ~/spookhub && git pull && sudo scripts/install.sh
+```
+
+`scripts/install.sh` is idempotent: apt packages (mpv, ffmpeg, avahi, alsa-utils, VA-API driver),
+`spookhub` user (groups video, render, audio), copies the repo to `/opt/spookhub`, venv,
+`/etc/spookhub/config.toml` (kept if present), systemd unit, console blanking off, sleep targets
+masked, restarts the service, prints the URL. Reboot once after the first run so `consoleblank=0` applies.
+
+> **Known issue:** `frontend/dist` is gitignored and the installer builds it only when missing, and
+> it does not install Node. After a `git pull`, frontend changes are not rebuilt. Until roadmap task
+> 1.1 fixes it, rebuild by hand: `cd frontend && npm ci && npm run build` (needs `nodejs npm`), then
+> rerun the installer.
+
+**Alternative:** `scripts/deploy.sh user@minipc [--install]` builds the frontend on the dev
+machine, rsyncs and runs the installer remotely.
 
 | What | Where |
 |---|---|

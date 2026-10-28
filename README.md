@@ -18,10 +18,14 @@ Boards page → add `127.0.0.1:9001`, `:9002`, `:9003` by IP → adopt.
 
 ## Deploy
 
+Current workflow: pull the repo on the hub and run the installer there.
+
 ```bash
-scripts/deploy.sh user@minipc --install   # first time
-scripts/deploy.sh user@minipc             # updates
+cd ~/spookhub && git pull && sudo scripts/install.sh
 ```
+
+Alternative from the dev machine: `scripts/deploy.sh user@minipc [--install]`.
+Details and known issues: [docs/operations.md](docs/operations.md).
 
 ## Docs
 

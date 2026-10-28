@@ -85,6 +85,17 @@ geometry so the corrected result is what you see. Still images as PNG, moving on
 - [ ] Media page shows a warning badge when a video's aspect differs from the default display profile, with "create display profile for this video".
 - [ ] "Black check": scan a video's frames (ffmpeg `signalstats`, sampled) and warn when the background is not near black (light spill on scrim).
 
+## 3.6 README: Debian install requirements (last task of the phase)
+
+- [ ] README section "Debian 13 hub: required packages", one table: package, why, installed by
+  `install.sh` yes/no. Covers everything up to and including phase 3: mpv (minimum version from the
+  3.0 spike), ffmpeg, python3-venv, avahi-daemon, libnss-mdns, alsa-utils, VA-API driver, vainfo,
+  Mesa GPU drivers needed by the warp shader (`libgl1-mesa-dri`, `libegl1`, `mesa-vulkan-drivers` if
+  `gpu-next`), nodejs + npm (frontend build on the hub).
+- [ ] Same list for a Debian desktop used for development (adds `uv`, mpv windowed context).
+- [ ] `install.sh` apt list matches the README table exactly.
+- **Accept:** a fresh Debian 13 minimal box gets a working show by following only the README.
+
 ## Risks
 
 - Shader warp blurs at strong keystone; prefer optical keystone first, note in the UI hint.

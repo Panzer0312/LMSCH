@@ -37,6 +37,12 @@ cd backend && uv run pytest -q && uv run ruff check . && uv run ruff format --ch
 cd frontend && npx tsc -b && npm run lint
 ```
 
+## Deploy reality
+
+The user deploys by `git pull` on the hub and `sudo scripts/install.sh`. Everything the hub needs
+(packages, frontend build, migrations, config defaults) must come from the repo + `install.sh`,
+idempotently. New apt packages go into `install.sh` and the README Debian install list.
+
 ## Code rules
 
 - Python 3.13, FastAPI, asyncio, SQLModel + Alembic. Schema change ⇒ new Alembic revision in
