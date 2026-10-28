@@ -11,6 +11,7 @@ REMOTE_SRC="~/spookhub-src"
 
 echo "==> building frontend"
 (cd "$ROOT/frontend" && npm ci --silent && npm run build --silent)
+"$ROOT/scripts/frontend-hash.sh" > "$ROOT/frontend/dist/.build-hash"
 
 echo "==> syncing to $TARGET:$REMOTE_SRC"
 rsync -az --delete \

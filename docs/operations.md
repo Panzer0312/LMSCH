@@ -9,14 +9,13 @@ cd ~/spookhub && git pull && sudo scripts/install.sh
 ```
 
 `scripts/install.sh` is idempotent: apt packages (mpv, ffmpeg, avahi, alsa-utils, VA-API driver),
-`spookhub` user (groups video, render, audio), copies the repo to `/opt/spookhub`, venv,
+`spookhub` user (groups video, render, audio), frontend build if inputs changed, copies the repo to `/opt/spookhub`, venv,
 `/etc/spookhub/config.toml` (kept if present), systemd unit, console blanking off, sleep targets
 masked, restarts the service, prints the URL. Reboot once after the first run so `consoleblank=0` applies.
 
-> **Known issue:** `frontend/dist` is gitignored and the installer builds it only when missing, and
-> it does not install Node. After a `git pull`, frontend changes are not rebuilt. Until roadmap task
-> 1.1 fixes it, rebuild by hand: `cd frontend && npm ci && npm run build` (needs `nodejs npm`), then
-> rerun the installer.
+The installer installs `nodejs npm git` and rebuilds `frontend/dist` whenever a hash of the frontend
+inputs (`scripts/frontend-hash.sh`) differs from `frontend/dist/.build-hash`. npm and git run as the
+user who called sudo. It writes `/opt/spookhub/version.json` with the deployed commit.
 
 **Alternative:** `scripts/deploy.sh user@minipc [--install]` builds the frontend on the dev
 machine, rsyncs and runs the installer remotely.

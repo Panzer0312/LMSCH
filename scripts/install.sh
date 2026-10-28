@@ -18,7 +18,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends \
   mpv ffmpeg python3 python3-venv python3-pip avahi-daemon libnss-mdns alsa-utils \
-  ca-certificates rsync curl >/dev/null
+  nodejs npm git ca-certificates rsync curl >/dev/null
 # Intel VA-API: iHD for Broadwell+ (non-free), i965 for older chips. Install whatever exists.
 if grep -qi intel /proc/cpuinfo; then
   apt-get install -y -qq intel-media-va-driver >/dev/null 2>&1 \
@@ -33,21 +33,31 @@ for g in video render audio; do getent group "$g" >/dev/null && usermod -aG "$g"
 install -d -m 0755 "$APP" "$ETC"
 install -d -m 0750 -o "$USER_NAME" -g "$USER_NAME" "$DATA" "$DATA/media"
 
+log "Frontend"
+# frontend/dist is not in git. Rebuild whenever its inputs changed (git pull workflow), not only when
+# it is missing. Build as the user who ran sudo so node_modules in their checkout stay theirs.
+AS=()   # run as the invoking user: their checkout, their node_modules, git ownership check passes
+[[ -n "${SUDO_USER:-}" && "$SUDO_USER" != root ]] && AS=(sudo -u "$SUDO_USER" -H)
+WANT_HASH="$("$SRC/scripts/frontend-hash.sh")"
+HAVE_HASH="$(cat "$SRC/frontend/dist/.build-hash" 2>/dev/null || true)"
+if [[ ! -f "$SRC/frontend/dist/index.html" || "$WANT_HASH" != "$HAVE_HASH" ]]; then
+  echo "building frontend ($WANT_HASH)"
+  (cd "$SRC/frontend" && "${AS[@]}" npm ci --no-audit --no-fund --loglevel=error && "${AS[@]}" npm run build)
+  echo "$WANT_HASH" | "${AS[@]}" tee "$SRC/frontend/dist/.build-hash" >/dev/null
+else
+  echo "frontend up to date ($WANT_HASH)"
+fi
+
 log "Copying application to $APP"
 rsync -a --delete \
   --exclude '.git' --exclude 'node_modules' --exclude '.venv' --exclude '__pycache__' \
   --exclude '.pytest_cache' --exclude '.ruff_cache' --exclude 'frontend/src' --exclude '/venv' \
   "$SRC/" "$APP/"
 
-if [[ ! -f "$APP/frontend/dist/index.html" ]]; then
-  if command -v npm >/dev/null; then
-    log "Building frontend"
-    (cd "$SRC/frontend" && npm ci && npm run build) && rsync -a "$SRC/frontend/dist/" "$APP/frontend/dist/"
-  else
-    echo "WARNING: frontend/dist missing and npm not installed. Build it on the dev machine" \
-         "(scripts/deploy.sh does this) — the API still works without it."
-  fi
-fi
+# Version stamp shown in the UI so you can see which commit runs on the hub.
+COMMIT="$("${AS[@]}" git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+"${AS[@]}" git -C "$SRC" diff --quiet HEAD 2>/dev/null || COMMIT="$COMMIT-dirty"
+printf '{"commit": "%s", "installed_at": "%s"}\n' "$COMMIT" "$(date -Iseconds)" > "$APP/version.json"
 
 log "Python virtualenv"
 [[ -x "$APP/venv/bin/python" ]] || python3 -m venv "$APP/venv"
@@ -90,7 +100,7 @@ systemctl restart spookhub.service
 sleep 2
 systemctl is-active --quiet spookhub && STATUS="running" || STATUS="NOT running (journalctl -u spookhub -e)"
 IP="$(hostname -I | awk '{print $1}')"
-log "Done. Spookhub is $STATUS"
+log "Done. Spookhub $COMMIT is $STATUS"
 echo "  Open:  http://${IP}:${PORT}   or   http://$(hostname).local:${PORT}"
 echo "  Logs:  journalctl -u spookhub -f"
 echo "  A reboot applies the console-blanking kernel option."
