@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -111,17 +112,19 @@ async def put_settings(body: dict[str, Any], hub: HubDep) -> RuntimeSettings:
     body.pop("active_profile_id", None)  # owned by the engine
     body.pop("show_lock", None)  # owned by the lock endpoints
     s = hub.settings.value
+
     # Caps may change in the same request, so clamp against the effective new cap.
-    try:
-        vcap = float(body.get("volume_cap", s.volume_cap))
-        bcap = float(body.get("brightness_cap", s.brightness_cap))
-        # Also pulls an existing master down when only the cap is lowered.
-        body["master_volume"] = min(float(body.get("master_volume", s.master_volume)), vcap)
-        body["master_brightness"] = min(
-            float(body.get("master_brightness", s.master_brightness)), bcap
-        )
-    except (TypeError, ValueError) as e:
-        raise HTTPException(422, "numeric settings expected") from e
+    def num(key: str, default: float) -> float:
+        v = body.get(key, default)
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+            raise HTTPException(422, f"{key} must be a finite number")
+        return float(v)
+
+    vcap = num("volume_cap", s.volume_cap)
+    bcap = num("brightness_cap", s.brightness_cap)
+    # Also pulls an existing master down when only the cap is lowered.
+    body["master_volume"] = min(num("master_volume", s.master_volume), vcap)
+    body["master_brightness"] = min(num("master_brightness", s.master_brightness), bcap)
     try:
         return hub.settings.update(**body)
     except ValueError as e:

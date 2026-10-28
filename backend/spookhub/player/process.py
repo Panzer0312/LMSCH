@@ -94,6 +94,11 @@ class MpvPlayer:
             out.append(f"--drm-mode={self.drm_mode_override}")
         if self.audio_device_override:
             out.append(f"--audio-device={self.audio_device_override}")
+        # Via args so every (re)start comes up with the remembered audio state.
+        if self._volume is not None:
+            out.append(f"--volume={self._volume:g}")
+        if self._audio_delay_s is not None:
+            out.append(f"--audio-delay={self._audio_delay_s:g}")
         out.append(f"--input-ipc-server={self.socket_path}")
         out.append("--hr-seek=yes")
         out.extend(cfg.extra_args)
@@ -191,7 +196,6 @@ class MpvPlayer:
             except MpvError as exc:
                 log.warning("mpv ipc setup failed: %s", exc)
             else:
-                await self._reapply_audio(ipc)
                 self.ready.set()
                 self._notify("restart")
                 waiters = {
@@ -320,6 +324,8 @@ class MpvPlayer:
         ipc = await self._ready_ipc()
         # Per-file options (mpv >= 0.38 signature: url, flags, index, options) reset after the
         # file, so a loop restarts at 0 rather than at a global --start.
+        # Re-assert audio before the file starts so its first samples use the right level.
+        await self._reapply_audio(ipc)
         self._loading = True
         self.time_pos = None
         self.eof = False
@@ -327,8 +333,6 @@ class MpvPlayer:
         await ipc.command("loadfile", path, "replace", -1, opts)
         await ipc.set_property("pause", False)
         self.paused = False
-        # Some mpv builds reset audio props on a new file; cheap to re-assert.
-        await self._reapply_audio(ipc)
 
     async def _reapply_audio(self, ipc: MpvIpc) -> None:
         try:
@@ -349,11 +353,18 @@ class MpvPlayer:
         await self._reapply_audio(ipc)
 
     async def set_audio_device(self, name: str | None) -> None:
+        previous = self.audio_device_override
         self.audio_device_override = name
         ipc = self._ipc
         if not self.cfg.enabled or not self.ready.is_set() or ipc is None:
             return
-        await ipc.set_property("audio-device", name or "auto")
+        try:
+            await ipc.set_property("audio-device", name or "auto")
+        except MpvError as exc:
+            # A rejected device must not leak into the next restart's args.
+            self.audio_device_override = previous
+            log.warning("audio device %s rejected by mpv: %s", name, exc)
+            self.bus.event("warn", f"audio device {name} rejected by mpv")
 
     async def black(self) -> None:
         if not self.cfg.enabled:

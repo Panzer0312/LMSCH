@@ -1,5 +1,6 @@
 """Phase 1 task 1: mpv overrides, audio controls, caps, version."""
 
+import asyncio
 import json
 
 from spookhub.config import MpvCfg
@@ -45,6 +46,8 @@ async def test_player_remembers_and_reapplies_audio(cfg):
     p.ready.set()
     await p.load("x.mp4")
     assert ("volume", 80) in ipc.props and ("audio-delay", 0.2) in ipc.props
+    # Restart path: remembered state comes back via args.
+    assert "--volume=80" in p.args() and "--audio-delay=0.2" in p.args()
     ipc.props.clear()
     await p.apply_audio(50, -1.0)
     assert ipc.props == [("volume", 50), ("audio-delay", -1.0)]
@@ -110,3 +113,65 @@ def test_version_fallback_and_file(tmp_path):
 async def test_state_includes_version(client):  # noqa: F811
     v = (await client.get("/api/state")).json()["version"]
     assert "commit" in v
+
+
+async def test_rejected_audio_device_reverts():
+    from spookhub.player.ipc import MpvError
+
+    class BadIpc(FakeIpc):
+        async def set_property(self, name, value):
+            raise MpvError("nope")
+
+    bus = EventBus()
+    p = MpvPlayer(MpvCfg(enabled=True), bus)
+    p.audio_device_override = "good"
+    p._ipc = BadIpc()
+    p.ready.set()
+    await p.set_audio_device("bad")
+    assert p.audio_device_override == "good"
+    assert not any(a.startswith("--audio-device=bad") for a in p.args())
+    assert any("rejected" in e["message"] for e in bus.log)
+
+
+async def test_hub_listener_calls(client):  # noqa: F811
+    hub = client.hub
+    calls = []
+
+    async def restart():
+        calls.append("restart")
+
+    async def apply_audio(v, d):
+        calls.append(("audio", v, d))
+
+    async def set_dev(n):
+        calls.append(("dev", n))
+
+    hub.player.restart = restart
+    hub.player.apply_audio = apply_audio
+    hub.player.set_audio_device = set_dev
+
+    hub.settings.update(master_volume=70, volume_cap=40)
+    await wait_for(lambda: ("audio", 40, 0.0) in calls)
+    calls.clear()
+    hub.settings.update(master_volume=30)
+    await wait_for(lambda: ("audio", 30, 0.0) in calls)
+    hub.settings.update(mpv_audio_device="alsa/z")
+    await wait_for(lambda: ("dev", "alsa/z") in calls)
+    await asyncio.sleep(0.1)
+    assert "restart" not in calls
+    hub.settings.update(mpv_vo="gpu", mpv_drm_connector="HDMI-A-1")
+    await wait_for(lambda: "restart" in calls)
+    await asyncio.sleep(0.1)
+    assert calls.count("restart") == 1
+
+
+async def test_non_finite_settings_rejected(client):  # noqa: F811
+    for bad in (True, "x", None):
+        r = await client.put("/api/settings", json={"master_volume": bad})
+        assert r.status_code == 422
+    r = await client.put(
+        "/api/settings",
+        content='{"volume_cap": NaN}',
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 422

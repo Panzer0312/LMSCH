@@ -119,13 +119,16 @@ class Hub:
             self.boards.push_all()
         if old.log_level != new.log_level:
             logging.getLogger("spookhub").setLevel(new.log_level.upper())
+        restart = False  # one restart even if several display settings change together
         if (old.mpv_vo, old.mpv_gpu_context) != (new.mpv_vo, new.mpv_gpu_context):
             self.player.vo_override = new.mpv_vo
             self.player.gpu_context_override = new.mpv_gpu_context
-            spawn(self.player.restart())
+            restart = True
         if (old.mpv_drm_connector, old.mpv_drm_mode) != (new.mpv_drm_connector, new.mpv_drm_mode):
             self.player.drm_connector_override = new.mpv_drm_connector
             self.player.drm_mode_override = new.mpv_drm_mode
+            restart = True
+        if restart:
             spawn(self.player.restart())
         if old.mpv_audio_device != new.mpv_audio_device:
             spawn(self.player.set_audio_device(new.mpv_audio_device))
