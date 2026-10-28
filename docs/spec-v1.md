@@ -1,3 +1,6 @@
+> **Frozen.** Original build spec for M1–M3 (all built). Kept for the reasoning behind requirements.
+> Current behavior lives in `docs/architecture.md` and `docs/features.md`; new work in `docs/roadmap/`.
+
 # Spookhub: Halloween Light & Projection Controller
 
 You are building a production-ready, self-hosted controller that syncs a projector video with several WLED-based LED controllers (ESP32) over WiFi. Read this entire spec before writing code. Start with a short implementation plan, then build in the milestone order at the bottom. **Hard deadline: it must run reliably on October 31.** Milestone 1 must be fully working and deployable before you start Milestone 2. Never leave the project in a broken state between milestones.
