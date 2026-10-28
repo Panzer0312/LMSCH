@@ -41,6 +41,12 @@ class MpvPlayer:
         self.on_change: Callable[[str], None] | None = None
         self.vo_override: str | None = None
         self.gpu_context_override: str | None = None
+        self.drm_connector_override: str | None = None
+        self.drm_mode_override: str | None = None
+        self.audio_device_override: str | None = None
+        # Last applied audio state; re-sent after every (re)start and load().
+        self._volume: float | None = None
+        self._audio_delay_s: float | None = None
         self.ready: asyncio.Event = asyncio.Event()
         self._ipc: MpvIpc | None = None
         self._proc: asyncio.subprocess.Process | None = None
@@ -82,6 +88,12 @@ class MpvPlayer:
         out.append(f"--hwdec={cfg.hwdec}")
         if cfg.ao:
             out.append(f"--ao={cfg.ao}")
+        if self.drm_connector_override:
+            out.append(f"--drm-connector={self.drm_connector_override}")
+        if self.drm_mode_override:
+            out.append(f"--drm-mode={self.drm_mode_override}")
+        if self.audio_device_override:
+            out.append(f"--audio-device={self.audio_device_override}")
         out.append(f"--input-ipc-server={self.socket_path}")
         out.append("--hr-seek=yes")
         out.extend(cfg.extra_args)
@@ -179,6 +191,7 @@ class MpvPlayer:
             except MpvError as exc:
                 log.warning("mpv ipc setup failed: %s", exc)
             else:
+                await self._reapply_audio(ipc)
                 self.ready.set()
                 self._notify("restart")
                 waiters = {
@@ -314,6 +327,33 @@ class MpvPlayer:
         await ipc.command("loadfile", path, "replace", -1, opts)
         await ipc.set_property("pause", False)
         self.paused = False
+        # Some mpv builds reset audio props on a new file; cheap to re-assert.
+        await self._reapply_audio(ipc)
+
+    async def _reapply_audio(self, ipc: MpvIpc) -> None:
+        try:
+            if self._volume is not None:
+                await ipc.set_property("volume", self._volume)
+            if self._audio_delay_s is not None:
+                await ipc.set_property("audio-delay", self._audio_delay_s)
+        except MpvError as exc:
+            log.warning("cannot apply audio state: %s", exc)
+
+    async def apply_audio(self, volume: float, delay_s: float) -> None:
+        self._volume = volume
+        self._audio_delay_s = delay_s
+        ipc = self._ipc
+        # Not running yet: the stored values are applied once mpv is up.
+        if not self.cfg.enabled or not self.ready.is_set() or ipc is None:
+            return
+        await self._reapply_audio(ipc)
+
+    async def set_audio_device(self, name: str | None) -> None:
+        self.audio_device_override = name
+        ipc = self._ipc
+        if not self.cfg.enabled or not self.ready.is_set() or ipc is None:
+            return
+        await ipc.set_property("audio-device", name or "auto")
 
     async def black(self) -> None:
         if not self.cfg.enabled:

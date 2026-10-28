@@ -32,6 +32,7 @@ def state(hub: HubDep) -> dict[str, Any]:
         "show": hub.engine.snapshot(),
         "settings": hub.settings.value.model_dump(),
         "events": list(hub.bus.log),
+        "version": hub.version,
     }
 
 
@@ -106,8 +107,21 @@ def get_settings(hub: HubDep) -> RuntimeSettings:
 
 
 @router.put("/settings")
-def put_settings(body: dict[str, Any], hub: HubDep) -> RuntimeSettings:
+async def put_settings(body: dict[str, Any], hub: HubDep) -> RuntimeSettings:
     body.pop("active_profile_id", None)  # owned by the engine
+    body.pop("show_lock", None)  # owned by the lock endpoints
+    s = hub.settings.value
+    # Caps may change in the same request, so clamp against the effective new cap.
+    try:
+        vcap = float(body.get("volume_cap", s.volume_cap))
+        bcap = float(body.get("brightness_cap", s.brightness_cap))
+        # Also pulls an existing master down when only the cap is lowered.
+        body["master_volume"] = min(float(body.get("master_volume", s.master_volume)), vcap)
+        body["master_brightness"] = min(
+            float(body.get("master_brightness", s.master_brightness)), bcap
+        )
+    except (TypeError, ValueError) as e:
+        raise HTTPException(422, "numeric settings expected") from e
     try:
         return hub.settings.update(**body)
     except ValueError as e:

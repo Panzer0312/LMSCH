@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from pathlib import Path
 
 import httpx
 
+import spookhub
 from spookhub import backup, db
 from spookhub.auth import AuthStore
 from spookhub.boards.client import WledClient
@@ -23,6 +26,18 @@ from spookhub.tasks import spawn
 log = logging.getLogger(__name__)
 
 
+def load_version(path: Path | None = None) -> dict[str, object]:
+    """Read install metadata written by install.sh; a dev checkout has none."""
+    p = path or Path(spookhub.__file__).resolve().parents[2] / "version.json"
+    try:
+        data = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return {"commit": "dev"}
+    if not isinstance(data, dict) or "commit" not in data:
+        return {"commit": "dev"}
+    return data
+
+
 class Hub:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
@@ -37,7 +52,9 @@ class Hub:
             cfg.timing,
             self.bus,
             self.wled,
-            master=lambda: self.settings.value.master_brightness,
+            master=lambda: min(
+                self.settings.value.master_brightness, self.settings.value.brightness_cap
+            ),
             health_interval=lambda: self.settings.value.health_interval_s,
         )
         self.player = MpvPlayer(cfg.mpv, self.bus)
@@ -45,6 +62,7 @@ class Hub:
             self.boards, self.player, self.bus, self.settings, tick_s=cfg.timing.scheduler_tick_s
         )
         self.auth = AuthStore()
+        self.version = load_version()
         # media id -> {state: running|failed, progress, error}
         self.transcodes: dict[int, dict[str, object]] = {}
         self.mdns: MdnsDiscovery | None = None
@@ -63,6 +81,10 @@ class Hub:
             self.player.vo_override = s.mpv_vo
         if s.mpv_gpu_context:
             self.player.gpu_context_override = s.mpv_gpu_context
+        self.player.drm_connector_override = s.mpv_drm_connector
+        self.player.drm_mode_override = s.mpv_drm_mode
+        self.player.audio_device_override = s.mpv_audio_device
+        await self.player.apply_audio(min(s.master_volume, s.volume_cap), s.audio_delay_s)
         self.boards.load_from_db()
         await self.boards.start()
         await self.player.start()
@@ -90,7 +112,10 @@ class Hub:
         return True
 
     def _on_settings(self, old: RuntimeSettings, new: RuntimeSettings) -> None:
-        if old.master_brightness != new.master_brightness:
+        if (old.master_brightness, old.brightness_cap) != (
+            new.master_brightness,
+            new.brightness_cap,
+        ):
             self.boards.push_all()
         if old.log_level != new.log_level:
             logging.getLogger("spookhub").setLevel(new.log_level.upper())
@@ -98,4 +123,14 @@ class Hub:
             self.player.vo_override = new.mpv_vo
             self.player.gpu_context_override = new.mpv_gpu_context
             spawn(self.player.restart())
+        if (old.mpv_drm_connector, old.mpv_drm_mode) != (new.mpv_drm_connector, new.mpv_drm_mode):
+            self.player.drm_connector_override = new.mpv_drm_connector
+            self.player.drm_mode_override = new.mpv_drm_mode
+            spawn(self.player.restart())
+        if old.mpv_audio_device != new.mpv_audio_device:
+            spawn(self.player.set_audio_device(new.mpv_audio_device))
+        audio_old = (min(old.master_volume, old.volume_cap), old.audio_delay_s)
+        audio_new = (min(new.master_volume, new.volume_cap), new.audio_delay_s)
+        if audio_old != audio_new:
+            spawn(self.player.apply_audio(*audio_new))
         self.bus.publish("settings", new.model_dump())

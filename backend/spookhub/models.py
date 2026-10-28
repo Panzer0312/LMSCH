@@ -181,4 +181,12 @@ class RuntimeSettings(BaseModel):
     log_level: str = "info"
     mpv_vo: str | None = None
     mpv_gpu_context: str | None = None
+    mpv_drm_connector: str | None = None
+    mpv_drm_mode: str | None = None
+    mpv_audio_device: str | None = None
+    master_volume: float = Field(default=100, ge=0, le=130)
+    volume_cap: float = Field(default=100, ge=0, le=130)
+    brightness_cap: float = Field(default=1.0, ge=0, le=1)
+    audio_delay_s: float = Field(default=0.0, ge=-5, le=5)
+    show_lock: bool = False
     active_profile_id: int | None = None
