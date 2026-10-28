@@ -14,3 +14,4 @@ frontend/dist/
 
 # Local dev data
 .devdata/
+.superpowers/
