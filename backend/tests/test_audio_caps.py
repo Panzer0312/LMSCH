@@ -175,3 +175,25 @@ async def test_non_finite_settings_rejected(client):  # noqa: F811
         headers={"content-type": "application/json"},
     )
     assert r.status_code == 422
+
+
+async def test_audio_applied_during_startup_is_sent_when_ready():
+    p = MpvPlayer(MpvCfg(enabled=True), EventBus())
+    await p.apply_audio(90, 0.0)
+    p._launched_audio = (p._volume, p._audio_delay_s)  # as _run_once does at spawn
+    ipc = FakeIpc()
+    await p._sync_audio_after_launch(ipc)
+    assert ipc.props == []  # nothing changed since launch: no extra IPC
+    await p.apply_audio(55, 0.3)  # while not ready: stored only
+    assert ipc.props == []
+    await p._sync_audio_after_launch(ipc)
+    assert ipc.props == [("volume", 55), ("audio-delay", 0.3)]
+
+
+async def test_huge_int_setting_is_422(client):  # noqa: F811
+    r = await client.put(
+        "/api/settings",
+        content='{"master_volume": ' + "9" * 400 + "}",
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 422

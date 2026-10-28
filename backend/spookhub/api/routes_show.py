@@ -116,9 +116,15 @@ async def put_settings(body: dict[str, Any], hub: HubDep) -> RuntimeSettings:
     # Caps may change in the same request, so clamp against the effective new cap.
     def num(key: str, default: float) -> float:
         v = body.get(key, default)
-        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
             raise HTTPException(422, f"{key} must be a finite number")
-        return float(v)
+        try:
+            f = float(v)  # huge ints raise OverflowError here
+        except OverflowError as e:
+            raise HTTPException(422, f"{key} must be a finite number") from e
+        if not math.isfinite(f):
+            raise HTTPException(422, f"{key} must be a finite number")
+        return f
 
     vcap = num("volume_cap", s.volume_cap)
     bcap = num("brightness_cap", s.brightness_cap)

@@ -47,6 +47,7 @@ class MpvPlayer:
         # Last applied audio state; re-sent after every (re)start and load().
         self._volume: float | None = None
         self._audio_delay_s: float | None = None
+        self._launched_audio: tuple[float | None, float | None] = (None, None)
         self.ready: asyncio.Event = asyncio.Event()
         self._ipc: MpvIpc | None = None
         self._proc: asyncio.subprocess.Process | None = None
@@ -172,6 +173,7 @@ class MpvPlayer:
         except OSError as exc:
             log.warning("cannot prepare mpv socket %s: %s", sock, exc)
         args = self.args()
+        self._launched_audio = (self._volume, self._audio_delay_s)
         log.info("starting mpv: %s", " ".join(args))
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -193,6 +195,7 @@ class MpvPlayer:
                 await ipc.connect(sock)
                 for name in OBSERVED:
                     await ipc.observe(name)
+                await self._sync_audio_after_launch(ipc)
             except MpvError as exc:
                 log.warning("mpv ipc setup failed: %s", exc)
             else:
@@ -331,8 +334,16 @@ class MpvPlayer:
         self.eof = False
         opts = f"start={start:.3f},loop-file={'inf' if loop else 'no'}"
         await ipc.command("loadfile", path, "replace", -1, opts)
+        # Also after: some builds reset audio props per file.
+        await self._reapply_audio(ipc)
         await ipc.set_property("pause", False)
         self.paused = False
+
+    async def _sync_audio_after_launch(self, ipc: MpvIpc) -> None:
+        # apply_audio during startup only stores; args() was already snapshotted at spawn.
+        if (self._volume, self._audio_delay_s) != self._launched_audio:
+            await self._reapply_audio(ipc)
+            self._launched_audio = (self._volume, self._audio_delay_s)
 
     async def _reapply_audio(self, ipc: MpvIpc) -> None:
         try:
