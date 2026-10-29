@@ -6,7 +6,7 @@ Five phases after M1–M3. Each phase ships deployable, tested, documented (see 
 |---|---|---|---|
 | 1 | [phase-1-show-night.md](phase-1-show-night.md) | Show-night reliability, device setup, sound/light helpers | built, hardware untested |
 | 2 | [phase-2-timeline-qol.md](phase-2-timeline-qol.md) | Timeline editing quality of life | built, hardware untested |
-| 3 | [phase-3-video-setup.md](phase-3-video-setup.md) | Video setup page: geometry, keystone, display profiles, alignment patterns | not started |
+| 3 | [phase-3-video-setup.md](phase-3-video-setup.md) | Video setup page: geometry, keystone, display profiles, alignment patterns | built, hub spikes open |
 | 4 | [phase-4-scenes-audio-ambient.md](phase-4-scenes-audio-ambient.md) | Scenes/playlists, audio-only cues, ambient layer, moments page | not started |
 | 5 | [phase-5-triggers-integrations.md](phase-5-triggers-integrations.md) | Named triggers, schedule, MQTT/HA, relays, DMX | **optional, out of scope** |
 

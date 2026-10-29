@@ -8,7 +8,7 @@
 cd ~/spookhub && git pull && sudo scripts/install.sh
 ```
 
-`scripts/install.sh` is idempotent: apt packages (mpv, ffmpeg, avahi, alsa-utils, VA-API driver),
+`scripts/install.sh` is idempotent: apt packages (list: README "Debian 13 hub: required packages"),
 `spookhub` user (groups video, render, audio), frontend build if inputs changed, copies the repo to `/opt/spookhub`, venv,
 `/etc/spookhub/config.toml` (kept if present), systemd unit, console blanking off, sleep targets
 masked, restarts the service, prints the URL. Reboot once after the first run so `consoleblank=0` applies.
@@ -49,6 +49,20 @@ Every config key has an env override, e.g. `SPOOKHUB_MPV__EXTRA_ARGS='["--drm-co
 - **New boards:** flash via [install.wled.me](https://install.wled.me), join `WLED-AP`, set WLAN at
   4.3.2.1. Board appears under Discovered.
 
+## Projector setup
+
+1. Optics first: position the projector, use its lens shift, optical keystone and zoom. Show
+   **Focus** and set the lens. Digital keystone blurs.
+2. Open `/video`, start setup mode with **Grid** or **Numbered corners**. Drag corners 1–4 (TL, TR,
+   BR, BL) until the border sits on the surface edges.
+3. **Crosshair + circles:** set aspect/stretch until circles are round.
+4. **Edge chase:** set the mask so nothing spills past the surface. Check with **Safe area**.
+5. **Grey ramp:** lower brightness/gamma until black is invisible on the scrim.
+6. Save, then "Set as default". Videos with other framing get their own profile (Media page).
+
+Keystone, mask and flip run as an mpv shader and need `vo = "gpu-next"` (Settings → "mpv video output (vo)",
+or `[mpv] vo` in config). Plain `gpu` ignores the shader; preflight warns "Keystone/mask need vo=gpu-next".
+
 ## Troubleshooting
 
 | Symptom | Check |
@@ -64,6 +78,7 @@ Every config key has an env override, e.g. `SPOOKHUB_MPV__EXTRA_ARGS='["--drm-co
 | Service restarts every 30 s | Watchdog firing: event loop hung. `journalctl -u spookhub` before the restart. |
 | Edits return 423 | Show mode is on. Unlock on `/show` or Settings (PIN if set). |
 | Preflight red | Click the failing check; the fix link points to the page. |
+| Keystone/mask has no effect | mpv `vo` is not `gpu-next`. Set it in Settings → "mpv video output (vo)" or `[mpv] vo` in config. |
 
 ## Known untested on real hardware
 

@@ -10,7 +10,8 @@
 | `/boards` | Boards | Discovered vs adopted, status, RSSI, latency, firmware, LEDs, live state. Rename, identify, on/off, brightness, sync offset (ms), "Save fallback" per board and for all, open WLED UI, refresh, remove, scan, add by IP, "Check settings", new-board guide |
 | `/setup` | Setup | Five steps with status dots, see below. Phone-friendly |
 | `/show` | Show mode | Full-screen big buttons for the night, see below |
-| `/media` | Media | Upload with progress, probe info, transcode, used-by, delete (blocked if used) |
+| `/media` | Media | Upload with progress, probe info, transcode, used-by, delete (blocked if used), aspect badge, black check, per-video display profile |
+| `/video` | Video setup | Setup mode, source on projector, display profile editor (frame, keystone, mask, image), A/B compare. Works on a phone |
 | `/settings` | Settings | Sync offset, health interval, default transition, log level, mpv output, brightness and volume caps, show mode toggle, test pattern, PIN, trigger token, backup/restore. Footer shows deployed commit and install time |
 
 Blackout button is in the header on every page. Stops video, blacks projector, boards off, held until released.
@@ -19,7 +20,7 @@ Blackout button is in the header on every page. Stops video, blacks projector, b
 
 | Step | Does |
 |---|---|
-| Projector output | DRM connector (connected first) and mode dropdowns. Applying restarts mpv (screen black ~1 s). Test pattern button |
+| Projector output | DRM connector (connected first) and mode dropdowns. Applying restarts mpv (screen black ~1 s). Test pattern button. Alignment pattern picker (enters setup mode, saved geometry applied; empty choice or leaving the page leaves it; disabled while a show plays) and "Open video setup" link |
 | Audio output | Device dropdown (friendly names), volume, audio delay, "Play test sound", reload devices |
 | Boards | Online/adopted count, "Check all settings", link to Boards |
 | Trigger devices | Token, curl and ESPHome snippets with hub URL, live "waiting for trigger" light, "Send test trigger" |
@@ -29,10 +30,59 @@ The page also lists the preflight checks. "Test everything" flashes all boards w
 test sound, shows the pattern 2 s, then restores idle. Setup actions are disabled while a show plays
 or show mode is on.
 
+## Video setup
+
+- **Setup mode:** "Start setup mode" stops any show. "Leave setup mode" (or leaving the page) restores
+  the active profile idle state. Refused during blackout and show lock. Unsaved live edits are
+  dropped on leave; the projector falls back to the saved geometry.
+- **Source on projector:** an alignment pattern, any media file (with a scrub slider) or the active
+  profile idle video. Picking a source enters setup mode.
+- **Control groups**, each with Reset:
+
+| Group | Controls |
+|---|---|
+| Frame | Zoom, pan, stretch, align, rotate 0/90/180/270, aspect override, crop, flip H (rear) / flip V (ceiling) |
+| Keystone | Corners 1–4 (TL, TR, BR, BL), X/Y each. Drag the numbered handles in the preview |
+| Mask | Top, right, bottom, left, feather |
+| Image | Brightness, contrast, gamma, saturation |
+
+- **Nudge:** in a number field or slider, arrow keys step, Shift + arrow steps fine.
+- **Preview:** browser mimic of the geometry; orange = output bounds. The projector is the truth.
+  On a phone the preview folds away with "Hide preview".
+- **Profile bar:** pick a display profile (or none = identity), Save, Save as…, Rename, Delete,
+  Set as default (global), "Use for this video" when the source is media and a profile is picked in the bar (never pins the inherited one). "unsaved" badge while dirty.
+- **Warp warning:** when the geometry uses corners, mask or flip and mpv's `vo` is not `gpu-next`, a banner says they have no effect.
+- **A/B:** "A saved" / "B edited" flips the projector between saved and edited geometry.
+- **Live apply:** edits reach mpv within ~30 ms while setup mode is on. Without setup mode, edits
+  and saves work but do not show.
+
+**Precedence:** show profile's display profile > video's display profile > global default > identity.
+A deleted profile falls through to the next.
+
+| Pattern | Use |
+|---|---|
+| Grid | Keystone, straightness, centre |
+| Numbered corners + border | Match corners 1–4 to the keystone handles |
+| Crosshair + circles | Aspect: circles must be round |
+| Edge chase (moving) | Edges inside the surface; set mask |
+| Scan line H / V (moving) | Find clipped or hidden edges |
+| Focus (star + line pairs) | Lens focus |
+| Grey ramp | Brightness/gamma so black is invisible on the scrim |
+| Checkerboard, white, black | Hot spots, light leaks, projector black level |
+| Safe area (mask check) | Mid grey; shows the masked usable area |
+
+Other pages:
+
+- **Media:** badge "aspect … differs from display" when a video's aspect is more than 0.02 off
+  the default. "Create display profile for this video" copies the default with that aspect and assigns
+  it. "Black check" samples frames and warns when the background is not near black.
+- **Profiles editor:** "Display profile" select sets a per-show profile (top precedence).
+
 ## Preflight
 
-Eleven checks, each ok, warn or fail, with a fix link: boards online, latency (< 100 ms), WiFi sleep,
-mpv, audio device, active profile media, disk (> 2 GB), clock sync, mpv restarts last hour, recent
+Twelve checks, each ok, warn or fail, with a fix link: boards online, latency (< 100 ms), WiFi sleep,
+mpv, keystone/mask (warn when the geometry needs the warp shader but `vo` is not `gpu-next`),
+audio device, active profile media, disk (> 2 GB), clock sync, mpv restarts last hour, recent
 trigger (warn only, `idle_trigger` profiles, 30 min, accepted external triggers only), no setup
 running (fail while calibration, a setup test or the test pattern is on). Re-run every 10 s, pushed on change. The
 Dashboard banner shows when any check fails.

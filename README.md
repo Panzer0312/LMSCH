@@ -6,8 +6,9 @@ desktop browser.
 
 **Status:** M1 core show, M2 timeline editor, M3 polish and phase 1 (setup page, preflight, sync
 calibration, show mode, run log, watchdog and fallbacks) and phase 2 (timeline editing: markers,
-onsets, templates, time editing, clipboard, effect picker, WLED segments) built and tested against
-the simulator.
+onsets, templates, time editing, clipboard, effect picker, WLED segments) and phase 3 (video setup
+page, display profiles, keystone/mask shader, alignment patterns) built and tested against the
+simulator.
 Not yet run on real hardware. Next work: [`docs/roadmap/`](docs/roadmap/README.md).
 
 ## Quick start (dev)

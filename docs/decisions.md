@@ -44,3 +44,16 @@ Choices made where the spec was open. Append new rows; mark replaced rows "super
 | Timeline FPS | Fixed at 25. ffprobe data carries no frame rate. |
 | Panel undo | Edits to the same cue within 800 ms coalesce into one undo step. |
 | Audition mute | Muted lanes' boards get the profile base during audition. |
+| Projector warp | User GLSL shader (`warp.glsl`) with `//!PARAM`s set via `glsl-shader-opts`, not `vf`/lavfi: no re-encode or filter rebuild, parameters change live. |
+| Warp vs vo | `//!PARAM` needs vo=gpu-next. Default vo stays `gpu`; `DisplayState.warp_supported` and a preflight `warp` warning flag geometry that would not show. |
+| Display precedence | Profile > media > global default > identity. A missing or invalid display profile falls through to the next. |
+| Video setup mode | Reuses the test-pattern state, so the existing rules refuse triggers and setup actions and lock/blackout end it. |
+| Leaving video setup | Unsaved live edits are dropped. Saving goes through display profile PUT/POST. |
+| Crop storage | Fractions of the displayed (rotated) frame, mapped through rotation to source pixels for mpv `video-crop`. Stays valid across resolutions. |
+| Alignment patterns | Rendered by ffmpeg lavfi on first use, cached per id and size in `<data_dir>/patterns/`. |
+| Black check | Median of sampled YLOW (10th-percentile luma) ≤ 0.07 of full scale. Limited-range black is ≈ 0.063; a bright figure on black still passes. |
+| Display profile export/import | Profile export carries the display profile as `{name, geometry}`. Import reuses an existing one with that name and never overwrites it; creates it only when missing. |
+| Setup resolution | Media source on `/video`: media > global (you are setting up that video). Pattern and idle sources: active profile > media > global. Unsaved live edits survive a source switch. |
+| Show vs setup | Play, play-from and trigger refuse (409) while video setup or a test pattern is on; leaving `/video` also clears a separately started test pattern. |
+| Media rotation backfill | Rows from before `Media.rotation` are re-probed in the background at startup instead of assuming 0. |
+| ffmpeg timeouts | Pattern render 60 s (503), black check 120 s (504); the process is killed on timeout or cancel. |
