@@ -62,6 +62,7 @@ export const api = {
     adopt: (mac: string, name: string) => post<Board>(`/api/boards/${mac}/adopt`, { name }),
     rename: (mac: string, name: string) => req<Board>('PATCH', `/api/boards/${mac}`, { name }),
     remove: (mac: string) => req<{ ok: boolean }>('DELETE', `/api/boards/${mac}`),
+    clearManual: (mac: string) => req<{ ok: boolean }>('DELETE', `/api/boards/${mac}/state`),
     identify: (mac: string) => post(`/api/boards/${mac}/identify`),
     setState: (mac: string, s: LightState) => post(`/api/boards/${mac}/state`, s),
     refresh: (mac: string) => post<Board>(`/api/boards/${mac}/refresh`),

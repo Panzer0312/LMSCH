@@ -137,6 +137,14 @@ def manual_state(mac: str, body: LightState, hub: HubDep) -> dict[str, bool]:
     return {"ok": True}
 
 
+@router.delete("/{mac}/state")
+def clear_manual_state(mac: str, hub: HubDep) -> dict[str, bool]:
+    """Drop the manual override so the board returns to show/base state."""
+    _board(hub, mac)
+    hub.boards.clear_manual(mac)
+    return {"ok": True}
+
+
 @router.post("/{mac}/refresh")
 async def refresh(mac: str, hub: HubDep) -> dict[str, Any]:
     _board(hub, mac)

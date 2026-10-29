@@ -250,6 +250,11 @@ class BoardManager:
         b.manual = (b.manual or LightState()).merged(state)
         self.push(mac)
 
+    def clear_manual(self, mac: str) -> None:
+        b = self.boards[mac]
+        b.manual = None
+        self.push(mac)
+
     def set_blackout(self, on: bool) -> None:
         self.blackout = on
         self.push_all()
