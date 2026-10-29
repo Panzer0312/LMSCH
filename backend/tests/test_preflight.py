@@ -30,7 +30,7 @@ async def test_check_order_and_worst(client):  # noqa: F811
     res = await client.get("/api/preflight")
     ids = [c["id"] for c in res.json()["checks"]]
     assert ids == [
-        "boards_online", "latency", "wifi_sleep", "mpv", "audio_device",
+        "boards_online", "latency", "wifi_sleep", "mpv", "warp", "audio_device",
         "media", "disk", "clock", "mpv_restarts", "trigger_recent", "setup_idle",
     ]  # fmt: skip
     assert res.json()["worst"] == "warn"  # no boards adopted
@@ -230,7 +230,7 @@ async def test_check_exception_becomes_warn(client, monkeypatch):  # noqa: F811
 
     monkeypatch.setattr(client.hub.preflight, "_latency", boom)
     res = await client.hub.preflight.run()
-    assert res["checks"][1]["status"] == "warn" and len(res["checks"]) == 11
+    assert res["checks"][1]["status"] == "warn" and len(res["checks"]) == 12
 
 
 async def test_supervisor_records_unexpected_exits_only(monkeypatch):

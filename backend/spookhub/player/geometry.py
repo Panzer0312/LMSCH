@@ -68,6 +68,17 @@ def crop_px(c: CropRect, rotate: int, src_w: int, src_h: int) -> str:
     return f"{w}x{h}+{x}+{y}"
 
 
+def needs_warp(g: DisplayGeometry) -> bool:
+    """True when the geometry uses shader-only features (keystone, mask, flip)."""
+    m = g.mask
+    return (
+        any(v != 0 for c in g.corners for v in c)
+        or any(v > 0 for v in (m.top, m.right, m.bottom, m.left))
+        or g.flip_h
+        or g.flip_v
+    )
+
+
 def to_mpv(g: DisplayGeometry, src_w: int, src_h: int) -> tuple[dict[str, Any], dict[str, str]]:
     props: dict[str, Any] = {
         "video-zoom": float(g.zoom),

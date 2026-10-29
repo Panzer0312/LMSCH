@@ -16,6 +16,7 @@ from spookhub.api import (
     routes_admin,
     routes_auth,
     routes_boards,
+    routes_display,
     routes_events,
     routes_media,
     routes_patterns,
@@ -70,6 +71,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         routes_auth,
         routes_admin,
         routes_boards,
+        routes_display,
         routes_profiles,
         routes_setup,
         routes_show,
@@ -81,6 +83,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     ):
         app.include_router(r.router)
     app.include_router(routes_setup.preflight_router)
+    app.include_router(routes_display.media_router)
 
     dist = cfg.server.frontend_dir
     if dist.is_dir():

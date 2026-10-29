@@ -493,7 +493,12 @@ class MpvPlayer:
             self._geom_size = size
         if not self.cfg.enabled or self._geom_flush is not None:
             return
-        loop = asyncio.get_running_loop()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Called from a worker thread: kept as target, sent with the next load/restart.
+            log.warning("apply_geometry outside the event loop; deferred")
+            return
         self._geom_flush = loop.call_later(GEOMETRY_COALESCE_S, self._flush_soon)
 
     def _flush_soon(self) -> None:

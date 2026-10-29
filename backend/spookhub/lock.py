@@ -21,7 +21,7 @@ MAX_BODY = 4096
 ALLOWED_BOARD = re.compile(r"^/api/boards/[^/]+/(state|identify)$")
 LIVE_SETTINGS = {"master_brightness", "master_volume"}
 # Turning these OFF stays possible so a forgotten setup action can be cleared from Show mode.
-OFF_ONLY = {"/api/setup/calibration", "/api/show/test_pattern"}
+OFF_ONLY = {"/api/setup/calibration", "/api/show/test_pattern", "/api/display/setup"}
 
 
 class LockMiddleware(BaseHTTPMiddleware):

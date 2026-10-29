@@ -31,6 +31,8 @@ async def test_pattern(body: FlagIn, hub: HubDep) -> dict[str, bool]:
             img = await ensure_pattern(hub.cfg.paths.data_dir)
         except RuntimeError as e:
             raise HTTPException(500, f"could not render test pattern: {e}") from e
+        # Crop in the display geometry needs the source size; the grid is rendered at 1080p.
+        hub.engine.known_sizes[str(img)] = (1920, 1080)
         try:
             await hub.engine.set_test_pattern(True, str(img))
         except SetupBusy as e:

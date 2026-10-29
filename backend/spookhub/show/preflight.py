@@ -15,7 +15,8 @@ from pydantic import BaseModel
 
 from spookhub import db
 from spookhub.boards.registry import BoardStatus
-from spookhub.models import Media, PlaybackMode, Profile, ProfileType
+from spookhub.models import DisplayGeometry, Media, PlaybackMode, Profile, ProfileType
+from spookhub.player.geometry import needs_warp
 
 if TYPE_CHECKING:
     from spookhub.hub import Hub
@@ -117,6 +118,7 @@ class Preflight:
             self._latency,
             self._wifi_sleep,
             self._mpv,
+            self._warp,
             self._audio_device,
             self._media,
             self._disk,
@@ -216,6 +218,17 @@ class Preflight:
                 return _c("mpv", label, "warn", "restarting", "/setup")
             return _c("mpv", label, "fail", "mpv is not running", "/setup")
         return _c("mpv", label, "ok", "running")
+
+    async def _warp(self) -> Check:
+        # vo=gpu ignores the warp shader: keystone/mask/flip would silently not show.
+        label = "Keystone / mask"
+        eng = self.hub.engine
+        g = DisplayGeometry.model_validate(eng.display_state()["geometry"])
+        if not needs_warp(g):
+            return _c("warp", label, "ok", "not used")
+        if not eng.warp_supported():
+            return _c("warp", label, "warn", "Keystone/mask need vo=gpu-next", "/setup")
+        return _c("warp", label, "ok", "active")
 
     async def _audio_device(self) -> Check:
         label = "Audio device"

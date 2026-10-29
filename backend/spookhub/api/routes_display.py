@@ -104,7 +104,7 @@ def list_profiles() -> list[DisplayProfileOut]:
 
 
 @router.post("/profiles", status_code=201)
-def create_profile(body: DisplayProfileIn, hub: HubDep) -> DisplayProfileOut:
+async def create_profile(body: DisplayProfileIn, hub: HubDep) -> DisplayProfileOut:
     with db.session() as s:
         if _name_taken(s, body.name):
             raise HTTPException(409, "a display profile with that name exists")
@@ -118,7 +118,7 @@ def create_profile(body: DisplayProfileIn, hub: HubDep) -> DisplayProfileOut:
 
 
 @router.put("/profiles/{pid}")
-def update_profile(pid: int, body: DisplayProfilePatch, hub: HubDep) -> DisplayProfileOut:
+async def update_profile(pid: int, body: DisplayProfilePatch, hub: HubDep) -> DisplayProfileOut:
     with db.session() as s:
         p = _get(s, pid)
         if body.name is not None:
@@ -159,7 +159,7 @@ async def delete_profile(pid: int, hub: HubDep) -> dict[str, bool]:
 
 
 @router.get("/state")
-def get_state(hub: HubDep) -> dict[str, Any]:
+async def get_state(hub: HubDep) -> dict[str, Any]:
     return hub.engine.display_state()
 
 
@@ -213,7 +213,7 @@ async def setup(body: SetupIn, hub: HubDep) -> dict[str, Any]:
 
 
 @router.post("/live")
-def live(body: LiveIn, hub: HubDep) -> dict[str, Any]:
+async def live(body: LiveIn, hub: HubDep) -> dict[str, Any]:
     try:
         hub.engine.set_live(body.geometry)
     except SetupBusy as e:
@@ -231,7 +231,7 @@ async def seek(body: SeekIn, hub: HubDep) -> dict[str, bool]:
 
 
 @media_router.patch("/{mid}")
-def set_media_display(mid: int, body: MediaDisplayIn, hub: HubDep) -> dict[str, Any]:
+async def set_media_display(mid: int, body: MediaDisplayIn, hub: HubDep) -> dict[str, Any]:
     with db.session() as s:
         m = s.get(Media, mid)
         if m is None:

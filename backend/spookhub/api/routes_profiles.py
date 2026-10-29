@@ -15,6 +15,8 @@ from spookhub.models import (
     CueIn,
     CueOut,
     CueTarget,
+    DisplayGeometry,
+    DisplayProfile,
     LightState,
     Marker,
     Media,
@@ -45,6 +47,7 @@ def to_out(s: Session, p: Profile) -> ProfileOut:
         playback_mode=p.playback_mode,
         cooldown_s=p.cooldown_s,
         markers=[Marker.model_validate(m) for m in (p.markers or [])],
+        display_profile_id=p.display_profile_id,
         cues=[
             CueOut(
                 id=c.id or 0,
@@ -74,6 +77,10 @@ def _apply(p: Profile, body: ProfileIn, s: Session) -> None:
             raise HTTPException(422, f"media {mid} not found")
     if body.type == ProfileType.video and body.media_id is None:
         raise HTTPException(422, "video profile needs a video")
+    dp = body.display_profile_id
+    if dp is not None and s.get(DisplayProfile, dp) is None:
+        raise HTTPException(422, f"display profile {dp} not found")
+    p.display_profile_id = dp
     p.name = body.name
     p.type = body.type
     p.selection = body.selection.model_dump()
@@ -235,13 +242,18 @@ def export_profile(pid: int) -> JSONResponse:
         p = to_out(s, _get(s, pid))
         media = s.get(Media, p.media_id) if p.media_id else None
         idle = s.get(Media, p.idle_media_id) if p.idle_media_id else None
+        dp = s.get(DisplayProfile, p.display_profile_id) if p.display_profile_id else None
     data = {
         "format": EXPORT_FORMAT,
         "version": 1,
-        "profile": p.model_dump(exclude={"id", "sort", "cues", "media_id", "idle_media_id"}),
+        "profile": p.model_dump(
+            exclude={"id", "sort", "cues", "media_id", "idle_media_id", "display_profile_id"}
+        ),
         "cues": [c.model_dump(exclude={"id"}) for c in p.cues],
         "media_filename": media.filename if media else None,
         "idle_media_filename": idle.filename if idle else None,
+        # Ids differ between hubs; the name is the identity, geometry recreates it if missing.
+        "display_profile": None if dp is None else {"name": dp.name, "geometry": dp.geometry},
     }
     safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in p.name)[:40] or "profile"
     return JSONResponse(
@@ -270,8 +282,15 @@ def import_profile(body: ImportIn, hub: HubDep) -> ProfileOut:
     try:
         prof = ProfileIn.model_validate(d.get("profile", {}))
         cues = [CueIn.model_validate(c) for c in d.get("cues", [])]
+        dp_data = d.get("display_profile")
+        dp_name: str | None = None
+        dp_geom: DisplayGeometry | None = None
+        if isinstance(dp_data, dict) and dp_data.get("name"):
+            dp_name = str(dp_data["name"])[:100]
+            dp_geom = DisplayGeometry.model_validate(dp_data.get("geometry") or {})
     except ValidationError as e:
         raise HTTPException(422, f"invalid profile data: {e.errors()[0]['msg']}") from e
+    created_dp = False
     with db.session() as s:
         if prof.type == ProfileType.video:
             prof.media_id = body.media_id or _media_by_name(s, d.get("media_filename"))
@@ -282,6 +301,16 @@ def import_profile(body: ImportIn, hub: HubDep) -> ProfileOut:
                 raise HTTPException(
                     422, f"video '{d.get('media_filename')}' not found; choose a video to use"
                 )
+        prof.display_profile_id = None  # a foreign hub's id means nothing here
+        if dp_name is not None and dp_geom is not None:
+            # Same name = same physical setup on this hub: reuse it, never overwrite it.
+            row = s.exec(select(DisplayProfile).where(DisplayProfile.name == dp_name)).first()
+            if row is None:
+                row = DisplayProfile(name=dp_name, geometry=dp_geom.model_dump())
+                s.add(row)
+                s.flush()  # id now, committed together with the profile
+                created_dp = True
+            prof.display_profile_id = row.id
         # Board-specific targets only make sense on the same boards; unknown MACs are dropped.
         known = set(hub.boards.boards)
         prof.selection.macs = [m for m in prof.selection.macs if m in known]
@@ -300,5 +329,7 @@ def import_profile(body: ImportIn, hub: HubDep) -> ProfileOut:
             s.add(_cue_row(p.id or 0, c))
         s.commit()
         out = to_out(s, p)
+    if created_dp:
+        hub.bus.publish("display_profiles_changed")
     _changed(hub)
     return out

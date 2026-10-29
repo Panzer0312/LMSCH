@@ -27,6 +27,7 @@ async def ws(websocket: WebSocket) -> None:
                 "data": {
                     "boards": hub.boards.snapshot(),
                     "show": hub.engine.snapshot(),
+                    "display": hub.engine.display_state(),
                     "settings": hub.settings.value.model_dump(),
                     "events": list(hub.bus.log),
                     "version": hub.version,

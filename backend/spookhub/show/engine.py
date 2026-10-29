@@ -42,6 +42,8 @@ AUDITION_TIMEOUT_S = 3.0
 STALL_S = 2.0  # frozen time-pos this long while playing = hung decoder/output
 STALL_POLL_S = 0.25
 STALL_RESTART_TIMEOUT_S = 20.0
+# vo=null accepts the shader options (tests, headless) without rendering anything.
+WARP_VOS = ("gpu-next", "null")
 
 
 @dataclass
@@ -814,6 +816,15 @@ class ShowEngine:
     def _on_settings(self, old: RuntimeSettings, new: RuntimeSettings) -> None:
         if old.display_profile_id != new.display_profile_id:
             self.refresh_display()
+        elif old.mpv_vo != new.mpv_vo:
+            self._publish_display()
+
+    def warp_supported(self) -> bool:
+        """The warp shader's runtime parameters need libplacebo (vo=gpu-next)."""
+        if not self.player.cfg.enabled:
+            return True
+        vo = self.settings.value.mpv_vo or self.player.cfg.vo
+        return vo in WARP_VOS
 
     def _resolve_for(self, media: display.MediaInfo | None) -> tuple[int | None, DisplayGeometry]:
         return display.resolve(
@@ -865,6 +876,7 @@ class ShowEngine:
                 "live": self.live.model_dump() if self.live else None,
                 "resolved_profile_id": rid,
                 "geometry": (self.live or g).model_dump(),
+                "warp_supported": self.warp_supported(),
             }
         return {
             "setup": False,
@@ -872,6 +884,7 @@ class ShowEngine:
             "live": None,
             "resolved_profile_id": self._shown_id,
             "geometry": self._shown.model_dump(),
+            "warp_supported": self.warp_supported(),
         }
 
     def _publish_display(self) -> None:
