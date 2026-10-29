@@ -12,7 +12,7 @@ from sqlmodel import col, or_, select
 from spookhub import db
 from spookhub.api.deps import get_hub
 from spookhub.hub import Hub
-from spookhub.media import analyze, derive
+from spookhub.media import analyze, blackcheck, derive
 from spookhub.media.probe import probe
 from spookhub.media.transcode import needs_transcode, transcode
 from spookhub.media.upload import UploadError, save_upload
@@ -32,6 +32,7 @@ class MediaOut(BaseModel):
     height: int
     codec: str
     used_by: list[str]
+    aspect: float | None = None
     needs_transcode: bool = False
     transcode: dict[str, Any] | None = None
 
@@ -46,6 +47,8 @@ def _out(m: Media, used_by: list[str], hub: Hub | None = None) -> MediaOut:
         height=m.height,
         codec=m.codec,
         used_by=used_by,
+        # Probe dimensions are already the coded frame; rotation metadata is not stored.
+        aspect=round(m.width / m.height, 4) if m.width > 0 and m.height > 0 else None,
         needs_transcode=needs_transcode(m),
         transcode=hub.transcodes.get(m.id or 0) if hub else None,
     )
@@ -115,6 +118,7 @@ async def _transcode_job(hub: Hub, m: Media) -> None:
     if src != dest:
         src.unlink(missing_ok=True)
     await derive.remove(hub.cfg.paths.media_dir, mid)
+    blackcheck.remove(hub.cfg.paths.media_dir, mid)
     hub.transcodes.pop(mid, None)
     hub.bus.event("info", f"Transcoded {m.filename} to H.264")
     hub.bus.publish("media_changed")
@@ -174,6 +178,18 @@ async def onsets(mid: int, hub: HubDep) -> dict[str, Any]:
     return json.loads(p["onsets"].read_text())
 
 
+@router.get("/{mid}/black_check")
+async def black_check(mid: int, hub: HubDep) -> dict[str, Any]:
+    with db.session() as s:
+        m = s.get(Media, mid)
+    if m is None or not Path(m.path).exists():
+        raise HTTPException(404, "media not found")
+    try:
+        return await blackcheck.check(hub.cfg.paths.media_dir, mid, Path(m.path), m.duration_s)
+    except (RuntimeError, OSError) as e:
+        raise HTTPException(422, f"black check failed: {e}") from e
+
+
 @router.get("/{mid}/file")
 def file(mid: int) -> FileResponse:
     with db.session() as s:
@@ -197,5 +213,6 @@ async def delete(mid: int, hub: HubDep) -> dict[str, bool]:
         s.delete(m)
         s.commit()
     await derive.remove(hub.cfg.paths.media_dir, mid)
+    blackcheck.remove(hub.cfg.paths.media_dir, mid)
     hub.bus.publish("media_changed")
     return {"ok": True}
