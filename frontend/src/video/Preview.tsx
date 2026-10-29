@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
 import type { DisplayGeometry } from '../types'
 import { clamp, inverseWarp, toGl, videoRect, warpQuad } from './geometry'
-import { drawPattern, PATTERN_H, PATTERN_W } from './patterns'
+import { loadPattern, PATTERN_H, PATTERN_W } from './patterns'
 
 /** Margin around the output frame (output fractions) so outward corners stay grabbable. */
 const M = 0.08
@@ -195,12 +195,18 @@ export function Preview({ geometry, source, scrubT, onCorners }: {
     const { gl, tex } = s
     if (patternId !== null) {
       const cv = document.createElement('canvas')
-      drawPattern(patternId, cv)
-      gl.bindTexture(gl.TEXTURE_2D, tex)
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cv)
+      const upload = () => {
+        gl.bindTexture(gl.TEXTURE_2D, tex)
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cv)
+        redraw()
+      }
+      let cancelled = false
+      // Stand-in is drawn synchronously; the hub's real pattern image replaces it once loaded.
+      const real = loadPattern(patternId, cv)
       src.current = { w: PATTERN_W * 2, h: PATTERN_H * 2, has: true, outline: patternId === 'safe_area' }
-      redraw()
-      return
+      upload()
+      real.then((ok) => { if (ok && !cancelled) upload() }, () => {})
+      return () => { cancelled = true }
     }
     if (videoUrl === null) { redraw(); return }
     src.current = { w: vw || 1920, h: vh || 1080, has: false, outline: false }

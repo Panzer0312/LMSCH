@@ -99,3 +99,19 @@ async def test_patterns_route(client):  # noqa: F811
     body = r.json()
     assert [p["id"] for p in body] == CONTRACT_IDS
     assert all(set(p) == {"id", "label", "kind"} and p["label"] for p in body)
+
+
+async def test_pattern_file_route(client, monkeypatch):  # noqa: F811
+    r = await client.get("/api/display/patterns/white/file")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/png"
+    assert r.content[:8] == b"\x89PNG\r\n\x1a\n"
+    assert (await client.get("/api/display/patterns/nope/file")).status_code == 404
+
+    async def boom(pid, size, out):
+        raise RuntimeError("ffmpeg died")
+
+    monkeypatch.setattr(patterns, "_render", boom)
+    r = await client.get("/api/display/patterns/black/file")
+    assert r.status_code == 503
+    assert "ffmpeg died" in r.json()["detail"]

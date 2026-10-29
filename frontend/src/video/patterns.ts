@@ -5,6 +5,31 @@
 export const PATTERN_W = 960
 export const PATTERN_H = 540
 
+// Mirrors the 'video' kinds in backend show/patterns.py; their real file is an mp4, not drawable here.
+const VIDEO_PATTERNS = new Set(['edge_chase', 'scan_h', 'scan_v'])
+
+export const patternFileUrl = (id: string) => `/api/display/patterns/${encodeURIComponent(id)}/file`
+
+/**
+ * Draws the stand-in at once, then replaces it with the hub's real render for image patterns.
+ * Resolves true when the real image was drawn (caller should re-upload the canvas).
+ */
+export function loadPattern(id: string, cv: HTMLCanvasElement): Promise<boolean> {
+  drawPattern(id, cv)
+  if (VIDEO_PATTERNS.has(id)) return Promise.resolve(false)
+  return new Promise((resolve) => {
+    const img = new Image()
+    img.onload = () => {
+      const c = cv.getContext('2d')
+      if (!c) { resolve(false); return }
+      c.drawImage(img, 0, 0, cv.width, cv.height)
+      resolve(true)
+    }
+    img.onerror = () => resolve(false)
+    img.src = patternFileUrl(id)
+  })
+}
+
 function grid(c: CanvasRenderingContext2D, W: number, H: number) {
   c.fillStyle = '#000'
   c.fillRect(0, 0, W, H)
