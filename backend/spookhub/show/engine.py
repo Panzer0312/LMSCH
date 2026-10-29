@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import enum
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -128,6 +129,14 @@ def load_active(profile_id: int) -> ActiveProfile | None:
         )
 
 
+class SetupBusy(RuntimeError):
+    """A setup action and a show/test would collide."""
+
+
+class SetupUnavailable(RuntimeError):
+    """Player cannot take the setup action (mpv down or disabled)."""
+
+
 class ShowEngine:
     def __init__(
         self,
@@ -150,6 +159,7 @@ class ShowEngine:
         self.cooldown_until = 0.0
         self.playing_main = False
         self.last_trigger: dict[str, Any] | None = None
+        self._setup_task: asyncio.Task[None] | None = None
         self._last_cue: dict[str, int | None] = {}
         # What the scheduler is currently driving: main show or browser audition.
         self._sched_prof: ActiveProfile | None = None
@@ -197,6 +207,7 @@ class ShowEngine:
             else {"profile_id": self.audition.profile_id, "playing": self.audition.playing},
             "player": self.player.state(),
             "last_trigger": self.last_trigger,
+            "setup_busy": self._setup_task is not None,
         }
 
     def _publish(self) -> None:
@@ -211,6 +222,7 @@ class ShowEngine:
     # ----- profile activation -----
 
     async def activate(self, profile_id: int, autostart: bool = True) -> None:
+        await self._cancel_setup()
         async with self._lock:
             prof = load_active(profile_id)
             if prof is None:
@@ -254,6 +266,7 @@ class ShowEngine:
         self._publish()
 
     async def deactivate(self) -> None:
+        await self._cancel_setup()
         async with self._lock:
             await self._stop_scheduler()
             self.active = None
@@ -293,19 +306,24 @@ class ShowEngine:
     # ----- playback -----
 
     async def trigger(self, source: str = "button") -> tuple[bool, str]:
-        accepted, message = await self._trigger(source)
-        # Recorded even when refused: lets the setup page show that a sensor reaches the hub.
-        self.last_trigger = {
-            "ts": time.time(),
-            "source": source,
-            "accepted": accepted,
-            "message": message,
-        }
-        self.bus.publish("trigger_seen", self.last_trigger)
+        accepted, message = False, "trigger failed"
+        try:
+            accepted, message = await self._trigger(source)
+        finally:
+            # Recorded even when refused or crashed: lets the setup page show a sensor arrives.
+            self.last_trigger = {
+                "ts": time.time(),
+                "source": source,
+                "accepted": accepted,
+                "message": message,
+            }
+            self.bus.publish("trigger_seen", self.last_trigger)
         return accepted, message
 
     async def _trigger(self, source: str) -> tuple[bool, str]:
         a = self.active
+        if self._setup_task is not None:
+            return False, "setup test running"
         if self.blackout:
             return False, "blackout active"
         if self.test_pattern:
@@ -320,6 +338,8 @@ class ShowEngine:
         if remaining > 0:
             return False, f"cooldown ({remaining:.0f} s left)"
         async with self._lock:
+            if self._setup_task is not None:
+                return False, "setup test running"
             started = await self._play_main(0.0)
         self._publish()
         if not started:
@@ -329,9 +349,13 @@ class ShowEngine:
 
     async def play(self, from_s: float = 0.0) -> None:
         a = self.active
+        if self._setup_task is not None:
+            raise SetupBusy("setup test running")
         if self.blackout or not a or a.type != ProfileType.video:
             raise RuntimeError("no video profile active")
         async with self._lock:
+            if self._setup_task is not None:
+                raise SetupBusy("setup test running")
             started = await self._play_main(from_s)
         self._publish()
         if not started:
@@ -481,6 +505,8 @@ class ShowEngine:
         """Browser preview playhead → fire that profile's cues on the real boards."""
         if self.blackout:
             return False, "blackout active"
+        if self._setup_task is not None:
+            return False, "setup test running"
         if self.playing_main:
             return False, "show is playing on the projector"
         now = time.monotonic()
@@ -490,6 +516,8 @@ class ShowEngine:
             aud.deadline = now + AUDITION_TIMEOUT_S
             return True, "ok"
         async with self._lock:
+            if self._setup_task is not None:
+                return False, "setup test running"
             prof = load_active(profile_id)
             if prof is None:
                 return False, "profile not found"
@@ -527,6 +555,8 @@ class ShowEngine:
         self._publish()
 
     async def play_profile_from(self, profile_id: int, t: float) -> None:
+        if self._setup_task is not None:
+            raise SetupBusy("setup test running")
         if self.blackout:
             raise RuntimeError("blackout active")
         await self.audition_stop()
@@ -541,6 +571,8 @@ class ShowEngine:
         if on:
             assert image
             async with self._lock:
+                if self._setup_task is not None:
+                    raise SetupBusy("setup test running")
                 await self._stop_scheduler()
                 if self.playing_main:
                     self.playing_main = False
@@ -563,29 +595,91 @@ class ShowEngine:
                 await self._safe(self.player.black())
         self._publish()
 
-    async def play_test_sound(self, path: str, max_wait_s: float = 6.0) -> bool:
-        """Play a short sound once, then restore the idle state. False if a show is busy."""
-        if self.playing_main or self.test_pattern or self.audition is not None:
-            return False
-        async with self._lock:
-            if self.playing_main or self.test_pattern:
-                return False
-            if await self._safe(self.player.load(path)) and self.player.cfg.enabled:
-                # eof-reached is the only end signal mpv gives for an audio-only file.
-                try:
-                    async with asyncio.timeout(max_wait_s):
-                        while not self.player.eof:  # noqa: ASYNC110 - player exposes no eof event
-                            await asyncio.sleep(0.05)
-                except TimeoutError:
-                    pass
+    # ----- setup activities (test sound now; test-all / calibration later) -----
+
+    def setup_blocker(self) -> str | None:
+        """Why a setup action may not start now, or None."""
+        if self._setup_task is not None:
+            return "setup test running"
+        if self.playing_main:
+            return "a show is playing"
+        if self.test_pattern:
+            return "test pattern showing"
+        if self.audition is not None:
+            return "live audition running"
         if self.blackout:
-            await self._safe(self.player.black())
-        elif self.active:
-            await self.activate(self.active.id, autostart=False)
-        else:
-            await self._safe(self.player.black())
+            return "blackout active"
+        return None
+
+    async def begin_setup(
+        self,
+        start: Callable[[], Awaitable[bool]],
+        wait: Callable[[], Awaitable[None]],
+    ) -> None:
+        """Run a setup action: `start` under the lock (False = player unavailable), then `wait`
+        outside it, so blackout and other controls never queue behind a slow test."""
+        async with self._lock:
+            why = self.setup_blocker()
+            if why:
+                raise SetupBusy(why)
+            if not await start():
+                raise SetupUnavailable("player not available")
+            self._setup_task = asyncio.create_task(self._run_setup(wait))
         self._publish()
-        return True
+
+    async def _run_setup(self, wait: Callable[[], Awaitable[None]]) -> None:
+        me = asyncio.current_task()
+        try:
+            await wait()
+        except Exception:  # noqa: BLE001
+            log.exception("setup action failed")
+        # Cancellation (blackout/activate) skips this: the canceller owns the next state.
+        async with self._lock:
+            if self._setup_task is me:
+                await self._restore_idle()
+                self._setup_task = None
+        self._publish()
+
+    async def _cancel_setup(self) -> None:
+        t = self._setup_task
+        if t is None:
+            return
+        self._setup_task = None
+        t.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await t
+
+    async def _restore_idle(self) -> None:
+        """Back to the idle picture of the active profile. Caller holds the lock."""
+        if self.blackout:
+            self.phase = Phase.blackout
+        elif self.active and load_active(self.active.id) is not None:
+            if self.active.type == ProfileType.light:
+                self.phase = Phase.lights
+            else:
+                await self._go_idle()
+                return
+        else:
+            # Profile deleted while the test ran.
+            self.active = None
+            self.timeline = None
+            self.phase = Phase.none
+        await self._safe(self.player.black())
+
+    async def play_test_sound(self, path: str, max_wait_s: float = 6.0) -> None:
+        async def start() -> bool:
+            return self.player.cfg.enabled and await self._safe(self.player.load(path))
+
+        async def wait() -> None:
+            # Path match first: a stale eof from the previous file must not end the test.
+            try:
+                async with asyncio.timeout(max_wait_s):
+                    while not (self.player.path == path and self.player.eof):  # noqa: ASYNC110
+                        await asyncio.sleep(0.05)
+            except TimeoutError:
+                pass
+
+        await self.begin_setup(start, wait)
 
     # ----- blackout / master -----
 
@@ -595,6 +689,8 @@ class ShowEngine:
         self.blackout = on
         self.boards.set_blackout(on)
         if on:
+            # Safety control: never waits for a setup test.
+            await self._cancel_setup()
             async with self._lock:
                 await self._stop_scheduler()
                 self.playing_main = False

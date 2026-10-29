@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from spookhub.api.deps import get_hub
 from spookhub.hub import Hub
 from spookhub.player.devices import drm_outputs
+from spookhub.show.engine import SetupBusy, SetupUnavailable
 from spookhub.show.sounds import ensure_test_sound
 
 router = APIRouter(prefix="/api/setup", tags=["setup"])
@@ -27,16 +28,22 @@ async def audio_devices(hub: HubDep) -> list[dict[str, str]]:
 
 @router.post("/test_sound")
 async def test_sound(hub: HubDep) -> dict[str, bool]:
+    """Returns once the sound has started; the engine restores idle when it ends."""
     eng = hub.engine
-    if eng.playing_main or eng.test_pattern or eng.audition is not None:
-        raise HTTPException(409, "a show is playing")
+    why = eng.setup_blocker()
+    if why:
+        raise HTTPException(409, why)
     try:
         path = await ensure_test_sound(hub.cfg.paths.data_dir)
     except (RuntimeError, OSError) as e:
         raise HTTPException(500, f"could not render test sound: {e}") from e
-    if not await eng.play_test_sound(str(path)):
-        raise HTTPException(409, "a show is playing")
-    return {"ok": True}
+    try:
+        await eng.play_test_sound(str(path))
+    except SetupBusy as e:
+        raise HTTPException(409, str(e)) from e
+    except SetupUnavailable as e:
+        raise HTTPException(503, str(e)) from e
+    return {"ok": True, "started": True}
 
 
 @router.get("/triggers")

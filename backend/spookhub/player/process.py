@@ -384,7 +384,8 @@ class MpvPlayer:
             return []
         try:
             raw = await ipc.get_property("audio-device-list")
-        except MpvError:
+        except Exception as exc:  # noqa: BLE001
+            log.debug("audio-device-list failed: %s", exc)
             return []
         return parse_audio_devices(raw) if isinstance(raw, list) else []
 

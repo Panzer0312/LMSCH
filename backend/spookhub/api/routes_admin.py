@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from spookhub import backup
 from spookhub.api.deps import get_hub
 from spookhub.hub import Hub
+from spookhub.show.engine import SetupBusy
 from spookhub.show.testpattern import ensure_pattern
 
 router = APIRouter(prefix="/api", tags=["admin"])
@@ -30,7 +31,10 @@ async def test_pattern(body: FlagIn, hub: HubDep) -> dict[str, bool]:
             img = await ensure_pattern(hub.cfg.paths.data_dir)
         except RuntimeError as e:
             raise HTTPException(500, f"could not render test pattern: {e}") from e
-        await hub.engine.set_test_pattern(True, str(img))
+        try:
+            await hub.engine.set_test_pattern(True, str(img))
+        except SetupBusy as e:
+            raise HTTPException(409, str(e)) from e
     else:
         await hub.engine.set_test_pattern(False)
     return {"ok": True}

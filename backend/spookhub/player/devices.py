@@ -6,7 +6,15 @@ import re
 from pathlib import Path
 from typing import Any
 
-_CONNECTOR = re.compile(r"^card\d+-(.+)$")
+_CONNECTOR = re.compile(r"^card(\d+)-(.+)$")
+
+
+# Kernel-internal connectors that never carry a projector.
+_SKIP = ("Writeback-", "Virtual-")
+
+
+def _natural(name: str) -> list[Any]:
+    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", name)]
 
 
 def _read(p: Path) -> str:
@@ -24,17 +32,19 @@ def drm_outputs(root: Path = Path("/sys/class/drm")) -> list[dict[str, Any]]:
         m = _CONNECTOR.match(d.name)
         if not m:
             continue
+        if m.group(2).startswith(_SKIP):
+            continue
         status = _read(d / "status") or "unknown"
         out.append(
             {
-                "name": m.group(1),
+                "card": int(m.group(1)),
+                "name": m.group(2),
                 "status": status,
                 "modes": [x for x in _read(d / "modes").splitlines() if x],
                 "enabled": _read(d / "enabled") == "enabled",
             }
         )
-    # Stable sort keeps the sysfs order within each group.
-    out.sort(key=lambda o: o["status"] != "connected")
+    out.sort(key=lambda o: (o["status"] != "connected", o["card"], _natural(o["name"])))
     return out
 
 

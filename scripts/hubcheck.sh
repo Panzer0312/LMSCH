@@ -10,7 +10,7 @@ if have mpv; then mpv --version 2>&1 | head -n 1; else echo "missing"; fi
 
 section "vainfo"
 if have vainfo; then
-  vainfo 2>&1 | grep -E 'libva info: VA-API version|Driver version|VAProfile' | head -n 12 || true
+  vainfo 2>&1 | grep -Ei 'VA-API version|Driver version|VAProfile|error|failed' | head -n 12 || true
 else
   echo "missing"
 fi

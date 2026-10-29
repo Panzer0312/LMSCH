@@ -3,17 +3,26 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
+
+_lock = asyncio.Lock()
 
 
 async def ensure_test_sound(data_dir: Path) -> Path:
+    # Serialised so two concurrent first requests do not race on the same file.
+    async with _lock:
+        return await _render(data_dir)
+
+
+async def _render(data_dir: Path) -> Path:
     out = data_dir / "test-sound.wav"
     if out.exists():
         return out
     # Rising sweep 200->800 Hz over 1.5 s (phase = integral of frequency), then a 0.4 s low tone.
     sweep = "aevalsrc=0.5*sin(2*PI*(200*t+200*t*t/1.5)):d=1.5:s=44100"
     boo = "sine=frequency=110:duration=0.4:sample_rate=44100"
-    tmp = out.with_suffix(".tmp.wav")
+    tmp = out.with_suffix(f".{os.getpid()}.tmp.wav")
     proc = await asyncio.create_subprocess_exec(
         "ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", sweep, "-f", "lavfi", "-i", boo,
         "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1,afade=t=out:st=1.8:d=0.1[a]",
