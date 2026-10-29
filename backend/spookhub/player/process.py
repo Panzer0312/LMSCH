@@ -55,6 +55,8 @@ class MpvPlayer:
         self._task: asyncio.Task[None] | None = None
         self._stopping: bool = False
         self._restart_requested: bool = False
+        # Wall-clock times of unexpected mpv exits (preflight flags a crash loop).
+        self.restart_times: list[float] = []
 
     # ---- lifecycle ---------------------------------------------------------------------------
 
@@ -159,6 +161,8 @@ class MpvPlayer:
                 delay = self.cfg.restart_delay_s
                 continue
             self.bus.event("error", f"mpv exited (code {rc}), restarting")
+            self.restart_times = [t for t in self.restart_times if time.time() - t < 86400]
+            self.restart_times.append(time.time())
             if time.monotonic() - started >= QUICK_CRASH_S:
                 delay = self.cfg.restart_delay_s
             await asyncio.sleep(delay)

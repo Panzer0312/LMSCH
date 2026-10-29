@@ -237,6 +237,17 @@ class BoardManager:
         self.blackout = on
         self.push_all()
 
+    def hold_identify(self) -> None:
+        """White on every adopted board until release_identify (same layer as identify)."""
+        for b in self.adopted():
+            b.identify_until = float("inf")
+        self.push_all()
+
+    def release_identify(self) -> None:
+        for b in self.adopted():
+            b.identify_until = 0.0
+        self.push_all()
+
     async def identify(self, mac: str, seconds: float = 2.0) -> None:
         b = self.boards[mac]
         b.identify_until = time.monotonic() + seconds

@@ -21,6 +21,7 @@ from spookhub.models import RuntimeSettings
 from spookhub.player.process import MpvPlayer
 from spookhub.settings_store import SettingsStore
 from spookhub.show.engine import ShowEngine
+from spookhub.show.preflight import Preflight
 from spookhub.tasks import spawn
 
 log = logging.getLogger(__name__)
@@ -61,6 +62,7 @@ class Hub:
         self.engine = ShowEngine(
             self.boards, self.player, self.bus, self.settings, tick_s=cfg.timing.scheduler_tick_s
         )
+        self.preflight = Preflight(self)
         self.auth = AuthStore()
         self.version = load_version()
         # media id -> {state: running|failed, progress, error}
@@ -95,9 +97,11 @@ class Hub:
             except Exception:  # noqa: BLE001
                 log.exception("mDNS discovery unavailable; use scan/manual add")
         await self.engine.start()
+        await self.preflight.start()
         self.bus.event("info", "Spookhub started")
 
     async def stop(self) -> None:
+        await self.preflight.stop()
         await self.engine.stop()
         if self.mdns:
             await self.mdns.stop()

@@ -62,6 +62,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         ws,
     ):
         app.include_router(r.router)
+    app.include_router(routes_setup.preflight_router)
 
     dist = cfg.server.frontend_dir
     if dist.is_dir():

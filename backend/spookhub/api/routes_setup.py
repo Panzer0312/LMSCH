@@ -11,8 +11,10 @@ from spookhub.hub import Hub
 from spookhub.player.devices import drm_outputs
 from spookhub.show.engine import SetupBusy, SetupUnavailable
 from spookhub.show.sounds import ensure_test_sound
+from spookhub.show.testpattern import ensure_pattern
 
 router = APIRouter(prefix="/api/setup", tags=["setup"])
+preflight_router = APIRouter(prefix="/api/preflight", tags=["preflight"])
 HubDep = Annotated[Hub, Depends(get_hub)]
 
 
@@ -49,3 +51,29 @@ async def test_sound(hub: HubDep) -> dict[str, bool]:
 @router.get("/triggers")
 def triggers(hub: HubDep) -> dict[str, Any]:
     return {"last_trigger": hub.engine.last_trigger}
+
+
+@preflight_router.get("")
+async def preflight(hub: HubDep) -> dict[str, Any]:
+    return await hub.preflight.run()
+
+
+@preflight_router.post("/test_all")
+async def test_all(hub: HubDep) -> dict[str, bool]:
+    """Returns once the test has started; the engine restores idle when it ends."""
+    eng = hub.engine
+    why = eng.setup_blocker()
+    if why:
+        raise HTTPException(409, why)
+    try:
+        sound = await ensure_test_sound(hub.cfg.paths.data_dir)
+        pattern = await ensure_pattern(hub.cfg.paths.data_dir)
+    except (RuntimeError, OSError) as e:
+        raise HTTPException(500, f"could not render test media: {e}") from e
+    try:
+        await eng.run_test_all(str(sound), str(pattern))
+    except SetupBusy as e:
+        raise HTTPException(409, str(e)) from e
+    except SetupUnavailable as e:
+        raise HTTPException(503, str(e)) from e
+    return {"ok": True, "started": True}

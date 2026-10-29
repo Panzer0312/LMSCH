@@ -159,6 +159,7 @@ class ShowEngine:
         self.playing_main = False
         self.last_trigger: dict[str, Any] | None = None
         self._setup_task: asyncio.Task[None] | None = None
+        self._setup_cleanup: Callable[[], None] | None = None
         self._last_cue: dict[str, int | None] = {}
         # What the scheduler is currently driving: main show or browser audition.
         self._sched_prof: ActiveProfile | None = None
@@ -616,15 +617,19 @@ class ShowEngine:
         self,
         start: Callable[[], Awaitable[bool]],
         wait: Callable[[], Awaitable[None]],
+        cleanup: Callable[[], None] | None = None,
     ) -> None:
         """Run a setup action: `start` under the lock (False = player unavailable), then `wait`
-        outside it, so blackout and other controls never queue behind a slow test."""
+        outside it, so blackout and other controls never queue behind a slow test.
+        `cleanup` (idempotent) runs when the action ends or is cancelled, even if the task was
+        cancelled before its first step, where a try/finally inside `wait` would never run."""
         async with self._lock:
             why = self.setup_blocker()
             if why:
                 raise SetupBusy(why)
             if not await start():
                 raise SetupUnavailable("player not available")
+            self._setup_cleanup = cleanup
             self._setup_task = asyncio.create_task(self._run_setup(wait))
         self._publish()
 
@@ -638,10 +643,18 @@ class ShowEngine:
                     await self._restore_idle()
         except Exception:  # noqa: BLE001
             log.exception("setup action failed")
+            # A failed wait must not strand the player/boards on the test picture.
+            try:
+                async with self._lock:
+                    if self._setup_task is me:
+                        await self._restore_idle()
+            except Exception:  # noqa: BLE001
+                log.exception("restore after failed setup action failed")
         finally:
             # Never leave setup_busy stuck, whatever failed above.
             if self._setup_task is me:
                 self._setup_task = None
+                self._run_cleanup()
                 self._publish()
 
     async def _cancel_setup(self) -> None:
@@ -650,11 +663,20 @@ class ShowEngine:
             return
         self._setup_task = None
         t.cancel()
+        self._run_cleanup()
         # wait() instead of awaiting t: a failed task must not raise into blackout, and our own
         # cancellation must still propagate.
         await asyncio.wait({t})
         if not t.cancelled() and t.exception() is not None:
             log.warning("setup task ended with error: %s", t.exception())
+
+    def _run_cleanup(self) -> None:
+        fn, self._setup_cleanup = self._setup_cleanup, None
+        if fn is not None:
+            try:
+                fn()
+            except Exception:  # noqa: BLE001
+                log.exception("setup cleanup failed")
 
     async def _restore_idle(self) -> None:
         """Back to the idle picture of the active profile. Caller holds the lock."""
@@ -679,15 +701,42 @@ class ShowEngine:
             return self.player.cfg.enabled and await self._safe(self.player.load(path))
 
         async def wait() -> None:
-            # Path match first: a stale eof from the previous file must not end the test.
-            try:
-                async with asyncio.timeout(max_wait_s):
-                    while not (self.player.path == path and self.player.eof):  # noqa: ASYNC110
-                        await asyncio.sleep(0.05)
-            except TimeoutError:
-                pass
+            await self._wait_played(path, max_wait_s)
 
         await self.begin_setup(start, wait)
+
+    async def _wait_played(self, path: str, max_wait_s: float) -> None:
+        # Path match first: a stale eof from the previous file must not end the test.
+        try:
+            async with asyncio.timeout(max_wait_s):
+                while not (self.player.path == path and self.player.eof):  # noqa: ASYNC110
+                    await asyncio.sleep(0.05)
+        except TimeoutError:
+            pass
+
+    async def run_test_all(
+        self, sound: str, pattern: str, flash_s: float = 2.0, pattern_s: float = 2.0
+    ) -> None:
+        """Boards white, speaker sweep, projector grid; then idle is restored by the setup runner.
+
+        Player steps are skipped when mpv is off or fails: the board flash is still useful."""
+
+        async def start() -> bool:
+            self.boards.hold_identify()
+            return True
+
+        async def wait() -> None:
+            await asyncio.sleep(flash_s)
+            self.boards.release_identify()
+            if not self.player.cfg.enabled:
+                return
+            if await self._safe(self.player.load(sound)):
+                await self._wait_played(sound, 6.0)
+            if await self._safe(self.player.load(pattern, loop=True)):
+                await asyncio.sleep(pattern_s)
+
+        # Cleanup also covers cancel: a leftover override would flash white after blackout ends.
+        await self.begin_setup(start, wait, self.boards.release_identify)
 
     # ----- blackout / master -----
 

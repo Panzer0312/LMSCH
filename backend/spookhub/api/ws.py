@@ -30,6 +30,7 @@ async def ws(websocket: WebSocket) -> None:
                     "settings": hub.settings.value.model_dump(),
                     "events": list(hub.bus.log),
                     "version": hub.version,
+                    "preflight": hub.preflight.last,
                 },
             }
         )
