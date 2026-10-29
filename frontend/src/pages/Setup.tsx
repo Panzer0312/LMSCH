@@ -2,10 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { useAdoptedBoards, useLive } from '../live'
-import type { AudioDevice, Board, DrmOutput, LastTrigger, Recommendation } from '../types'
+import type { AudioDevice, Board, DrmOutput, LastTrigger, PatternInfo, Recommendation } from '../types'
 import { ErrorText } from '../components/ui'
 import { SetupStep, type StepStatus } from '../components/SetupStep'
 import { ago, useAction } from '../lib'
+import { useDisplayState } from '../video/hooks'
 
 const LOCK_HINT = 'A show is playing or setup is busy. Stop the show to change this.'
 const SHOW_LOCK_HINT = 'Show mode is on — turn it off in Settings or Show mode'
@@ -65,6 +66,31 @@ function LiveSlider(props: Omit<Parameters<typeof Slider>[0], 'onChange'> & { se
   return <Slider {...rest} value={v} onChange={(x) => { dragging.current = true; setV(x); deb(x) }} />
 }
 
+/** Alignment patterns go through setup mode, so they show with the saved geometry applied. */
+function PatternPicker() {
+  const { settings, show } = useLive()
+  const { display } = useDisplayState()
+  const [patterns, setPatterns] = useState<PatternInfo[] | null>(null)
+  const act = useAction()
+  useEffect(() => { api.display.patterns().then(setPatterns, () => setPatterns([])) }, [])
+  const cur = display?.setup && display.source?.kind === 'pattern' ? display.source.id : ''
+  const blocked = !!settings?.show_lock || !!show?.blackout
+  const pick = (id: string) => void act.run(() => (id ? api.display.setup(true, { kind: 'pattern', id }) : api.display.setup(false)))
+  return (
+    <div className="space-y-1">
+      <div className="flex flex-wrap items-center gap-2">
+        <select className="input min-w-0 flex-1" aria-label="Alignment pattern" value={cur}
+          disabled={blocked || act.busy || !patterns?.length} onChange={(e) => pick(e.target.value)}>
+          <option value="">{display?.setup ? 'Leave pattern (back to idle)' : 'Alignment pattern…'}</option>
+          {(patterns ?? []).map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+        </select>
+        <Link className="btn" to="/video">Open video setup</Link>
+      </div>
+      <ErrorText error={act.error} />
+    </div>
+  )
+}
+
 function ProjectorStep({ locked }: { locked: boolean }) {
   const { settings, show } = useLive()
   const [outputs, setOutputs] = useState<DrmOutput[] | null>(null)
@@ -111,6 +137,7 @@ function ProjectorStep({ locked }: { locked: boolean }) {
           {show?.test_pattern ? 'Hide test pattern' : 'Show test pattern on this output'}
         </button>
       </div>
+      <PatternPicker />
       <ErrorText error={act.error} />
     </SetupStep>
   )

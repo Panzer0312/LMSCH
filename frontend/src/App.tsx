@@ -8,6 +8,7 @@ import MediaPage from './pages/Media'
 import SettingsPage from './pages/Settings'
 import TimelineEditor from './pages/TimelineEditor'
 import Setup from './pages/Setup'
+import VideoSetup from './pages/VideoSetup'
 import ShowMode from './pages/ShowMode'
 
 const nav = [
@@ -15,6 +16,7 @@ const nav = [
   ['/profiles', 'Profiles'],
   ['/boards', 'Boards'],
   ['/setup', 'Setup'],
+  ['/video', 'Video'],
   ['/media', 'Media'],
   ['/settings', 'Settings'],
 ] as const
@@ -22,7 +24,7 @@ const nav = [
 export default function App() {
   const { connected, settings } = useLive()
   const locked = !!settings?.show_lock
-  const items = locked ? nav.filter(([to]) => to !== '/profiles' && to !== '/media') : nav
+  const items = locked ? nav.filter(([to]) => to !== '/profiles' && to !== '/media' && to !== '/video') : nav
   return (
     <div className="mx-auto flex min-h-full max-w-6xl flex-col">
       <header className="sticky top-0 z-20 border-b border-line bg-bg/95 backdrop-blur">
@@ -50,6 +52,7 @@ export default function App() {
           <Route path="/boards" element={<Boards />} />
           <Route path="/media" element={<MediaPage />} />
           <Route path="/setup" element={<Setup />} />
+          <Route path="/video" element={<VideoSetup />} />
           <Route path="/show" element={<ShowMode />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>

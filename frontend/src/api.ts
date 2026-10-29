@@ -1,4 +1,4 @@
-import type { Board, Cue, Media, Profile, ProfileIn, Settings, LightState, ThumbsMeta, Waveform, Recommendation, ProfileExport, AppState, Preflight, DrmOutput, AudioDevice, EventRow, EventStats, FallbackResult, LastTrigger, Marker, Onsets, SavedTemplate, TemplateCue } from './types'
+import type { Board, Cue, Media, Profile, ProfileIn, Settings, LightState, ThumbsMeta, Waveform, Recommendation, ProfileExport, AppState, Preflight, DrmOutput, AudioDevice, EventRow, EventStats, FallbackResult, LastTrigger, Marker, Onsets, SavedTemplate, TemplateCue, DisplayGeometry, DisplayProfile, DisplaySource, DisplayState, PatternInfo, BlackCheck } from './types'
 
 export class ApiError extends Error {
   status: number
@@ -109,6 +109,21 @@ export const api = {
     create: (name: string, cues: TemplateCue[]) => post<SavedTemplate>('/api/templates', { name, cues }),
     remove: (id: number) => req<{ ok: boolean }>('DELETE', `/api/templates/${id}`),
   },
+  display: {
+    profiles: () => req<DisplayProfile[]>('GET', '/api/display/profiles'),
+    createProfile: (name: string, geometry: DisplayGeometry) => post<DisplayProfile>('/api/display/profiles', { name, geometry }),
+    updateProfile: (id: number, p: { name?: string; geometry?: DisplayGeometry }) =>
+      req<DisplayProfile>('PUT', `/api/display/profiles/${id}`, p),
+    /** Server clears every reference to it. */
+    deleteProfile: (id: number) => req<{ ok: boolean }>('DELETE', `/api/display/profiles/${id}`),
+    state: () => req<DisplayState>('GET', '/api/display/state'),
+    /** Enter/leave setup mode or switch source. 409 during blackout. */
+    setup: (on: boolean, source?: DisplaySource) => post<DisplayState>('/api/display/setup', source ? { on, source } : { on }),
+    /** Apply without saving; server coalesces. */
+    live: (geometry: DisplayGeometry) => post('/api/display/live', { geometry }),
+    seek: (t: number) => post('/api/display/seek', { t }),
+    patterns: () => req<PatternInfo[]>('GET', '/api/display/patterns'),
+  },
   settings: {
     get: () => req<Settings>('GET', '/api/settings'),
     update: (s: Partial<Settings>) => req<Settings>('PUT', '/api/settings', s),
@@ -122,6 +137,9 @@ export const api = {
     waveform: (id: number) => req<Waveform>('GET', `/api/media/${id}/waveform`),
     onsets: (id: number) => req<Onsets>('GET', `/api/media/${id}/onsets`),
     transcode: (id: number) => post(`/api/media/${id}/transcode`),
+    blackCheck: (id: number) => req<BlackCheck>('GET', `/api/media/${id}/black_check`),
+    setDisplayProfile: (id: number, display_profile_id: number | null) =>
+      req<Media>('PATCH', `/api/media/${id}`, { display_profile_id }),
     /** XHR instead of fetch: fetch has no upload progress events. */
     upload: (file: File, onProgress: (frac: number) => void) =>
       new Promise<Media>((resolve, reject) => {

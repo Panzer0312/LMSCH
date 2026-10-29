@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { useLive } from '../live'
-import type { Media as MediaItem } from '../types'
+import type { BlackCheck, DisplayProfile, Media as MediaItem } from '../types'
+import { normalize } from '../video/geometry'
 import { ErrorText, Section } from '../components/ui'
 import { fmtTime, useAction } from '../lib'
 
@@ -14,9 +16,36 @@ function fmtSize(b: number): string {
   return `${(b / 1024 ** 2).toFixed(1)} MB`
 }
 
-function MediaCard({ m }: { m: MediaItem }) {
+const ASPECT_TOLERANCE = 0.02
+
+function MediaCard({ m, profiles, defaultProfile, onChanged }: {
+  m: MediaItem
+  profiles: DisplayProfile[]
+  defaultProfile: DisplayProfile | null
+  onChanged: () => void
+}) {
   const del = useAction()
   const tx = useAction()
+  const dp = useAction()
+  const bc = useAction()
+  const [black, setBlack] = useState<BlackCheck | null>(null)
+  const aspect = m.aspect ?? (m.width > 0 && m.height > 0 ? m.width / m.height : null)
+  // Compare against what the default profile forces, else the 16:9 output.
+  const refAspect = defaultProfile?.geometry.aspect ?? 16 / 9
+  const ownProfile = m.display_profile_id != null ? profiles.find((p) => p.id === m.display_profile_id) ?? null : null
+  const aspectOff = aspect != null && Math.abs(aspect - refAspect) > ASPECT_TOLERANCE && !ownProfile
+
+  const createProfile = () => {
+    if (aspect == null) return
+    const name = window.prompt('Name for the display profile', `${m.filename.replace(/\.[^.]+$/, '')} framing`)?.trim()
+    if (!name) return
+    void dp.run(async () => {
+      // Start from the default so keystone and mask carry over; only the aspect differs.
+      const p = await api.display.createProfile(name, { ...normalize(defaultProfile?.geometry), aspect })
+      await api.media.setDisplayProfile(m.id, p.id)
+      onChanged()
+    })
+  }
   const { transcodes } = useLive()
   const inUse = m.used_by.length > 0
   const hwRisk = !HW_CODECS.includes(m.codec.toLowerCase()) || m.height > 1080
@@ -64,6 +93,23 @@ function MediaCard({ m }: { m: MediaItem }) {
             </span>
           )}
         </div>
+        {aspectOff && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-md border border-pumpkin/60 bg-pumpkin/15 px-1.5 py-0.5 text-xs text-pumpkin"
+              title={`Default display expects ${refAspect.toFixed(2)}:1`}>
+              aspect {aspect.toFixed(2)}:1 differs from display
+            </span>
+            <button className="btn px-2 py-1 text-xs" disabled={dp.busy} onClick={createProfile}>Create display profile for this video</button>
+          </div>
+        )}
+        {ownProfile && (
+          <p className="text-sm text-mute">Display profile: <Link className="text-ghost underline" to="/video">{ownProfile.name}</Link></p>
+        )}
+        {black && (
+          <p className={`text-sm ${black.ok ? 'text-slime' : 'text-pumpkin'}`}>
+            Black check: {black.message} (level {(black.black_level * 100).toFixed(1)} %, {black.sampled} frames)
+          </p>
+        )}
         <p className="text-sm text-mute">
           Used by: {inUse ? <span className="text-ink">{m.used_by.join(', ')}</span> : 'none'}
         </p>
@@ -84,6 +130,10 @@ function MediaCard({ m }: { m: MediaItem }) {
               {running ? `Converting… ${pct} %` : failed ? 'Retry conversion' : 'Convert to H.264 1080p'}
             </button>
           )}
+          <button className="btn" disabled={bc.busy} title="Checks the background is near black (no light spill on the scrim)"
+            onClick={() => void bc.run(async () => setBlack(await api.media.blackCheck(m.id)))}>
+            {bc.busy ? 'Checking…' : 'Black check'}
+          </button>
           <span title={inUse ? 'In use by a profile; remove it there first' : undefined} className="inline-block">
             <button className="btn btn-danger" disabled={inUse || del.busy} onClick={remove}>
               Delete
@@ -92,13 +142,19 @@ function MediaCard({ m }: { m: MediaItem }) {
         </div>
         <ErrorText error={tx.error} />
         <ErrorText error={del.error} />
+        <ErrorText error={dp.error ?? bc.error} />
       </div>
     </div>
   )
 }
 
 export default function Media() {
-  const { mediaRev } = useLive()
+  const { mediaRev, settings } = useLive()
+  const [displayProfiles, setDisplayProfiles] = useState<DisplayProfile[]>([])
+  const loadDisplay = useCallback(() => { api.display.profiles().then(setDisplayProfiles, () => undefined) }, [])
+  useEffect(loadDisplay, [loadDisplay, mediaRev])
+  const defaultId = settings?.display_profile_id ?? null
+  const defaultProfile = defaultId != null ? displayProfiles.find((p) => p.id === defaultId) ?? null : null
   const [items, setItems] = useState<MediaItem[] | null>(null)
   const list = useAction()
   const [progress, setProgress] = useState<number | null>(null)
@@ -181,7 +237,10 @@ export default function Media() {
           <p className="text-sm text-mute">No media yet. Upload a video to get started.</p>
         ) : (
           <div className="space-y-3">
-            {items.map((m) => <MediaCard key={m.id} m={m} />)}
+            {items.map((m) => (
+              <MediaCard key={m.id} m={m} profiles={displayProfiles} defaultProfile={defaultProfile}
+                onChanged={() => { loadDisplay(); void load() }} />
+            ))}
           </div>
         )}
       </Section>
