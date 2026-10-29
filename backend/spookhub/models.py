@@ -117,6 +117,9 @@ class Profile(SQLModel, table=True):
     idle_media_id: int | None = SQLField(default=None, foreign_key="media.id")
     playback_mode: PlaybackMode = PlaybackMode.once
     cooldown_s: float = 0.0
+    markers: list[dict[str, Any]] = SQLField(
+        default_factory=list, sa_column=Column(JSON, nullable=False, server_default="[]")
+    )
 
 
 class Cue(SQLModel, table=True):
@@ -129,6 +132,8 @@ class Cue(SQLModel, table=True):
     )
     state: dict[str, Any] = SQLField(default_factory=dict, sa_column=Column(JSON))
     transition_ms: int | None = None
+    label: str | None = None
+    color: str | None = None
 
 
 class Setting(SQLModel, table=True):
@@ -150,6 +155,16 @@ class EventLog(SQLModel, table=True):
 # ---------- API schemas ----------
 
 
+HEX_COLOR = r"^#[0-9a-fA-F]{6}$"
+
+
+class Marker(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    t: float = Field(ge=0, allow_inf_nan=False)
+    label: str = Field(default="", max_length=200)
+    color: str | None = Field(default=None, pattern=HEX_COLOR)
+
+
 class ProfileIn(BaseModel):
     name: str
     type: ProfileType = ProfileType.light
@@ -160,6 +175,8 @@ class ProfileIn(BaseModel):
     idle_media_id: int | None = None
     playback_mode: PlaybackMode = PlaybackMode.once
     cooldown_s: float = Field(default=0.0, ge=0)
+    # None = leave stored markers untouched (they have their own endpoint).
+    markers: list[Marker] | None = None
 
     @model_validator(mode="after")
     def _video_needs_media(self) -> ProfileIn:
@@ -172,6 +189,8 @@ class CueIn(BaseModel):
     target: CueTarget = CueTarget()
     state: LightState
     transition_ms: int | None = Field(default=None, ge=0)
+    label: str | None = Field(default=None, max_length=200)
+    color: str | None = Field(default=None, pattern=HEX_COLOR)
 
 
 class CueOut(CueIn):
@@ -181,6 +200,7 @@ class CueOut(CueIn):
 class ProfileOut(ProfileIn):
     id: int
     sort: int
+    markers: list[Marker] = []  # type: ignore[assignment]
     cues: list[CueOut] = []
 
 

@@ -16,6 +16,7 @@ from spookhub.models import (
     CueOut,
     CueTarget,
     LightState,
+    Marker,
     Media,
     Profile,
     ProfileIn,
@@ -43,6 +44,7 @@ def to_out(s: Session, p: Profile) -> ProfileOut:
         idle_media_id=p.idle_media_id,
         playback_mode=p.playback_mode,
         cooldown_s=p.cooldown_s,
+        markers=[Marker.model_validate(m) for m in (p.markers or [])],
         cues=[
             CueOut(
                 id=c.id or 0,
@@ -51,6 +53,8 @@ def to_out(s: Session, p: Profile) -> ProfileOut:
                 target=CueTarget.model_validate(c.target or {}),
                 state=LightState.model_validate(c.state or {}),
                 transition_ms=c.transition_ms,
+                label=c.label,
+                color=c.color,
             )
             for c in cues
         ],
@@ -72,6 +76,8 @@ def _apply(p: Profile, body: ProfileIn, s: Session) -> None:
     p.idle_media_id = body.idle_media_id if body.type == ProfileType.video else None
     p.playback_mode = body.playback_mode
     p.cooldown_s = body.cooldown_s
+    if body.markers is not None:
+        p.markers = [m.model_dump() for m in body.markers]
 
 
 def _get(s: Session, pid: int) -> Profile:
@@ -176,6 +182,8 @@ def _cue_row(pid: int, c: CueIn) -> Cue:
         target=c.target.model_dump(),
         state=c.state.model_dump(exclude_none=True),
         transition_ms=c.transition_ms,
+        label=c.label,
+        color=c.color,
     )
 
 
@@ -193,6 +201,21 @@ async def replace_cues(pid: int, cues: list[CueIn], hub: HubDep) -> ProfileOut:
         s.commit()
         out = to_out(s, p)
     await hub.engine.reload_if_active(pid)
+    _changed(hub)
+    return out
+
+
+@router.put("/{pid}/markers")
+def replace_markers(pid: int, markers: list[Marker], hub: HubDep) -> ProfileOut:
+    ids = [m.id for m in markers]
+    if len(set(ids)) != len(ids):
+        raise HTTPException(422, "duplicate marker id")
+    with db.session() as s:
+        p = _get(s, pid)
+        p.markers = [m.model_dump() for m in sorted(markers, key=lambda m: m.t)]
+        s.add(p)
+        s.commit()
+        out = to_out(s, p)
     _changed(hub)
     return out
 
