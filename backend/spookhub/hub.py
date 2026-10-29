@@ -16,7 +16,7 @@ from spookhub.boards.client import WledClient
 from spookhub.boards.discovery import MdnsDiscovery, scan_subnet
 from spookhub.boards.registry import BoardManager
 from spookhub.config import Config
-from spookhub.events import EventBus
+from spookhub.events import EventBus, EventWriter
 from spookhub.models import RuntimeSettings
 from spookhub.player.process import MpvPlayer
 from spookhub.settings_store import SettingsStore
@@ -43,6 +43,7 @@ class Hub:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
         self.bus = EventBus()
+        self.events = EventWriter(self.bus)
         self.settings = SettingsStore()
         # Many boards × short timeouts: keep connections alive, generous pool.
         self.http = httpx.AsyncClient(
@@ -76,6 +77,7 @@ class Hub:
             log.warning("restored database from backup")
         db.init_engine(self.cfg.paths.db_path)
         self.auth.load()
+        await self.events.start()
         self.cfg.paths.media_dir.mkdir(parents=True, exist_ok=True)
         s = self.settings.load()
         logging.getLogger("spookhub").setLevel(s.log_level.upper())
@@ -108,6 +110,7 @@ class Hub:
         await self.boards.stop()
         await self.player.stop()
         await self.http.aclose()
+        await self.events.stop()
 
     def scan(self) -> bool:
         if self._scan and not self._scan.done():

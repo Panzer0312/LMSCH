@@ -358,7 +358,7 @@ class ShowEngine:
         self._publish()
         if not started:
             return False, "video could not start (see event log)"
-        self.bus.event("info", f"Triggered ({source})")
+        self.bus.event("info", f"Triggered ({source})", kind="trigger", source=source)
         return True, "triggered"
 
     async def play(self, from_s: float = 0.0) -> None:

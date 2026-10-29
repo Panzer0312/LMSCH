@@ -136,6 +136,17 @@ class Setting(SQLModel, table=True):
     value: Any = SQLField(sa_column=Column(JSON))
 
 
+class EventLog(SQLModel, table=True):
+    """Persistent run log (written in batches by EventWriter)."""
+
+    id: int | None = SQLField(default=None, primary_key=True)
+    ts: float = SQLField(index=True)
+    level: str
+    kind: str = "info"
+    message: str
+    data: Any = SQLField(default=None, sa_column=Column(JSON))
+
+
 # ---------- API schemas ----------
 
 

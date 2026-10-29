@@ -163,7 +163,7 @@ class MpvPlayer:
                 self._restart_requested = False
                 delay = self.cfg.restart_delay_s
                 continue
-            self.bus.event("error", f"mpv exited (code {rc}), restarting")
+            self.bus.event("error", f"mpv exited (code {rc}), restarting", kind="player")
             self.restart_times = [t for t in self.restart_times if time.time() - t < 86400]
             self.restart_times.append(time.time())
             self.restart_began = time.monotonic()

@@ -15,6 +15,7 @@ from spookhub.api import (
     routes_admin,
     routes_auth,
     routes_boards,
+    routes_events,
     routes_media,
     routes_profiles,
     routes_setup,
@@ -24,6 +25,7 @@ from spookhub.api import (
 from spookhub.auth import AuthMiddleware
 from spookhub.config import Config, get_config
 from spookhub.hub import Hub
+from spookhub.lock import LockMiddleware
 
 
 def setup_logging(level: str) -> None:
@@ -50,6 +52,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     app = FastAPI(title="Spookhub", version="0.1.0", lifespan=lifespan)
     app.state.hub = hub
+    # Last added runs first: auth must answer 401 before the lock answers 423.
+    app.add_middleware(LockMiddleware, is_locked=lambda: hub.settings.value.show_lock)
     app.add_middleware(AuthMiddleware, store=hub.auth)
     for r in (
         routes_auth,
@@ -58,6 +62,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         routes_profiles,
         routes_setup,
         routes_show,
+        routes_events,
         routes_media,
         ws,
     ):

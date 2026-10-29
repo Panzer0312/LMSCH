@@ -309,7 +309,7 @@ class BoardManager:
             if b.status != prev:
                 log.info("board %s %s -> %s (%s)", b.mac, prev, b.status, e)
                 if b.status == BoardStatus.offline:
-                    self.bus.event("warn", f"{b.name or b.mac} offline", mac=b.mac)
+                    self.bus.event("warn", f"{b.name or b.mac} offline", kind="board", mac=b.mac)
                 self._publish(b)
             return
 
@@ -331,13 +331,13 @@ class BoardManager:
     def _reconcile(self, b: BoardRuntime, reconnect: bool, reason: str = "reconnected") -> None:
         if self.desired(b) is None:
             if reconnect:
-                self.bus.event("info", f"{b.name or b.mac} {reason}", mac=b.mac)
+                self.bus.event("info", f"{b.name or b.mac} {reason}", kind="board", mac=b.mac)
             return
         self.push(b.mac)
         msg = f"{b.name or b.mac} {reason}, state restored"
         log.info(msg)
         if reconnect:
-            self.bus.event("info", msg, mac=b.mac)
+            self.bus.event("info", msg, kind="board", mac=b.mac)
 
     def _update_from_si(self, b: BoardRuntime, data: dict[str, Any]) -> None:
         info = data.get("info", {})

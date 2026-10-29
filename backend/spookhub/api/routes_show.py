@@ -26,6 +26,11 @@ class FlagIn(BaseModel):
     on: bool
 
 
+class LockIn(BaseModel):
+    on: bool
+    pin: str | None = Field(default=None, max_length=64)
+
+
 @router.get("/state")
 def state(hub: HubDep) -> dict[str, Any]:
     return {
@@ -100,6 +105,15 @@ async def deactivate(hub: HubDep) -> dict[str, bool]:
 async def blackout(body: FlagIn, hub: HubDep) -> dict[str, bool]:
     await hub.engine.set_blackout(body.on)
     return {"ok": True}
+
+
+@router.post("/show_lock")
+def show_lock(body: LockIn, hub: HubDep) -> dict[str, bool]:
+    """Turning the lock on is always allowed; turning it off needs the PIN when one is set."""
+    if not body.on and hub.auth.pin_enabled and not hub.auth.check_pin(body.pin or ""):
+        raise HTTPException(401, "wrong PIN")
+    hub.settings.update(show_lock=body.on)  # publishes "settings"
+    return {"show_lock": body.on}
 
 
 @router.get("/settings")
