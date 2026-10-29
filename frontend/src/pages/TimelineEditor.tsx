@@ -50,7 +50,7 @@ function Editor({ profile, media, mediaId }: { profile: Profile; media: Media | 
   const adopted = useAdoptedBoards()
   const boards = profile.selection.all ? adopted : adopted.filter((b) => profile.selection.macs.includes(b.mac))
   const macsKey = boards.map((b) => b.mac).join(',')
-  const lanes: Lane[] = [{ id: ALL_LANE, label: 'All selected' }, ...boards.map((b) => ({ id: b.mac, label: b.name, status: b.status }))]
+  const lanes: Lane[] = [{ kind: 'all', id: ALL_LANE, label: 'All selected' }, ...boards.map((b) => ({ kind: 'board' as const, id: b.mac, label: b.name, status: b.status }))]
 
   const [initial] = useState(() => fromServer(profile.cues))
   const { doc, set: setDoc, undo: undoDoc, redo: redoDoc, canUndo, canRedo } = useHistory(initial)
@@ -315,6 +315,9 @@ function Editor({ profile, media, mediaId }: { profile: Profile; media: Media | 
         playhead={playhead}
         pxPerSec={pxPerSec}
         mediaId={mediaId}
+        boards={boards}
+        base={profile.base_state}
+        overrides={profile.overrides}
         overlaps={overlaps}
         readOnly={mobile}
         snapEnabled={snapOn}

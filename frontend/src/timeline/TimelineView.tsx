@@ -1,13 +1,22 @@
 import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react'
-import type { BoardStatus } from '../types'
+import type { Board, BoardStatus } from '../types'
 import { MediaStrip } from './Strip'
+import { Ribbon } from './Ribbon'
+import { lookAt, toSpecs } from './ribbon'
+import type { ResolveCtx } from './ribbon'
+import { Timeline } from './resolve'
 import { ALL_LANE, clamp, cueColor, lanesOf, round3, snap, snapCandidates, stateLabel, setDragging } from './model'
 import type { TLCue, TimelineViewProps } from './model'
 
 const RULER_H = 24
 const STRIP_H = 88
 const LANE_H = 44
+const RIBBON_H = 8
+// Board lanes carry a resolved-color ribbon below the cue blocks.
+const laneHeight = (l: { kind: string }) => LANE_H + (l.kind === 'board' ? RIBBON_H : 0)
+const NO_OVERRIDES = {}
+const NO_BOARDS: never[] = []
 const SNAP_PX = 8
 const MIN_DUR = 0.05
 const MIN_BLOCK_PX = 8
@@ -57,9 +66,20 @@ function snapAdjust(values: number[], cands: number[], thr: number): number {
   return best
 }
 
+function LanePreview({ ctx, board, t }: { ctx: ResolveCtx; board: Board; t: number }) {
+  const l = lookAt(ctx, board, t)
+  return (
+    <div className="flex items-center gap-1 text-[10px] text-mute">
+      <span className="h-2.5 w-2.5 shrink-0 rounded-sm border border-line" style={{ backgroundColor: l.color }} />
+      <span className="truncate">{l.label}</span>
+    </div>
+  )
+}
+
 export function TimelineView(props: TimelineViewProps) {
   const {
-    duration, cues, lanes, selected, playhead, pxPerSec, mediaId, overlaps, readOnly = false,
+    duration, cues, lanes, selected, playhead, pxPerSec, mediaId, overlaps,
+    boards = NO_BOARDS, base, overrides = NO_OVERRIDES, readOnly = false,
     snapEnabled, onSeek, onSelect, onChange, onZoom, onAddAt,
   } = props
   const editable = !readOnly
@@ -71,7 +91,16 @@ export function TimelineView(props: TimelineViewProps) {
   const lastPlayhead = useRef(playhead)
 
   const contentW = Math.max(duration, 1) * pxPerSec + 40
-  const lanesH = lanes.length * LANE_H
+  const lanesH = lanes.reduce((n, l) => n + laneHeight(l), 0)
+  const boardByMac = useMemo(() => new Map(boards.map((b) => [b.mac, b])), [boards])
+  const boardsKey = boards.map((b) => b.mac).join(',')
+  // Rebuilt on doc/base changes only; the playhead never invalidates it.
+  const resolveCtx = useMemo<ResolveCtx>(() => ({
+    timeline: new Timeline(toSpecs(cues), boardsKey ? boardsKey.split(',') : []),
+    base: base ?? {},
+    overrides,
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- boardsKey stands in for boards
+  }), [cues, boardsKey, base, overrides])
 
   const laneItems = useMemo(() => {
     const m = new Map<string, LaneItem[]>()
@@ -271,11 +300,16 @@ export function TimelineView(props: TimelineViewProps) {
             className={`flex items-center gap-2 border-b border-line px-2 text-xs ${
               l.id === ALL_LANE ? 'bg-ghost/10 font-semibold' : i % 2 ? 'bg-panel-2' : 'bg-panel'
             }`}
-            style={{ height: LANE_H }}
+            style={{ height: laneHeight(l) }}
             title={l.label}
           >
-            {l.id !== ALL_LANE && <span className={`h-2 w-2 shrink-0 rounded-full ${DOT[l.status ?? 'unknown']}`} />}
-            <span className="truncate">{l.label}</span>
+            {l.kind === 'board' && <span className={`h-2 w-2 shrink-0 rounded-full ${DOT[l.status ?? 'unknown']}`} />}
+            <div className="min-w-0 flex-1">
+              <div className="truncate">{l.label}</div>
+              {l.kind === 'board' && boardByMac.has(l.id) && (
+                <LanePreview ctx={resolveCtx} board={boardByMac.get(l.id)!} t={playhead} />
+              )}
+            </div>
           </div>
         ))}
       </div>
@@ -318,10 +352,13 @@ export function TimelineView(props: TimelineViewProps) {
               className={`relative border-b border-line ${
                 l.id === ALL_LANE ? 'bg-ghost/10' : i % 2 ? 'bg-panel-2' : 'bg-panel'
               }`}
-              style={{ height: LANE_H }}
+              style={{ height: laneHeight(l) }}
               onClick={onLaneClick}
               onDoubleClick={(e) => onLaneDouble(e, l.id)}
             >
+              {l.kind === 'board' && boardByMac.has(l.id) && (
+                <Ribbon ctx={resolveCtx} board={boardByMac.get(l.id)!} duration={duration} pxPerSec={pxPerSec} height={RIBBON_H} />
+              )}
               {(laneItems.get(l.id) ?? []).map(({ cue, end, open }) => {
                 const col = cueColor(cue)
                 const isSel = selected.has(cue.key)

@@ -3,7 +3,7 @@
  * Pure logic, shared by TimelineView (rendering + pointer editing) and TimelineEditor (page).
  */
 import { useCallback, useState } from 'react'
-import type { BoardStatus, Cue } from '../types'
+import type { Board, BoardStatus, Cue, LightState } from '../types'
 
 /** Lane id of the "All selected boards" lane (always the first lane). */
 export const ALL_LANE = '__all__'
@@ -11,7 +11,8 @@ export const ALL_LANE = '__all__'
 /** Cue with a stable client key (server ids change on every save). */
 export interface TLCue extends Cue { key: string }
 
-export interface Lane { id: string; label: string; status?: BoardStatus }
+/** `sound` (phase 4) and `device` (phase 5) kinds extend this union. */
+export interface Lane { kind: 'all' | 'board'; id: string; label: string; status?: BoardStatus }
 
 let seq = 0
 export const newKey = () => `c${Date.now().toString(36)}${(seq++).toString(36)}`
@@ -128,6 +129,10 @@ export interface TimelineViewProps {
   playhead: number
   pxPerSec: number
   mediaId: number | null
+  /** Boards, profile base and overrides drive the lane preview and ribbon. */
+  boards?: Board[]
+  base?: LightState
+  overrides?: Record<string, LightState>
   overlaps: Set<string>
   readOnly?: boolean
   snapEnabled: boolean
