@@ -90,16 +90,15 @@ async def test_no_stall_while_advancing_paused_or_loading(stall):
     eng, p = stall
     eng.timeline = Timeline([], [])
     await eng._play_main(0.0)
-    for _ in range(15):  # 0.3 s > stall_s, but time-pos keeps moving
-        _tick_pos(p, p.time_pos or 1.0)
-        p.time_pos += 0.02
+    for _ in range(30):  # 0.6 s > stall_s (0.4), but time-pos keeps moving
+        _tick_pos(p, (p.time_pos or 1.0) + 0.02)
         await asyncio.sleep(0.02)
     p.paused = True
     _tick_pos(p, 3.0)
-    await asyncio.sleep(0.3)
+    await asyncio.sleep(0.6)
     p.paused = False
     p._loading = True
-    await asyncio.sleep(0.3)
+    await asyncio.sleep(0.6)
     assert p.restarts == 0 and eng.playing_main
     await eng._end_show("stopped")
 
@@ -406,3 +405,25 @@ async def test_fallback_saves_base_not_inflight_push(client, farm):  # noqa: F81
     sim.latency_ms = 0
     assert res[0]["ok"] and sim.presets["250"]["bri"] == 180
     await wait_for(lambda: sim.state["bri"] == 33)  # desired state replayed afterwards
+
+
+async def test_fallback_blocked_midway_refuses_remaining_boards(client, farm):  # noqa: F811
+    macs = await _adopt(client, farm, 2)
+    for m in macs:
+        client.hub.boards.set_manual(m, LightState(on=True, bri=50))
+    await wait_for(lambda: all(b.state["bri"] == 50 for b in farm.boards))
+    boards = client.hub.boards
+    real = boards.save_fallback
+
+    async def save_then_show_starts(mac, state):
+        err = await real(mac, state)
+        client.hub.engine.playing_main = True
+        return err
+
+    boards.save_fallback = save_then_show_starts  # type: ignore[method-assign]
+    res = (await client.post("/api/boards/fallback")).json()["results"]
+    client.hub.engine.playing_main = False
+    assert [x["ok"] for x in res] == [True, False]
+    assert res[1]["error"] == "refused: a show is playing"
+    assert "250" in farm.boards[0].presets and "250" not in farm.boards[1].presets
+    assert "def" not in farm.boards[1].cfg

@@ -63,6 +63,13 @@ async def _fallback(hub: Hub, macs: list[str]) -> dict[str, Any]:
     results = []
     for mac in macs:
         b = hub.boards.boards[mac]
+        # Saving takes a while per board; a show may start meanwhile.
+        why = hub.engine.fallback_blocker()
+        if why:
+            results.append(
+                {"mac": mac, "name": b.name or mac, "ok": False, "error": f"refused: {why}"}
+            )
+            continue
         # The profile's base is the look boards should boot into. Without a profile only an
         # explicit manual state counts; desired() could be a cue, blackout or identify flash.
         state = active.base_for(mac) if active else b.manual
