@@ -54,8 +54,10 @@ function LiveSlider(props: Omit<Parameters<typeof Slider>[0], 'onChange'> & { se
   const [v, setV] = useState(value)
   const dragging = useRef(false)
   const valueRef = useRef(value)
-  valueRef.current = value
-  useEffect(() => { if (!dragging.current) setV(value) }, [value])
+  useEffect(() => {
+    valueRef.current = value
+    if (!dragging.current) setV(value)
+  }, [value])
   const deb = useDebounced((x: number) => {
     void send(x).then(() => undefined, () => setV(valueRef.current))
       .finally(() => { dragging.current = false })

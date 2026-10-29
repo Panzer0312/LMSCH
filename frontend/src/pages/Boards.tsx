@@ -87,11 +87,9 @@ function OffsetField({ board }: { board: Board }) {
   const [saved, setSaved] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const shown = draft ?? String(board.offset_ms)
-
-  useEffect(() => {
-    if (saved !== null && board.offset_ms === saved) { setDraft(null); setSaved(null) }
-  }, [board.offset_ms, saved])
+  // Keep the saved draft on screen until the live board snapshot catches up.
+  const synced = saved !== null && board.offset_ms === saved
+  const shown = synced ? String(board.offset_ms) : (draft ?? String(board.offset_ms))
 
   const commit = async () => {
     if (draft === null) return
