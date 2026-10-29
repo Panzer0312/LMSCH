@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { api } from '../api'
+import { api, ApiError } from '../api'
 import { useLive } from '../live'
-import type { Board, BoardStatus, Recommendation } from '../types'
+import type { Board, BoardStatus, FallbackResult, Recommendation } from '../types'
 import { ErrorText, Section, SignalBars, StatusDot } from '../components/ui'
 import { ago, useAction } from '../lib'
 
@@ -14,6 +14,114 @@ type CheckResult = Recommendation[] | 'loading' | { error: string }
 function fmtMac(mac: string): string {
   const hex = mac.toLowerCase().replace(/[^0-9a-f]/g, '')
   return hex.length === 12 ? (hex.match(/.{2}/g) ?? []).join(':') : mac
+}
+
+function fmtErr(e: unknown): string {
+  if (e instanceof ApiError && e.status === 409) {
+    return `${e.message} (refused: show playing, blackout or setup busy)`
+  }
+  return e instanceof Error ? e.message : String(e)
+}
+
+function ResultList({ results }: { results: FallbackResult[] }) {
+  return (
+    <ul className="space-y-1 rounded-lg border border-line p-2 text-xs">
+      {results.map((r) => (
+        <li key={r.mac} className="flex items-start gap-2">
+          <span className={r.ok ? 'text-slime' : 'text-blood'} aria-label={r.ok ? 'ok' : 'error'}>{r.ok ? '✓' : '✗'}</span>
+          <span className="min-w-0 break-words">
+            <b>{r.name || fmtMac(r.mac)}</b>
+            {!r.ok && r.error ? ` — ${r.error}` : ''}
+          </span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function useFallback(run: () => Promise<{ results: FallbackResult[] }>, msg: string) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [results, setResults] = useState<FallbackResult[] | null>(null)
+  const go = async () => {
+    if (!window.confirm(msg)) return
+    setBusy(true)
+    setError(null)
+    setResults(null)
+    try {
+      setResults((await run()).results)
+    } catch (e) {
+      setError(fmtErr(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return { busy, error, results, go }
+}
+
+function FallbackAll() {
+  const fb = useFallback(
+    () => api.boards.fallbackAll(),
+    'Write fallback to ALL boards? This writes each board\'s flash (WLED preset 250 + boot preset) and needs an active profile. Not allowed while a show plays.',
+  )
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <button className="btn" disabled={fb.busy} onClick={() => void fb.go()}>
+          {fb.busy ? 'Saving…' : 'Save fallback to boards'}
+        </button>
+        <span className="text-xs text-mute">Boards run this if the Pi dies. Needs an active profile.</span>
+      </div>
+      <ErrorText error={fb.error} />
+      {fb.results && <ResultList results={fb.results} />}
+    </div>
+  )
+}
+
+function OffsetField({ board }: { board: Board }) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const shown = draft ?? String(board.offset_ms)
+
+  const commit = async () => {
+    if (draft === null) return
+    const n = Math.max(-500, Math.min(500, Math.round(Number(draft))))
+    if (draft.trim() === '' || !Number.isFinite(n) || n === board.offset_ms) { setDraft(null); return }
+    setBusy(true)
+    setError(null)
+    try {
+      await api.boards.setOffset(board.mac, n)
+    } catch (e) {
+      setError(fmtErr(e))
+    } finally {
+      setBusy(false)
+      setDraft(null)
+    }
+  }
+
+  return (
+    <div className="space-y-1">
+      <label className="flex items-center gap-2 text-xs">
+        <span className="text-mute">Offset (ms)</span>
+        <input
+          type="number"
+          className="input w-24"
+          min={-500}
+          max={500}
+          step={1}
+          inputMode="numeric"
+          value={shown}
+          disabled={busy}
+          aria-label="Board offset in milliseconds"
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => void commit()}
+          onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
+        />
+      </label>
+      <ErrorText error={error} />
+    </div>
+  )
 }
 
 function Toolbar() {
@@ -172,6 +280,10 @@ function BoardCard({ board, check, onCheck }: { board: Board; check: CheckResult
   const live = board.live ?? {}
   const shownBri = bri ?? live.bri ?? 0
   const fxName = live.fx != null ? board.effects?.[live.fx] : undefined
+  const fb = useFallback(
+    () => api.boards.fallback(board.mac),
+    `Write fallback to "${board.name}"? This writes the board's flash (WLED preset 250 + boot preset) and needs an active profile. Not allowed while a show plays.`,
+  )
   const c = live.col?.[0]
   const swatch = c && c.length >= 3 ? `rgb(${c[0]},${c[1]},${c[2]})` : null
 
@@ -258,8 +370,11 @@ function BoardCard({ board, check, onCheck }: { board: Board; check: CheckResult
         <span className="w-8 text-right text-xs tabular-nums text-mute">{shownBri}</span>
       </div>
 
+      <OffsetField board={board} />
+
       <div className="flex flex-wrap gap-2">
         <button className="btn" disabled={act.busy} onClick={() => act.run(() => api.boards.identify(board.mac))}>Identify</button>
+        <button className="btn" disabled={fb.busy} onClick={() => void fb.go()}>{fb.busy ? 'Saving…' : 'Save fallback'}</button>
         <a className="btn" href={`http://${board.ip}`} target="_blank" rel="noreferrer">WLED UI</a>
         <button className="btn" disabled={act.busy} onClick={() => act.run(() => api.boards.refresh(board.mac))}>Refresh</button>
         {!renaming && (
@@ -271,6 +386,8 @@ function BoardCard({ board, check, onCheck }: { board: Board; check: CheckResult
         <button className="btn btn-danger" disabled={act.busy} onClick={doRemove}>Remove</button>
       </div>
       <ErrorText error={act.error} />
+      <ErrorText error={fb.error} />
+      {fb.results && <ResultList results={fb.results} />}
       {check !== undefined && <CheckList board={board} check={check} onCheck={onCheck} />}
     </li>
   )
@@ -360,6 +477,7 @@ export default function Boards() {
           <p className="rounded-lg border border-pumpkin/40 bg-pumpkin/10 p-2 text-xs">
             <b>Recommended:</b> give every board a DHCP reservation / static IP in your router, so it keeps the same address and doesn't drop out of shows.
           </p>
+          <FallbackAll />
         </div>
       </Section>
 

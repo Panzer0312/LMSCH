@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { useAdoptedBoards, useLive } from '../live'
-import type { Phase, Profile, ShowEvent } from '../types'
+import type { EventRow, EventStats, Phase, Profile, ShowEvent } from '../types'
 import { BlackoutButton } from '../components/BlackoutButton'
 import { ErrorText, Section, StatusDot } from '../components/ui'
 import { fmtTime, useAction } from '../lib'
@@ -103,9 +103,14 @@ function Controls() {
   )
 }
 
-function BrightnessSlider() {
-  const live = useLive().settings?.master_brightness
-  const [val, setVal] = useState(() => Math.round((live ?? 1) * 100))
+function LevelSlider({ label, field, scale, max }: {
+  label: string
+  field: 'master_brightness' | 'master_volume'
+  scale: number
+  max: number
+}) {
+  const live = useLive().settings?.[field]
+  const [val, setVal] = useState(() => Math.round((live ?? 1) * scale))
   const dragging = useRef(false)
   const lastSent = useRef(0)
   const timer = useRef<number | undefined>(undefined)
@@ -113,13 +118,13 @@ function BrightnessSlider() {
   const { error, run } = useAction()
 
   useEffect(() => {
-    if (!dragging.current && live != null) setVal(Math.round(live * 100))
-  }, [live])
+    if (!dragging.current && live != null) setVal(Math.round(live * scale))
+  }, [live, scale])
 
   useEffect(() => () => {
     window.clearTimeout(timer.current)
-    if (pending.current != null) void api.settings.update({ master_brightness: pending.current / 100 }).catch(() => {})
-  }, [])
+    if (pending.current != null) void api.settings.update({ [field]: pending.current / scale }).catch(() => {})
+  }, [field, scale])
 
   const flush = () => {
     window.clearTimeout(timer.current)
@@ -128,7 +133,7 @@ function BrightnessSlider() {
     if (v == null) return
     pending.current = null
     lastSent.current = Date.now()
-    void run(() => api.settings.update({ master_brightness: v / 100 }))
+    void run(() => api.settings.update({ [field]: v / scale }))
   }
 
   const onInput = (v: number) => {
@@ -148,13 +153,13 @@ function BrightnessSlider() {
   return (
     <div className="card space-y-2">
       <div className="flex items-center justify-between">
-        <span className="label mb-0">Master brightness</span>
+        <span className="label mb-0">{label}</span>
         <span className="text-sm font-semibold tabular-nums">{val} %</span>
       </div>
       <input
         type="range"
         min={0}
-        max={100}
+        max={Math.max(1, Math.round(max))}
         step={1}
         value={val}
         disabled={live == null}
@@ -269,15 +274,118 @@ function EventLog() {
   )
 }
 
+function PreflightBanner() {
+  const pf = useLive().preflight
+  if (pf?.worst !== 'fail') return null
+  const failing = pf.checks.filter((c) => c.status === 'fail')
+  return (
+    <div className="card flex items-start justify-between gap-3 border-blood text-blood">
+      <div className="min-w-0">
+        <div className="font-semibold">Pre-show check failed</div>
+        <ul className="list-disc pl-5 text-sm">
+          {failing.map((c) => <li key={c.id} className="break-words">{c.label}</li>)}
+        </ul>
+      </div>
+      <Link to="/setup" className="btn shrink-0">Setup</Link>
+    </div>
+  )
+}
+
+function tonightStart() {
+  const d = new Date()
+  if (d.getHours() < 12) d.setDate(d.getDate() - 1)
+  d.setHours(12, 0, 0, 0)
+  return d.getTime() / 1000
+}
+
+function History() {
+  const events = useLive().events
+  const last = events[events.length - 1]
+  const key = last ? `${last.ts}|${last.message}` : ''
+  const [rows, setRows] = useState<EventRow[]>([])
+  const [stats, setStats] = useState<EventStats | null>(null)
+  const { error, run } = useAction()
+  const first = useRef(true)
+
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      const [r, s] = await Promise.all([
+        run(() => api.events.list({ limit: 100 })),
+        run(() => api.events.stats(tonightStart())),
+      ])
+      if (cancelled) return
+      if (r) setRows(r)
+      if (s) setStats(s)
+    }
+    const t = window.setTimeout(() => void load(), first.current ? 0 : 2000)
+    first.current = false
+    return () => {
+      cancelled = true
+      window.clearTimeout(t)
+    }
+  }, [key, run])
+
+  const bars = stats?.by_hour ?? []
+  const peak = Math.max(1, ...bars.map((b) => b.count))
+  return (
+    <Section title="History">
+      <div className="card space-y-3">
+        <div className="flex items-baseline justify-between">
+          <span className="label mb-0">Triggers tonight</span>
+          <span className="text-2xl font-bold tabular-nums text-pumpkin">{stats?.triggers ?? '–'}</span>
+        </div>
+        {bars.length > 0 && (
+          <div className="space-y-1">
+            {bars.map((b) => (
+              <div key={b.hour_ts} className="flex items-center gap-2 text-xs tabular-nums">
+                <span className="w-12 shrink-0 text-mute">{hms(b.hour_ts).slice(0, 5)}</span>
+                <div className="h-3 min-w-0 flex-1 overflow-hidden rounded bg-line">
+                  <div className="h-full rounded bg-pumpkin" style={{ width: `${(b.count / peak) * 100}%` }} />
+                </div>
+                <span className="w-8 shrink-0 text-right">{b.count}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <ErrorText error={error} />
+      </div>
+      <div className="card p-0">
+        {rows.length === 0 ? (
+          <p className="p-4 text-sm text-mute">No history.</p>
+        ) : (
+          <ul className="max-h-96 divide-y divide-line overflow-y-auto font-mono text-xs">
+            {rows.map((e) => (
+              <li key={e.id} className="flex gap-3 px-3 py-2">
+                <span className="shrink-0 tabular-nums text-mute">{hms(e.ts)}</span>
+                <span className={`min-w-0 break-words ${levelColor[e.level]}`}>{e.message}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </Section>
+  )
+}
+
 export default function Dashboard() {
+  const settings = useLive().settings
   return (
     <div className="mx-auto max-w-3xl space-y-6">
+      <PreflightBanner />
       <ActiveProfile />
       <Controls />
-      <BrightnessSlider />
+      <Link to="/show" className="btn w-full">Show mode</Link>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <LevelSlider label="Master brightness" field="master_brightness" scale={100}
+          max={(settings?.brightness_cap ?? 1) * 100} />
+        <LevelSlider label="Master volume" field="master_volume" scale={1}
+          max={settings?.volume_cap ?? 100} />
+      </div>
       <ProfileSwitcher />
       <BoardStrip />
       <EventLog />
+      <History />
     </div>
   )
 }

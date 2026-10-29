@@ -1,5 +1,5 @@
 import { useEffect, useState, type ChangeEvent } from 'react'
-import { api } from '../api'
+import { api, ApiError } from '../api'
 import { useLive } from '../live'
 import type { Settings as SettingsT } from '../types'
 import { ErrorText, Section, Toggle } from '../components/ui'
@@ -14,6 +14,8 @@ interface Form {
   log_level: string
   mpv_vo: string
   mpv_gpu_context: string
+  brightness_cap: string
+  volume_cap: string
 }
 
 const toForm = (s: SettingsT): Form => ({
@@ -23,6 +25,8 @@ const toForm = (s: SettingsT): Form => ({
   log_level: s.log_level,
   mpv_vo: s.mpv_vo ?? '',
   mpv_gpu_context: s.mpv_gpu_context ?? '',
+  brightness_cap: String(Math.round(s.brightness_cap * 100)),
+  volume_cap: String(s.volume_cap),
 })
 
 export default function Settings() {
@@ -35,6 +39,7 @@ export default function Settings() {
   const sec = useAction()
   const tok = useAction()
   const bak = useAction()
+  const lock = useAction()
   const [pinEnabled, setPinEnabled] = useState<boolean | null>(null)
   const [pin, setPin] = useState('')
   const [token, setToken] = useState('')
@@ -92,6 +97,12 @@ export default function Settings() {
     if (!Number.isFinite(health) || health < 0.5 || health > 60) return save.setError('Health interval must be 0.5–60 s.')
     if (draft.default_transition_ms.trim() === '' || !Number.isFinite(trans) || trans < 0)
       return save.setError('Default transition must be a non-negative number.')
+    const bcap = Number(draft.brightness_cap)
+    const vcap = Number(draft.volume_cap)
+    if (draft.brightness_cap.trim() === '' || !Number.isFinite(bcap) || bcap < 0 || bcap > 100)
+      return save.setError('Brightness cap must be 0–100 %.')
+    if (draft.volume_cap.trim() === '' || !Number.isFinite(vcap) || vcap < 0 || vcap > 130)
+      return save.setError('Volume cap must be 0–130.')
     const body: Partial<SettingsT> = {
       sync_offset_ms: Math.round(sync),
       health_interval_s: health,
@@ -99,12 +110,27 @@ export default function Settings() {
       log_level: draft.log_level,
       mpv_vo: draft.mpv_vo.trim() || null,
       mpv_gpu_context: draft.mpv_gpu_context.trim() || null,
+      brightness_cap: bcap / 100,
+      volume_cap: vcap,
     }
     const r = await save.run(() => api.settings.update(body))
     if (r) {
       setDraft(toForm(r))
       setSaved(true)
     }
+  }
+
+  const onLock = async (on: boolean) => {
+    await lock.run(async () => {
+      try {
+        await api.showLock(on)
+      } catch (e) {
+        if (on || !(e instanceof ApiError) || e.status !== 401) throw e
+        const p = window.prompt('PIN to turn off show mode')
+        if (p == null) return
+        await api.showLock(false, p)
+      }
+    })
   }
 
   const onSetPin = async () => {
@@ -173,6 +199,18 @@ export default function Settings() {
               value={draft.default_transition_ms} onChange={(e) => set('default_transition_ms', e.target.value)} />
           </div>
           <div>
+            <label className="label" htmlFor="bcap">Brightness cap (%)</label>
+            <input id="bcap" className="input" type="number" inputMode="numeric" min={0} max={100} step={1}
+              value={draft.brightness_cap} onChange={(e) => set('brightness_cap', e.target.value)} />
+            <p className="mt-1 text-xs text-mute">0–100 %, max for master brightness</p>
+          </div>
+          <div>
+            <label className="label" htmlFor="vcap">Volume cap</label>
+            <input id="vcap" className="input" type="number" inputMode="numeric" min={0} max={130} step={1}
+              value={draft.volume_cap} onChange={(e) => set('volume_cap', e.target.value)} />
+            <p className="mt-1 text-xs text-mute">0–130, max for master volume</p>
+          </div>
+          <div>
             <label className="label" htmlFor="log">Log level</label>
             <select id="log" className="input" value={draft.log_level} onChange={(e) => set('log_level', e.target.value)}>
               {LOG_LEVELS.map((l) => <option key={l} value={l}>{l}</option>)}
@@ -213,6 +251,13 @@ export default function Settings() {
       </Section>
 
       <Section title="Security">
+        <div className="card space-y-2">
+          <Toggle checked={live.settings?.show_lock ?? false} label="Show mode (lock editing)"
+            onChange={(v) => void onLock(v)} />
+          <p className="text-xs text-mute">Blocks edits to profiles, cues, boards, media and settings. Turning off needs the PIN if one is set.</p>
+          <ErrorText error={lock.error} />
+        </div>
+
         <div className="card space-y-3">
           <div>
             <label className="label" htmlFor="pin">UI PIN</label>
@@ -280,6 +325,12 @@ export default function Settings() {
           <ErrorText error={bak.error} />
         </div>
       </Section>
+
+      {live.version && (
+        <p className="text-center text-xs text-mute">
+          Version {live.version.commit}{live.version.installed_at ? ` · installed ${live.version.installed_at}` : ''}
+        </p>
+      )}
     </div>
   )
 }
