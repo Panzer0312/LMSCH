@@ -164,12 +164,14 @@ class AuditionIn(BaseModel):
     profile_id: int
     t: float = Field(ge=0)
     playing: bool
+    # Boards that stay on the profile base while auditioning (solo/mute in the editor).
+    muted: list[str] = []
 
 
 @router.post("/audition")
 async def audition(body: AuditionIn, hub: HubDep) -> dict[str, Any]:
     """Browser preview reports its playhead (on play/pause/seek and ~1 s heartbeat)."""
-    ok, msg = await hub.engine.audition_update(body.profile_id, body.t, body.playing)
+    ok, msg = await hub.engine.audition_update(body.profile_id, body.t, body.playing, body.muted)
     if not ok:
         raise HTTPException(409, msg)
     return {"ok": True, "message": msg}

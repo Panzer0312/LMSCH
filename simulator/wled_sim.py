@@ -35,6 +35,9 @@ EFFECTS: list[str] = [
     "Strobe",
 ]
 
+# WLED fxdata strings: "<sliders>;<colors>;<palette>" per effect, same index as EFFECTS.
+FXDATA: list[str] = ["" if i == 0 else "@Speed,Intensity;!,!;!" for i in range(len(EFFECTS))]
+
 PALETTES: list[str] = [
     "Default",
     "* Random Cycle",
@@ -247,6 +250,10 @@ def make_app(board: FakeBoard) -> FastAPI:
     @app.get("/json/effects")
     async def get_effects() -> list[str]:
         return EFFECTS
+
+    @app.get("/json/fxdata")
+    async def get_fxdata() -> list[str]:
+        return FXDATA
 
     @app.get("/json/palettes")
     async def get_palettes() -> list[str]:

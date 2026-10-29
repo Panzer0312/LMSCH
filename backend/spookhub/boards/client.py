@@ -56,6 +56,9 @@ class WledClient:
     async def palettes(self, ip: str, timeout: float = 3.0) -> list[str]:
         return (await self._req("GET", ip, "/json/palettes", timeout))[0]
 
+    async def fxdata(self, ip: str, timeout: float = 3.0) -> list[str]:
+        return (await self._req("GET", ip, "/json/fxdata", timeout))[0]
+
     async def presets(self, ip: str, timeout: float = 3.0) -> dict[str, Any]:
         return (await self._req("GET", ip, "/presets.json", timeout))[0]
 

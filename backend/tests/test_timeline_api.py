@@ -98,3 +98,16 @@ async def test_thumbs_and_waveform(client, tmp_path):  # noqa: F811
     assert wave["rate"] > 0 and max(wave["peaks"]) == 1.0
     r = await client.get(f"/api/media/{mid}/file", headers={"Range": "bytes=0-99"})
     assert r.status_code == 206 and len(r.content) == 100
+
+
+async def test_audition_muted_board_holds_base(client, farm):  # noqa: F811
+    sims, macs = await _setup(client, farm)
+    pid = await _video_profile(client, [{"start_s": 0.1, "state": {"bri": 111}}])
+    body = {"profile_id": pid, "t": 0.0, "playing": True, "muted": [macs[1]]}
+    assert (await client.post("/api/audition", json=body)).status_code == 200
+    await wait_for(lambda: sims[0].state["bri"] == 111, timeout=2)
+    assert sims[1].state["bri"] == 20
+    # Unmuting on a heartbeat releases the cue.
+    await client.post("/api/audition", json={**body, "muted": []})
+    await wait_for(lambda: sims[1].state["bri"] == 111, timeout=2)
+    await client.post("/api/audition/stop")

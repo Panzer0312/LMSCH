@@ -50,6 +50,8 @@ class AuditionClock:
     playing: bool
     recv: float
     deadline: float
+    # MACs held at the profile base (muted in the editor).
+    muted: frozenset[str] = frozenset()
 
     def position(self) -> tuple[float | None, bool]:
         if not self.playing:
@@ -646,7 +648,10 @@ class ShowEngine:
                 # The clip loops: a lead past the end (or before 0) must see the neighbouring
                 # loop's flash, else the t=0 flash is lost for boards that fire early.
                 at %= CLIP_S
-            cue_id, state = tl.state_at(mac, at, a.base_for(mac))
+            if self.audition is not None and mac in self.audition.muted:
+                cue_id, state = -1, a.base_for(mac)  # sentinel: no real cue has id -1
+            else:
+                cue_id, state = tl.state_at(mac, at, a.base_for(mac))
             if mac in self._last_cue and self._last_cue[mac] == cue_id:
                 continue
             self._last_cue[mac] = cue_id
@@ -654,7 +659,9 @@ class ShowEngine:
 
     # ----- audition & play from here -----
 
-    async def audition_update(self, profile_id: int, t: float, playing: bool) -> tuple[bool, str]:
+    async def audition_update(
+        self, profile_id: int, t: float, playing: bool, muted: list[str] | None = None
+    ) -> tuple[bool, str]:
         """Browser preview playhead → fire that profile's cues on the real boards."""
         if self.blackout:
             return False, "blackout active"
@@ -667,6 +674,13 @@ class ShowEngine:
         if aud is not None and aud.profile_id == profile_id:
             aud.t, aud.playing, aud.recv = t, playing, now
             aud.deadline = now + AUDITION_TIMEOUT_S
+            new_muted = frozenset(muted or [])
+            if new_muted != aud.muted:
+                aud.muted = new_muted
+                # Force a re-resolve; a paused scheduler would not tick on its own.
+                self._last_cue.clear()
+                if not playing:
+                    self._tick(t)
             return True, "ok"
         async with self._lock:
             if self._setup_task is not None:
@@ -675,7 +689,9 @@ class ShowEngine:
             if prof is None:
                 return False, "profile not found"
             await self._stop_scheduler()
-            self.audition = AuditionClock(profile_id, t, playing, now, now + AUDITION_TIMEOUT_S)
+            self.audition = AuditionClock(
+                profile_id, t, playing, now, now + AUDITION_TIMEOUT_S, frozenset(muted or [])
+            )
             tl = Timeline(prof.cues, self.boards.adopted_macs())
             for mac in prof.macs(self.boards.adopted_macs()):
                 self.boards.set_show_state(mac, prof.base_for(mac), critical=True)

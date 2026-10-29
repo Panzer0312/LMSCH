@@ -7,8 +7,9 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from spookhub.api import (
@@ -20,6 +21,7 @@ from spookhub.api import (
     routes_profiles,
     routes_setup,
     routes_show,
+    routes_templates,
     ws,
 )
 from spookhub.auth import AuthMiddleware
@@ -52,6 +54,14 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     app = FastAPI(title="Spookhub", version="0.1.0", lifespan=lifespan)
     app.state.hub = hub
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
+        # The default handler echoes the rejected input; a NaN there makes the 422 itself
+        # fail to serialize (500). Drop the echo.
+        errors = [{k: v for k, v in e.items() if k not in ("input", "ctx")} for e in exc.errors()]
+        return JSONResponse({"detail": errors}, status_code=422)
+
     # Last added runs first: auth must answer 401 before the lock answers 423.
     app.add_middleware(LockMiddleware, is_locked=lambda: hub.settings.value.show_lock)
     app.add_middleware(AuthMiddleware, store=hub.auth)
@@ -64,6 +74,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         routes_show,
         routes_events,
         routes_media,
+        routes_templates,
         ws,
     ):
         app.include_router(r.router)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import enum
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import JSON, Column
@@ -84,6 +84,9 @@ class Board(SQLModel, table=True):
     led_count: int = 0
     effects: list[str] = SQLField(default_factory=list, sa_column=Column(JSON))
     palettes: list[str] = SQLField(default_factory=list, sa_column=Column(JSON))
+    fxdata: list[str] = SQLField(
+        default_factory=list, sa_column=Column(JSON, nullable=False, server_default="[]")
+    )
     presets: dict[str, Any] = SQLField(default_factory=dict, sa_column=Column(JSON))
     last_seen: datetime | None = None
     # Per-board fire-time trim in ms (positive = fire earlier), on top of measured latency.
@@ -136,6 +139,15 @@ class Cue(SQLModel, table=True):
     color: str | None = None
 
 
+class CueTemplate(SQLModel, table=True):
+    id: int | None = SQLField(default=None, primary_key=True)
+    name: str
+    cues: list[dict[str, Any]] = SQLField(
+        default_factory=list, sa_column=Column(JSON, nullable=False, server_default="[]")
+    )
+    created_at: datetime = SQLField(default_factory=utcnow)
+
+
 class Setting(SQLModel, table=True):
     key: str = SQLField(primary_key=True)
     value: Any = SQLField(sa_column=Column(JSON))
@@ -184,13 +196,33 @@ class ProfileIn(BaseModel):
 
 
 class CueIn(BaseModel):
-    start_s: float = Field(ge=0)
-    duration_s: float | None = Field(default=None, gt=0)
+    start_s: float = Field(ge=0, allow_inf_nan=False)
+    duration_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     target: CueTarget = CueTarget()
     state: LightState
     transition_ms: int | None = Field(default=None, ge=0)
     label: str | None = Field(default=None, max_length=200)
     color: str | None = Field(default=None, pattern=HEX_COLOR)
+
+
+class TemplateCue(BaseModel):
+    offset_s: float = Field(ge=0, allow_inf_nan=False)
+    duration_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    lane: Literal["all", "first", "same"] = "all"
+    state: LightState
+    transition_ms: int | None = Field(default=None, ge=0)
+    label: str | None = Field(default=None, max_length=200)
+    color: str | None = Field(default=None, pattern=HEX_COLOR)
+
+
+class TemplateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    cues: list[TemplateCue] = Field(min_length=1, max_length=500)
+
+
+class TemplateOut(TemplateIn):
+    id: int
+    created_at: datetime
 
 
 class CueOut(CueIn):

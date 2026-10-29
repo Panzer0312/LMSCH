@@ -65,6 +65,7 @@ class BoardRuntime:
     seg_ids: list[int] = field(default_factory=lambda: [0])
     effects: list[str] = field(default_factory=list)
     palettes: list[str] = field(default_factory=list)
+    fxdata: list[str] = field(default_factory=list)
     presets: dict[str, Any] = field(default_factory=dict)
     show_state: LightState | None = None
     manual: LightState | None = None
@@ -96,6 +97,7 @@ class BoardRuntime:
             "live": self.live,
             "effects": self.effects,
             "palettes": self.palettes,
+            "fxdata": self.fxdata,
             "presets": {
                 k: v.get("n", f"Preset {k}")
                 for k, v in self.presets.items()
@@ -138,6 +140,7 @@ class BoardManager:
                     offset_ms=row.offset_ms or 0.0,
                     effects=list(row.effects or []),
                     palettes=list(row.palettes or []),
+                    fxdata=list(row.fxdata or []),
                     presets=dict(row.presets or {}),
                     last_seen=row.last_seen.timestamp() if row.last_seen else None,
                 )
@@ -386,7 +389,7 @@ class BoardManager:
             else BoardStatus.online
         )
         if prev in (BoardStatus.offline, BoardStatus.unknown) and b.adopted:
-            if not b.effects or not b.presets:
+            if not b.effects or not b.presets or not b.fxdata:
                 spawn(self.refresh_meta(b.mac))
             self._reconcile(b, reconnect=prev == BoardStatus.offline)
         self._maybe_persist_seen(b)
@@ -447,6 +450,7 @@ class BoardManager:
             row.offset_ms = b.offset_ms
             row.effects = b.effects
             row.palettes = b.palettes
+            row.fxdata = b.fxdata
             row.presets = b.presets
             if b.last_seen:
                 row.last_seen = datetime.fromtimestamp(b.last_seen, UTC)
@@ -538,6 +542,11 @@ class BoardManager:
         except WledError as e:
             log.warning("refresh meta %s failed: %s", mac, e)
             return
-        b.effects, b.palettes, b.presets = fx, pal, ps
+        # Older WLED builds have no /json/fxdata: effects then just lack slider metadata.
+        try:
+            fxd = await self.wled.fxdata(b.ip)
+        except WledError:
+            fxd = []
+        b.effects, b.palettes, b.presets, b.fxdata = fx, pal, ps, fxd
         self._persist(b)
         self._publish(b)
