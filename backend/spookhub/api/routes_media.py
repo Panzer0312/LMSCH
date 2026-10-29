@@ -12,7 +12,7 @@ from sqlmodel import col, or_, select
 from spookhub import db
 from spookhub.api.deps import get_hub
 from spookhub.hub import Hub
-from spookhub.media import derive
+from spookhub.media import analyze, derive
 from spookhub.media.probe import probe
 from spookhub.media.transcode import needs_transcode, transcode
 from spookhub.media.upload import UploadError, save_upload
@@ -164,6 +164,14 @@ async def waveform(mid: int, hub: HubDep) -> dict[str, Any]:
     if not p["wave"].exists():
         return {"rate": 0, "peaks": []}
     return json.loads(p["wave"].read_text())
+
+
+@router.get("/{mid}/onsets")
+async def onsets(mid: int, hub: HubDep) -> dict[str, Any]:
+    p = await _derived(hub, mid)  # generates on demand for media uploaded before analysis existed
+    if not p["onsets"].exists():
+        return {"rate": analyze.ENV_RATE, "onsets": [], "bpm": None}
+    return json.loads(p["onsets"].read_text())
 
 
 @router.get("/{mid}/file")

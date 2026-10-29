@@ -10,8 +10,11 @@ import array
 import asyncio
 import json
 import logging
+import weakref
 from pathlib import Path
 from typing import Any
+
+from spookhub.media import analyze
 
 log = logging.getLogger(__name__)
 
@@ -20,7 +23,10 @@ MAX_THUMBS = 100
 WAVE_SAMPLE_RATE = 8000
 MAX_PEAKS = 20000
 
-_locks: dict[int, asyncio.Lock] = {}
+# Per event loop (locks are loop-bound; tests run one loop per test).
+_locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[int, asyncio.Lock]] = (
+    weakref.WeakKeyDictionary()
+)
 
 
 def paths(media_dir: Path, mid: int) -> dict[str, Path]:
@@ -28,6 +34,7 @@ def paths(media_dir: Path, mid: int) -> dict[str, Path]:
         "sprite": media_dir / f"{mid}.thumbs.jpg",
         "thumbs": media_dir / f"{mid}.thumbs.json",
         "wave": media_dir / f"{mid}.wave.json",
+        "onsets": media_dir / f"{mid}.onsets.json",
     }
 
 
@@ -75,14 +82,25 @@ def _peaks(raw: bytes, duration: float) -> dict[str, Any]:
     return {"rate": rate, "peaks": [round(p / top, 3) for p in peaks]}
 
 
-async def make_wave(src: Path, duration: float, out: Path) -> dict[str, Any]:
+async def _decode(src: Path) -> bytes:
     try:
-        raw = await _run(
+        return await _run(
             "ffmpeg", "-v", "error", "-i", str(src), "-vn", "-ac", "1",
             "-ar", str(WAVE_SAMPLE_RATE), "-f", "s16le", "-",
         )  # fmt: skip
     except RuntimeError:
-        raw = b""  # no audio stream
+        return b""  # no audio stream
+
+
+async def make_onsets(src: Path, out: Path) -> dict[str, Any]:
+    raw = await _decode(src)
+    data = await asyncio.to_thread(analyze.analyze, raw, WAVE_SAMPLE_RATE)
+    out.write_text(json.dumps(data))
+    return data
+
+
+async def make_wave(src: Path, duration: float, out: Path) -> dict[str, Any]:
+    raw = await _decode(src)
     data = await asyncio.to_thread(_peaks, raw, duration)
     out.write_text(json.dumps(data))
     return data
@@ -90,7 +108,7 @@ async def make_wave(src: Path, duration: float, out: Path) -> dict[str, Any]:
 
 async def ensure(media_dir: Path, mid: int, src: Path, duration: float) -> None:
     """Generate any missing derived assets (idempotent, serialised per media item)."""
-    lock = _locks.setdefault(mid, asyncio.Lock())
+    lock = _locks.setdefault(asyncio.get_running_loop(), {}).setdefault(mid, asyncio.Lock())
     async with lock:
         p = paths(media_dir, mid)
         try:
@@ -98,6 +116,8 @@ async def ensure(media_dir: Path, mid: int, src: Path, duration: float) -> None:
                 await make_thumbs(src, duration, p["sprite"], p["thumbs"])
             if not p["wave"].exists():
                 await make_wave(src, duration, p["wave"])
+            if not p["onsets"].exists():
+                await make_onsets(src, p["onsets"])
         except Exception as e:  # noqa: BLE001
             log.warning("deriving assets for media %s failed: %s", mid, e)
 
