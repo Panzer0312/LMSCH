@@ -36,6 +36,9 @@ log = logging.getLogger(__name__)
 
 SEEK_JUMP_S = 0.5
 AUDITION_TIMEOUT_S = 3.0
+STALL_S = 2.0  # frozen time-pos this long while playing = hung decoder/output
+STALL_POLL_S = 0.25
+STALL_RESTART_TIMEOUT_S = 20.0
 
 
 @dataclass
@@ -171,6 +174,12 @@ class ShowEngine:
         self.audition: AuditionClock | None = None
         self._last_t: float | None = None
         self._sched: asyncio.Task[None] | None = None
+        self._stall_task: asyncio.Task[None] | None = None
+        self._stall_restarted = asyncio.Event()
+        self._stall_pending = False
+        self.stall_s = STALL_S
+        self.stall_poll_s = STALL_POLL_S
+        self.stall_restart_timeout_s = STALL_RESTART_TIMEOUT_S
         self._pub: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
         player.on_change = self._on_player_change
@@ -410,6 +419,8 @@ class ShowEngine:
         self.phase = Phase.playing
         assert self.timeline
         self._start_scheduler(a, self.timeline, self._player_clock)
+        # Main show only: calibration, test sounds and idle loops never get stall recovery.
+        self._stall_task = asyncio.create_task(self._stall_watch(a))
         return True
 
     async def _go_idle(self) -> None:
@@ -432,6 +443,10 @@ class ShowEngine:
         await self._go_idle()
 
     async def _stop_scheduler(self) -> None:
+        if self._stall_task and self._stall_task is not asyncio.current_task():
+            self._stall_task.cancel()
+        self._stall_task = None
+        self._stall_pending = False
         if self._sched and self._sched is not asyncio.current_task():
             self._sched.cancel()
             try:
@@ -445,6 +460,8 @@ class ShowEngine:
             return
         if prop == "eof-reached" and self.player.eof:
             spawn(self._finish("ended"))
+        elif prop == "restart" and self._stall_pending:
+            self._stall_restarted.set()  # our own stall restart, not a crash
         elif prop == "restart":
             # mpv crashed mid-show: return to a defined state rather than guess.
             spawn(self._finish("interrupted (player restarted)"))
@@ -457,6 +474,50 @@ class ShowEngine:
             if self.playing_main:
                 await self._end_show(reason)
         self._publish()
+
+    # ----- stall watchdog -----
+
+    def _stalled(self) -> bool:
+        p = self.player
+        if p.paused or p.eof or p._loading or p.time_pos is None:
+            return False
+        return time.monotonic() - p.pos_mono >= self.stall_s
+
+    async def _stall_watch(self, a: ActiveProfile) -> None:
+        """Restart a frozen mpv once and resume; a second freeze in the same play ends the show."""
+        recovered = False
+        while True:
+            await asyncio.sleep(self.stall_poll_s)
+            if not self.playing_main or not self._stalled():
+                continue
+            if recovered:
+                self.bus.event("error", "video stalled again, ending show", kind="player")
+                await self._finish("stalled")
+                return
+            recovered = True
+            at = self.player.time_pos or 0.0
+            self.bus.event("warn", "video stalled, restarting", kind="player")
+            if not await self._restart_and_resume(a, at):
+                await self._finish("stalled (player did not recover)")
+                return
+
+    async def _restart_and_resume(self, a: ActiveProfile, at: float) -> bool:
+        self._stall_restarted.clear()
+        self._stall_pending = True
+        try:
+            await self.player.restart()
+            async with asyncio.timeout(self.stall_restart_timeout_s):
+                await self._stall_restarted.wait()
+        except TimeoutError:
+            return False
+        finally:
+            self._stall_pending = False
+        async with self._lock:
+            if not self.playing_main:
+                return True  # show ended meanwhile; nothing to resume
+            assert a.media_path
+            loop = a.mode == PlaybackMode.loop
+            return await self._safe(self.player.load(a.media_path, start=at, loop=loop))
 
     # ----- scheduler -----
 

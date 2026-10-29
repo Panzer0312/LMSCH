@@ -10,7 +10,7 @@ from pathlib import Path
 import httpx
 
 import spookhub
-from spookhub import backup, db
+from spookhub import backup, db, sdnotify
 from spookhub.auth import AuthStore
 from spookhub.boards.client import WledClient
 from spookhub.boards.discovery import MdnsDiscovery, scan_subnet
@@ -70,6 +70,7 @@ class Hub:
         self.transcodes: dict[int, dict[str, object]] = {}
         self.mdns: MdnsDiscovery | None = None
         self._scan: asyncio.Task[int] | None = None
+        self._watchdog: asyncio.Task[None] | None = None
         self.settings.listeners.append(self._on_settings)
 
     async def start(self) -> None:
@@ -101,9 +102,16 @@ class Hub:
         await self.engine.start()
         await self.preflight.start()
         self.bus.event("info", "Spookhub started")
+        interval = sdnotify.watchdog_interval_s()
+        if interval is not None:
+            self._watchdog = asyncio.create_task(sdnotify.watchdog_loop(interval))
+        sdnotify.notify("READY=1")
 
     async def stop(self) -> None:
         try:
+            if self._watchdog:
+                self._watchdog.cancel()
+                self._watchdog = None
             await self.preflight.stop()
             await self.engine.stop()
             if self.mdns:

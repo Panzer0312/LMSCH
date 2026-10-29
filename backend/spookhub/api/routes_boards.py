@@ -55,6 +55,35 @@ async def add(body: AddIn, hub: HubDep) -> dict[str, Any]:
     return b.snapshot()
 
 
+async def _fallback(hub: Hub, macs: list[str]) -> dict[str, Any]:
+    active = hub.engine.active
+    results = []
+    for mac in macs:
+        b = hub.boards.boards[mac]
+        # Active profile's base is the look the boards should boot into; with no profile
+        # fall back to whatever they are showing now.
+        state = active.base_for(mac) if active else hub.boards.desired(b)
+        err = await hub.boards.save_fallback(mac, state)
+        results.append({"mac": mac, "name": b.name or mac, "ok": err is None, "error": err})
+    return {"results": results}
+
+
+# Declared before the /{mac}/... routes so "fallback" can never be read as a MAC.
+@router.post("/fallback")
+async def fallback_all(hub: HubDep) -> dict[str, Any]:
+    adopted = hub.boards.adopted_macs()
+    active = hub.engine.active
+    return await _fallback(hub, active.macs(adopted) if active else adopted)
+
+
+@router.post("/{mac}/fallback")
+async def fallback_one(mac: str, hub: HubDep) -> dict[str, Any]:
+    b = _board(hub, mac)
+    if not b.adopted:
+        raise HTTPException(409, "adopt the board first")
+    return await _fallback(hub, [mac])
+
+
 @router.post("/{mac}/adopt")
 async def adopt(mac: str, body: NameIn, hub: HubDep) -> dict[str, Any]:
     _board(hub, mac)

@@ -30,6 +30,8 @@ log = logging.getLogger(__name__)
 
 IDENTIFY_STATE = LightState(on=True, bri=255, fx=0, colors=[(255, 255, 255)], transition_ms=0)
 LAST_SEEN_PERSIST_S = 60.0
+FALLBACK_PRESET = 250
+FALLBACK_NAME = "Spookhub fallback"
 
 
 class BoardStatus(enum.StrEnum):
@@ -266,6 +268,28 @@ class BoardManager:
         self.push(mac)
         await asyncio.sleep(seconds + 0.05)
         self.push(mac)
+
+    async def save_fallback(self, mac: str, state: LightState | None) -> str | None:
+        """Make `state` the board's boot state (WLED preset 250 + boot preset). None = ok.
+
+        Sent directly, not through the queue: psave must follow the state it stores, and a
+        queued desired-state push in between would be saved instead.
+        """
+        b = self.boards[mac]
+        t = self.timing.command_timeout_s
+        try:
+            if state is not None:
+                # Full brightness: master/cap are show-night knobs, not part of the boot look.
+                payload = build_payload(state, presets=b.presets, seg_ids=b.seg_ids)
+                if payload:
+                    await self.wled.set_state(b.ip, payload, t)
+            await self.wled.set_state(
+                b.ip, {"psave": FALLBACK_PRESET, "n": FALLBACK_NAME, "ib": True, "sb": True}, t
+            )
+            await self.wled.set_cfg(b.ip, {"def": {"ps": FALLBACK_PRESET, "on": True}})
+        except WledError as e:
+            return str(e)
+        return None
 
     # ----- health & reconciliation -----
 

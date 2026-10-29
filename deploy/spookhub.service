@@ -5,7 +5,10 @@ Wants=network-online.target
 After=network-online.target sound.target systemd-udev-settle.service
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
+# Pings come from the asyncio loop; a hung loop gets the service restarted.
+WatchdogSec=30
 User=spookhub
 Group=spookhub
 # DRM/KMS output, VA-API decode and ALSA audio for the mpv child process.

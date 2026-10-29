@@ -154,6 +154,20 @@ def _apply_seg(state: dict[str, Any], seg: Any) -> None:
                     _apply_value(target, key, value)
 
 
+def _save_preset(board: FakeBoard, body: dict[str, Any]) -> None:
+    """psave: store the current state (post-apply) as a preset, like WLED does."""
+    pid = str(body["psave"])
+    preset: dict[str, Any] = {"n": body.get("n", f"Preset {pid}")}
+    for flag in ("ib", "sb"):
+        if flag in body:
+            preset[flag] = body[flag]
+    if body.get("sb", True):
+        preset["on"] = board.state.get("on", True)
+        preset["bri"] = board.state.get("bri", 128)
+        preset["seg"] = copy.deepcopy(board.state.get("seg", []))
+    board.presets[pid] = preset
+
+
 def apply_state(board: FakeBoard, body: dict[str, Any]) -> None:
     state = board.state
     if "ps" in body:
@@ -170,6 +184,8 @@ def apply_state(board: FakeBoard, body: dict[str, Any]) -> None:
             _apply_value(state, key, body[key])
     if "seg" in body:
         _apply_seg(state, body["seg"])
+    if "psave" in body:
+        _save_preset(board, body)
 
 
 def _deep_merge(dst: dict[str, Any], src: dict[str, Any]) -> None:
