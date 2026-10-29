@@ -17,10 +17,14 @@ from functools import cache
 from pathlib import Path
 from typing import Literal
 
+from spookhub.subproc import communicate
+
 Kind = Literal["image", "video"]
 
 VIDEO_SECONDS = 4
 VIDEO_FPS = 30
+# A 4 s 1080p clip renders in a few seconds; past this ffmpeg is stuck.
+RENDER_TIMEOUT_S = 60.0
 
 
 @dataclass(frozen=True)
@@ -54,7 +58,9 @@ _locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.L
 
 @cache
 def _font() -> str | None:
-    """Bold font file for drawtext, or None when drawtext/fontconfig is unavailable."""
+    """Bold font file for drawtext, or None when drawtext/fontconfig is unavailable.
+
+    Blocking (runs ffmpeg and fc-match): call it via asyncio.to_thread."""
     if not shutil.which("fc-match"):
         return None
     try:
@@ -115,8 +121,8 @@ def _corner_labels(font: str | None) -> list[str]:
     return out
 
 
-def _filters(pid: str) -> tuple[str, str]:
-    """(lavfi source colour, -vf chain) for a pattern."""
+def _filters(pid: str, font: str | None = None) -> tuple[str, str]:
+    """(lavfi source colour, -vf chain) for a pattern; `font` from _font() for labels."""
     t = "max(2\\,ih/270)"  # line thickness that survives downscaling
     if pid == "grid":
         return "black", ",".join(
@@ -132,7 +138,7 @@ def _filters(pid: str) -> tuple[str, str]:
         )
     if pid == "corners":
         return "black", ",".join(
-            ["drawbox=x=0:y=0:w=iw:h=ih:t=ih/90:c=white", *_corner_labels(_font())]
+            ["drawbox=x=0:y=0:w=iw:h=ih:t=ih/90:c=white", *_corner_labels(font)]
         )
     if pid == "circles":
         rings = "lt(abs(mod(hypot(X-W/2,Y-H/2)+H/32,H/8)-H/32),max(1,H/360))"
@@ -182,7 +188,8 @@ def path_for(data_dir: Path, pid: str, size: tuple[int, int]) -> Path:
 
 
 async def _render(pid: str, size: tuple[int, int], out: Path) -> None:
-    color, vf = _filters(pid)
+    font = await asyncio.to_thread(_font) if pid == "corners" else None
+    color, vf = _filters(pid, font)
     w, h = size
     src = f"color=c={color}:s={w}x{h}:r={VIDEO_FPS}"
     if _BY_ID[pid].kind == "video":
@@ -196,7 +203,12 @@ async def _render(pid: str, size: tuple[int, int], out: Path) -> None:
         "ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", src, "-vf", vf, *enc, str(out),
         stderr=asyncio.subprocess.PIPE,
     )  # fmt: skip
-    _, err = await proc.communicate()
+    try:
+        # Returns only once ffmpeg has exited (killed on timeout/cancel), so the caller may
+        # unlink the temp file right after.
+        _, err = await communicate(proc, RENDER_TIMEOUT_S)
+    except TimeoutError:
+        raise RuntimeError(f"ffmpeg timed out after {RENDER_TIMEOUT_S:.0f} s") from None
     if proc.returncode != 0:
         raise RuntimeError(err.decode(errors="replace").strip()[-300:])
 

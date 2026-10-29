@@ -77,10 +77,12 @@ def _apply(p: Profile, body: ProfileIn, s: Session) -> None:
             raise HTTPException(422, f"media {mid} not found")
     if body.type == ProfileType.video and body.media_id is None:
         raise HTTPException(422, "video profile needs a video")
-    dp = body.display_profile_id
-    if dp is not None and s.get(DisplayProfile, dp) is None:
-        raise HTTPException(422, f"display profile {dp} not found")
-    p.display_profile_id = dp
+    # Omitted = untouched: clients that predate display profiles must not clear the override.
+    if "display_profile_id" in body.model_fields_set:
+        dp = body.display_profile_id
+        if dp is not None and s.get(DisplayProfile, dp) is None:
+            raise HTTPException(422, f"display profile {dp} not found")
+        p.display_profile_id = dp
     p.name = body.name
     p.type = body.type
     p.selection = body.selection.model_dump()

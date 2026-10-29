@@ -16,7 +16,13 @@ from spookhub.config import MpvCfg
 from spookhub.events import EventBus
 from spookhub.models import DisplayGeometry
 from spookhub.player.devices import parse_audio_devices
-from spookhub.player.geometry import DEFAULT_PROPS, DEFAULT_SHADER_OPTS, WARP_SHADER, to_mpv
+from spookhub.player.geometry import (
+    DEFAULT_PROPS,
+    DEFAULT_SHADER_OPTS,
+    WARP_SHADER,
+    SourceFrame,
+    to_mpv,
+)
 from spookhub.player.ipc import MpvError, MpvIpc
 from spookhub.tasks import spawn
 
@@ -40,7 +46,7 @@ STOP_GRACE_S = 3.0
 GEOMETRY_COALESCE_S = 0.03
 
 # Hook the engine sets: geometry + source size (w, h; None = unknown) for a path about to load.
-GeometryFor = Callable[[str], tuple[DisplayGeometry, tuple[int, int] | None]]
+GeometryFor = Callable[[str], tuple[DisplayGeometry, tuple[int, ...] | None]]
 
 
 class MpvPlayer:
@@ -79,7 +85,7 @@ class MpvPlayer:
         # Display geometry: target (what should show) vs. what this mpv instance has.
         self.geometry_for: GeometryFor | None = None
         self.geometry: DisplayGeometry = DisplayGeometry()
-        self._geom_size: tuple[int, int] | None = None
+        self._geom_size: tuple[int, ...] | None = None
         self._sent_props: dict[str, Any] = dict(DEFAULT_PROPS)
         self._sent_shader: dict[str, str] = dict(DEFAULT_SHADER_OPTS)
         self._geom_flush: asyncio.TimerHandle | None = None
@@ -484,10 +490,10 @@ class MpvPlayer:
             return
         self.geometry, self._geom_size = g, size
 
-    def apply_geometry(self, g: DisplayGeometry, size: tuple[int, int] | None = None) -> None:
+    def apply_geometry(self, g: DisplayGeometry, size: tuple[int, ...] | None = None) -> None:
         """Set the target geometry; changes reach mpv coalesced (slider drags flood otherwise).
 
-        `size` (source w, h) is needed for crop; None keeps the size of the loaded file."""
+        `size` (coded w, h[, cw rotation]) is needed for crop; None keeps the loaded file's."""
         self.geometry = g
         if size is not None:
             self._geom_size = size
@@ -516,8 +522,8 @@ class MpvPlayer:
         await self._send_geometry(ipc)
 
     async def _send_geometry(self, ipc: MpvIpc) -> None:
-        w, h = self._geom_size or (0, 0)
-        props, shader = to_mpv(self.geometry, w, h)
+        f = SourceFrame(*self._geom_size) if self._geom_size else SourceFrame(0, 0)
+        props, shader = to_mpv(self.geometry, f.w, f.h, f.rotate)
         # Serialised: two overlapping flushes would each diff against a stale "sent" state.
         async with self._geom_lock:
             for name, value in props.items():

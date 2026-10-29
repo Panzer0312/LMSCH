@@ -56,6 +56,7 @@ async def save_upload(file: UploadFile, media_dir: Path) -> Media:
         width=info.width,
         height=info.height,
         codec=info.codec,
+        rotation=info.rotation,
     )
     with db.session() as s:
         s.add(m)

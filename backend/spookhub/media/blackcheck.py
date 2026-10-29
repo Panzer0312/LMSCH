@@ -15,9 +15,13 @@ import weakref
 from pathlib import Path
 from typing import Any
 
+from spookhub.subproc import communicate
+
 # Limited-range black is 16/255 ≈ 0.063; anything above this glows visibly on a scrim.
 THRESHOLD = 0.07
 MAX_SAMPLES = 120
+# Decoding a long 4K file on the mini PC can take a while; past this something is wrong.
+TIMEOUT_S = 120.0
 
 _locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[int, asyncio.Lock]] = (
     weakref.WeakKeyDictionary()
@@ -48,7 +52,8 @@ async def measure(src: Path, duration: float) -> dict[str, Any]:
         "ffmpeg", "-v", "error", "-nostdin", "-i", str(src), "-an", "-vf", vf, "-f", "null", "-",
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )  # fmt: skip
-    out, err = await proc.communicate()
+    # TimeoutError propagates (ffmpeg killed); the per-media lock is released by `check`.
+    out, err = await communicate(proc, TIMEOUT_S)
     if proc.returncode != 0:
         raise RuntimeError(err.decode(errors="replace").strip()[-300:] or "ffmpeg failed")
     lows = _parse(out.decode(errors="replace"))

@@ -31,6 +31,8 @@ class MediaOut(BaseModel):
     width: int
     height: int
     codec: str
+    # Clockwise container rotation; width/height are the coded frame.
+    rotation: int = 0
     used_by: list[str]
     aspect: float | None = None
     needs_transcode: bool = False
@@ -46,12 +48,20 @@ def _out(m: Media, used_by: list[str], hub: Hub | None = None) -> MediaOut:
         width=m.width,
         height=m.height,
         codec=m.codec,
+        rotation=m.rotation or 0,
         used_by=used_by,
-        # Probe dimensions are already the coded frame; rotation metadata is not stored.
-        aspect=round(m.width / m.height, 4) if m.width > 0 and m.height > 0 else None,
+        aspect=display_aspect(m),
         needs_transcode=needs_transcode(m),
         transcode=hub.transcodes.get(m.id or 0) if hub else None,
     )
+
+
+def display_aspect(m: Media) -> float | None:
+    """Width/height as the player shows it: coded dims swapped for a 90/270 rotation."""
+    if m.width <= 0 or m.height <= 0:
+        return None
+    w, h = (m.height, m.width) if (m.rotation or 0) % 180 == 90 else (m.width, m.height)
+    return round(w / h, 4)
 
 
 def _users(mid: int) -> list[str]:
@@ -112,6 +122,7 @@ async def _transcode_job(hub: Hub, m: Media) -> None:
             return
         row.path, row.size = str(dest), dest.stat().st_size
         row.codec, row.width, row.height = info.codec, info.width, info.height
+        row.rotation = info.rotation
         row.duration_s = info.duration_s
         s.add(row)
         s.commit()
@@ -186,6 +197,8 @@ async def black_check(mid: int, hub: HubDep) -> dict[str, Any]:
         raise HTTPException(404, "media not found")
     try:
         return await blackcheck.check(hub.cfg.paths.media_dir, mid, Path(m.path), m.duration_s)
+    except TimeoutError as e:  # before OSError, which it subclasses
+        raise HTTPException(504, "black check timed out") from e
     except (RuntimeError, OSError) as e:
         raise HTTPException(422, f"black check failed: {e}") from e
 

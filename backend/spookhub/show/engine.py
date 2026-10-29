@@ -146,6 +146,9 @@ def load_active(profile_id: int) -> ActiveProfile | None:
         )
 
 
+SETUP_ACTIVE = "setup active — leave video setup first"
+
+
 class SetupBusy(RuntimeError):
     """A setup action and a show/test would collide."""
 
@@ -209,13 +212,15 @@ class ShowEngine:
         self.display_setup = False
         self.setup_source: dict[str, Any] | None = None
         self.live: DisplayGeometry | None = None
-        self._setup_media_dp: int | None = None
-        self._setup_size: tuple[int, int] | None = None
+        # Media row behind the setup source; its display profile is re-read on every resolve
+        # so assignment changes and profile deletes apply without re-entering setup.
+        self._setup_media_id: int | None = None
+        self._setup_size: tuple[int, ...] | None = None
         # What mpv shows outside setup, as resolved by the per-load hook.
         self._display_path: str | None = None
         self._shown = DisplayGeometry()
         self._shown_id: int | None = None
-        self._shown_size: tuple[int, int] | None = None
+        self._shown_size: tuple[int, ...] | None = None
         # Source sizes of files that are not Media rows (generated patterns).
         self.known_sizes: dict[str, tuple[int, int]] = {}
         self._last_display: dict[str, Any] | None = None
@@ -421,11 +426,15 @@ class ShowEngine:
         a = self.active
         if self._setup_task is not None:
             raise SetupBusy("setup test running")
+        if self.test_pattern:  # covers video setup, which rides on the test pattern
+            raise SetupBusy(SETUP_ACTIVE)
         if self.blackout or not a or a.type != ProfileType.video:
             raise RuntimeError("no video profile active")
         async with self._lock:
             if self._setup_task is not None:
                 raise SetupBusy("setup test running")
+            if self.test_pattern:
+                raise SetupBusy(SETUP_ACTIVE)
             started = await self._play_main(from_s)
         self._publish()
         if not started:
@@ -767,6 +776,9 @@ class ShowEngine:
     async def play_profile_from(self, profile_id: int, t: float) -> None:
         if self._setup_task is not None:
             raise SetupBusy("setup test running")
+        # Checked before activate(), which would silently end the test pattern / video setup.
+        if self.test_pattern:
+            raise SetupBusy(SETUP_ACTIVE)
         if self.blackout:
             raise RuntimeError("blackout active")
         await self.audition_stop()
@@ -834,9 +846,14 @@ class ShowEngine:
         )
 
     def _setup_resolved(self) -> tuple[int | None, DisplayGeometry]:
+        """Media source: media > global, the show profile's override is skipped because that
+        video is what is being framed. Idle/pattern: the show's full chain (profile first)."""
+        found = display.media_by_id(self._setup_media_id)
+        kind = (self.setup_source or {}).get("kind")
+        profile_dp = self.active.display_profile_id if self.active and kind != "media" else None
         return display.resolve(
-            self.active.display_profile_id if self.active else None,
-            self._setup_media_dp,
+            profile_dp,
+            found[1].display_profile_id if found else None,
             self.settings.value.display_profile_id,
         )
 
@@ -904,7 +921,7 @@ class ShowEngine:
         self.display_setup = False
         self.setup_source = None
         self.live = None
-        self._setup_media_dp = None
+        self._setup_media_id = None
         self._setup_size = None
         self.refresh_display()
 
@@ -912,8 +929,8 @@ class ShowEngine:
         self,
         source: dict[str, Any],
         path: str | None,
-        media_dp: int | None = None,
-        size: tuple[int, int] | None = None,
+        media_id: int | None = None,
+        size: tuple[int, ...] | None = None,
     ) -> None:
         """Enter video setup or switch its source. Stops any show, like the test pattern.
 
@@ -933,7 +950,7 @@ class ShowEngine:
             self.phase = Phase.test_pattern
             self.display_setup = True
             self.setup_source = source
-            self._setup_media_dp = media_dp
+            self._setup_media_id = media_id
             self._setup_size = size
             self._pattern_image = path
             if path:
@@ -948,7 +965,8 @@ class ShowEngine:
         self._publish()
 
     async def exit_display_setup(self) -> None:
-        if self.display_setup:
+        """Leaving /video always clears the projector, also a plain test pattern from elsewhere."""
+        if self.test_pattern:
             await self.set_test_pattern(False)
 
     def set_live(self, g: DisplayGeometry) -> None:

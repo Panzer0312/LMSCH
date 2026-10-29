@@ -221,7 +221,7 @@ async def test_precedence_profile_media_global(client):  # noqa: F811
     mid = _media(dp=m_id)
     await client.put("/api/settings", json={"display_profile_id": g_id})
     g, size = eng._geometry_for("/m.mp4")
-    assert g.zoom == 0.2 and size == (1920, 1080)
+    assert g.zoom == 0.2 and size == (1920, 1080, 0)
     assert eng.display_state()["resolved_profile_id"] == m_id
     g, size = eng._geometry_for("/other.png")
     assert g.zoom == 0.1 and size is None
@@ -332,7 +332,7 @@ async def test_setup_mode_transitions(client, monkeypatch, tmp_path):  # noqa: F
         "/api/display/setup", json={"on": True, "source": {"kind": "media", "id": mid}}
     )
     assert r.json()["source"] == {"kind": "media", "id": mid}
-    assert fake.calls[-1] == ("load", "/clip.mp4") and eng._setup_size == (640, 480)
+    assert fake.calls[-1] == ("load", "/clip.mp4") and eng._setup_size == (640, 480, 0)
     assert (await client.post("/api/display/seek", json={"t": 2.5})).status_code == 200
     assert (
         await client.post(
@@ -344,7 +344,7 @@ async def test_setup_mode_transitions(client, monkeypatch, tmp_path):  # noqa: F
     assert r.status_code == 200
     st = states[-1]
     assert st["setup"] and st["live"]["zoom"] == 1 and st["geometry"]["flip_h"] is True
-    assert fake.geometry.zoom == 1 and fake._geom_size == (640, 480)
+    assert fake.geometry.zoom == 1 and fake._geom_size == (640, 480, 0)
 
     # idle source without an idle video shows black
     r = await client.post("/api/display/setup", json={"on": True, "source": {"kind": "idle"}})

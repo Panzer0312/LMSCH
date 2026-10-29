@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from spookhub.models import CropRect, DisplayGeometry
 
@@ -32,6 +32,16 @@ SHADER_PARAMS = (
 DEFAULT_SHADER_OPTS: dict[str, str] = {k: "0" for k in SHADER_PARAMS}
 
 
+class SourceFrame(NamedTuple):
+    """Coded frame size as ffprobe reports it, plus the container rotation (cw degrees).
+
+    mpv crops the coded frame and then rotates by container rotation + video-rotate."""
+
+    w: int
+    h: int
+    rotate: int = 0
+
+
 def _fmt(v: float) -> str:
     # Fixed precision keeps diffs stable against float noise from the UI sliders.
     s = f"{v:.5f}".rstrip("0").rstrip(".")
@@ -41,7 +51,9 @@ def _fmt(v: float) -> str:
 def crop_to_source(c: CropRect, rotate: int) -> tuple[float, float, float, float]:
     """Displayed-frame crop (what the user sees after rotation) -> source-frame fractions.
 
-    mpv applies video-crop to the source rectangle before rotation (clockwise)."""
+    mpv applies video-crop to the coded frame before any rotation (container rotation plus
+    video-rotate, clockwise). Verified on mpv 0.41 / vo=gpu-next with a quadrant test clip,
+    pinned by test_crop_matches_mpv_crop_then_rotate."""
     x, y, w, h = c.x, c.y, c.w, c.h
     match rotate:
         case 90:
@@ -79,7 +91,11 @@ def needs_warp(g: DisplayGeometry) -> bool:
     )
 
 
-def to_mpv(g: DisplayGeometry, src_w: int, src_h: int) -> tuple[dict[str, Any], dict[str, str]]:
+def to_mpv(
+    g: DisplayGeometry, src_w: int, src_h: int, src_rotate: int = 0
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """`src_w`/`src_h` are coded dims; `src_rotate` the file's own cw rotation (metadata)."""
+    total_rotate = (src_rotate + int(g.rotate)) % 360
     props: dict[str, Any] = {
         "video-zoom": float(g.zoom),
         "video-pan-x": float(g.pan_x),
@@ -90,7 +106,7 @@ def to_mpv(g: DisplayGeometry, src_w: int, src_h: int) -> tuple[dict[str, Any], 
         "video-align-y": float(g.align_y),
         "video-rotate": int(g.rotate),
         "video-aspect-override": -1.0 if g.aspect is None else float(g.aspect),
-        "video-crop": crop_px(g.crop, g.rotate, src_w, src_h),
+        "video-crop": crop_px(g.crop, total_rotate, src_w, src_h),
         "brightness": int(g.brightness),
         "contrast": int(g.contrast),
         "gamma": int(g.gamma),

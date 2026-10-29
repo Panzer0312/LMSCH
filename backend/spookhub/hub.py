@@ -17,6 +17,7 @@ from spookhub.boards.discovery import MdnsDiscovery, scan_subnet
 from spookhub.boards.registry import BoardManager
 from spookhub.config import Config
 from spookhub.events import EventBus, EventWriter
+from spookhub.media import probe
 from spookhub.models import RuntimeSettings
 from spookhub.player.process import MpvPlayer
 from spookhub.settings_store import SettingsStore
@@ -101,12 +102,18 @@ class Hub:
                 log.exception("mDNS discovery unavailable; use scan/manual add")
         await self.engine.start()
         await self.preflight.start()
+        # Off the startup path: ffprobe per old row, the picture is corrected once it is known.
+        spawn(probe.backfill_rotation(self._media_rotation_changed))
         self.bus.event("info", "Spookhub started")
         interval = sdnotify.watchdog_interval_s()
         if interval is not None:
             self._watchdog = asyncio.create_task(sdnotify.watchdog_loop(interval))
         # Sent when startup work is done; uvicorn binds the port right after the lifespan.
         sdnotify.notify("READY=1")
+
+    def _media_rotation_changed(self) -> None:
+        self.bus.publish("media_changed")
+        self.engine.refresh_display()
 
     async def stop(self) -> None:
         try:

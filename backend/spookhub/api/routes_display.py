@@ -21,6 +21,7 @@ from spookhub.models import (
     Media,
     Profile,
 )
+from spookhub.player.geometry import SourceFrame
 from spookhub.show import display
 from spookhub.show.engine import SetupBusy
 
@@ -28,7 +29,7 @@ router = APIRouter(prefix="/api/display", tags=["display"])
 # Media assignment lives here, not in routes_media: it only matters to display resolution.
 media_router = APIRouter(prefix="/api/media", tags=["display"])
 HubDep = Annotated[Hub, Depends(get_hub)]
-PATTERN_SIZE = (1920, 1080)
+PATTERN_SIZE = SourceFrame(1920, 1080)
 
 
 class PatternSource(BaseModel):
@@ -139,8 +140,10 @@ async def delete_profile(pid: int, hub: HubDep) -> dict[str, bool]:
     with db.session() as s:
         p = _get(s, pid)
         affected: list[int] = []
+        media_cleared = False
         for m in s.exec(select(Media).where(Media.display_profile_id == pid)).all():
             m.display_profile_id = None
+            media_cleared = True
             s.add(m)
         for pr in s.exec(select(Profile).where(Profile.display_profile_id == pid)).all():
             pr.display_profile_id = None
@@ -154,6 +157,9 @@ async def delete_profile(pid: int, hub: HubDep) -> dict[str, bool]:
         await hub.engine.reload_if_active(prof_id)
     if affected:
         hub.bus.publish("profiles_changed")
+    if media_cleared:
+        hub.bus.publish("media_changed")
+    # Re-resolves setup too (it re-reads the media row) and re-publishes the display state.
     _changed(hub)
     return {"ok": True}
 
@@ -165,17 +171,18 @@ async def get_state(hub: HubDep) -> dict[str, Any]:
 
 async def _source_target(
     hub: Hub, src: PatternSource | MediaSource | IdleSource
-) -> tuple[str | None, int | None, tuple[int, int] | None]:
-    """(path or None for black, media display profile id, source size)."""
+) -> tuple[str | None, int | None, SourceFrame | None]:
+    """(path or None for black, media id, source frame)."""
     if isinstance(src, PatternSource):
         from spookhub.show.patterns import ensure as ensure_pattern
 
         try:
-            path = await ensure_pattern(hub.cfg.paths.data_dir, src.id, PATTERN_SIZE)
+            path = await ensure_pattern(hub.cfg.paths.data_dir, src.id, PATTERN_SIZE[:2])
         except KeyError as e:
             raise HTTPException(404, f"unknown pattern '{src.id}'") from e
         except RuntimeError as e:
-            raise HTTPException(500, f"could not render pattern: {e}") from e
+            # Same contract as GET /patterns/{pid}/file: ffmpeg trouble is "unavailable".
+            raise HTTPException(503, f"pattern render failed: {e}") from e
         hub.engine.known_sizes[str(path)] = PATTERN_SIZE
         return str(path), None, PATTERN_SIZE
     if isinstance(src, MediaSource):
@@ -183,11 +190,11 @@ async def _source_target(
         if found is None:
             raise HTTPException(404, "media not found")
         path, info = found
-        return path, info.display_profile_id, info.size
+        return path, info.id, info.size
     a = hub.engine.active
     idle = a.idle_path if a else None
     info = display.media_by_path(idle)
-    return idle, (info.display_profile_id if info else None), (info.size if info else None)
+    return idle, (info.id if info else None), (info.size if info else None)
 
 
 @router.post("/setup")
@@ -204,9 +211,9 @@ async def setup(body: SetupIn, hub: HubDep) -> dict[str, Any]:
     # Cheap refusal before a possibly slow pattern render.
     if eng.blackout:
         raise HTTPException(409, "blackout active")
-    path, media_dp, size = await _source_target(hub, src)
+    path, media_id, size = await _source_target(hub, src)
     try:
-        await eng.enter_display_setup(src.model_dump(), path, media_dp, size)
+        await eng.enter_display_setup(src.model_dump(), path, media_id, size)
     except SetupBusy as e:
         raise HTTPException(409, str(e)) from e
     return eng.display_state()

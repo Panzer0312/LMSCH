@@ -112,6 +112,9 @@ class Media(SQLModel, table=True):
     width: int = 0
     height: int = 0
     codec: str = ""
+    # Container rotation, clockwise (width/height are the coded frame). None = not probed yet
+    # (rows from before the column existed); backfilled at startup.
+    rotation: int | None = None
     created_at: datetime = SQLField(default_factory=utcnow)
     # Per-video framing override; plain id (no FK), cleared when the display profile goes.
     display_profile_id: int | None = None

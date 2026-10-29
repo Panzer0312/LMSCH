@@ -10,6 +10,7 @@ from sqlmodel import col, select
 
 from spookhub import db
 from spookhub.models import DisplayGeometry, DisplayProfile, Media
+from spookhub.player.geometry import SourceFrame
 
 log = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ log = logging.getLogger(__name__)
 class MediaInfo:
     id: int
     display_profile_id: int | None
-    size: tuple[int, int] | None
+    size: SourceFrame | None
 
 
 def resolve(
@@ -41,7 +42,7 @@ def resolve(
 
 
 def _info(m: Media) -> MediaInfo:
-    size = (m.width, m.height) if m.width > 0 and m.height > 0 else None
+    size = SourceFrame(m.width, m.height, m.rotation or 0) if m.width > 0 and m.height > 0 else None
     return MediaInfo(id=m.id or 0, display_profile_id=m.display_profile_id, size=size)
 
 
@@ -53,7 +54,9 @@ def media_by_path(path: str | None) -> MediaInfo | None:
         return _info(m) if m else None
 
 
-def media_by_id(mid: int) -> tuple[str, MediaInfo] | None:
+def media_by_id(mid: int | None) -> tuple[str, MediaInfo] | None:
+    if mid is None:
+        return None
     with db.session() as s:
         m = s.get(Media, mid)
         return (m.path, _info(m)) if m else None
