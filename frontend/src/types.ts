@@ -26,6 +26,7 @@ export interface Board {
   last_seen: number | null // unix seconds
   status: BoardStatus
   latency_ms: number | null
+  offset_ms: number
   live: { on?: boolean; bri?: number; fx?: number; pal?: number; col?: number[][]; ps?: number }
   effects: string[]
   palettes: string[]
@@ -86,7 +87,42 @@ export interface ShowState {
   cooldown_remaining: number
   audition: { profile_id: number; playing: boolean } | null
   player: { ready: boolean; path: string | null; time_pos: number | null; duration: number | null; paused: boolean; eof: boolean }
+  last_trigger: LastTrigger | null
+  setup_busy: boolean
+  calibrating: boolean
 }
+
+export interface LastTrigger { ts: number; source: string; accepted: boolean; message: string }
+export interface Version { commit: string; installed_at?: string }
+
+export type CheckStatus = 'ok' | 'warn' | 'fail'
+export interface PreflightCheck { id: string; label: string; status: CheckStatus; detail: string; fix: string | null }
+export interface Preflight { checks: PreflightCheck[]; worst: CheckStatus }
+
+/** GET /api/state and the WS snapshot payload. */
+export interface AppState {
+  boards: Board[]
+  show: ShowState
+  settings: Settings
+  events: ShowEvent[]
+  version: Version
+  preflight?: Preflight
+}
+
+export interface DrmOutput { name: string; card: number; status: string; modes: string[]; enabled: boolean }
+export interface AudioDevice { name: string; description: string }
+
+export interface EventRow {
+  id: number
+  ts: number
+  level: 'info' | 'warn' | 'error'
+  kind: string
+  message: string
+  data: Record<string, unknown>
+}
+export interface EventStats { triggers: number; by_hour: { hour_ts: number; count: number }[] }
+
+export interface FallbackResult { mac: string; name: string; ok: boolean; error: string | null }
 
 export interface Settings {
   sync_offset_ms: number
@@ -96,6 +132,14 @@ export interface Settings {
   log_level: string
   mpv_vo: string | null
   mpv_gpu_context: string | null
+  mpv_drm_connector: string | null
+  mpv_drm_mode: string | null
+  mpv_audio_device: string | null
+  master_volume: number
+  volume_cap: number
+  brightness_cap: number
+  audio_delay_s: number
+  show_lock: boolean
   active_profile_id: number | null
 }
 

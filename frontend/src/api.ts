@@ -1,4 +1,4 @@
-import type { Board, Cue, Media, Profile, ProfileIn, Settings, LightState, ThumbsMeta, Waveform, Recommendation, ProfileExport } from './types'
+import type { Board, Cue, Media, Profile, ProfileIn, Settings, LightState, ThumbsMeta, Waveform, Recommendation, ProfileExport, AppState, Preflight, DrmOutput, AudioDevice, EventRow, EventStats, FallbackResult, LastTrigger } from './types'
 
 export class ApiError extends Error {
   status: number
@@ -28,7 +28,34 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
 const post = <T = { ok: boolean }>(p: string, b: unknown = {}) => req<T>('POST', p, b)
 
 export const api = {
+  state: () => req<AppState>('GET', '/api/state'),
+  showLock: (on: boolean, pin?: string) => post<{ show_lock: boolean }>('/api/show_lock', { on, pin: pin ?? null }),
+  setup: {
+    outputs: () => req<DrmOutput[]>('GET', '/api/setup/outputs'),
+    audioDevices: () => req<AudioDevice[]>('GET', '/api/setup/audio_devices'),
+    testSound: () => post<{ ok: boolean; started: boolean }>('/api/setup/test_sound'),
+    triggers: () => req<{ last_trigger: LastTrigger | null }>('GET', '/api/setup/triggers'),
+    calibration: (on: boolean) => post<{ ok: boolean; calibrating: boolean }>('/api/setup/calibration', { on }),
+  },
+  preflight: {
+    get: () => req<Preflight>('GET', '/api/preflight'),
+    testAll: () => post<{ ok: boolean; started: boolean }>('/api/preflight/test_all'),
+  },
+  events: {
+    list: (params: { since?: number; kind?: string; limit?: number } = {}) => {
+      const q = new URLSearchParams()
+      if (params.since !== undefined) q.set('since', String(params.since))
+      if (params.kind) q.set('kind', params.kind)
+      if (params.limit !== undefined) q.set('limit', String(params.limit))
+      const qs = q.toString()
+      return req<EventRow[]>('GET', `/api/events${qs ? `?${qs}` : ''}`)
+    },
+    stats: (since?: number) => req<EventStats>('GET', `/api/events/stats${since === undefined ? '' : `?since=${since}`}`),
+  },
   boards: {
+    setOffset: (mac: string, offset_ms: number) => req<Board>('PATCH', `/api/boards/${mac}`, { offset_ms }),
+    fallbackAll: () => post<{ results: FallbackResult[] }>('/api/boards/fallback'),
+    fallback: (mac: string) => post<{ results: FallbackResult[] }>(`/api/boards/${mac}/fallback`),
     list: () => req<Board[]>('GET', '/api/boards'),
     scan: () => post<{ started: boolean }>('/api/boards/scan'),
     add: (ip: string) => post<Board>('/api/boards/add', { ip }),
