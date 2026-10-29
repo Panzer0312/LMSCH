@@ -1,12 +1,15 @@
-import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
+import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react'
 import type { Board, BoardStatus } from '../types'
+import { MarkersLane, MARKERS_H } from './MarkersLane'
+import { Minimap } from './Minimap'
 import { MediaStrip } from './Strip'
+import { timecode } from './timeops'
 import { Ribbon } from './Ribbon'
 import { lookAt, toSpecs } from './ribbon'
 import type { ResolveCtx } from './ribbon'
 import { Timeline } from './resolve'
-import { ALL_LANE, clamp, cueColor, lanesOf, round3, snap, snapCandidates, stateLabel, setDragging } from './model'
+import { ALL_LANE, clamp, cueColor, lanesOf, parseLaneId, round3, snap, snapCandidates, stateLabel, setDragging } from './model'
 import type { TLCue, TimelineViewProps } from './model'
 
 const RULER_H = 24
@@ -17,6 +20,9 @@ const RIBBON_H = 8
 const laneHeight = (l: { kind: string }) => LANE_H + (l.kind === 'board' ? RIBBON_H : 0)
 const NO_OVERRIDES = {}
 const NO_BOARDS: never[] = []
+const NO_LIST: never[] = []
+const NO_SET = new Set<string>()
+const noop = () => {}
 const SNAP_PX = 8
 const MIN_DUR = 0.05
 const MIN_BLOCK_PX = 8
@@ -81,6 +87,9 @@ export function TimelineView(props: TimelineViewProps) {
     duration, cues, lanes, selected, playhead, pxPerSec, mediaId, overlaps,
     boards = NO_BOARDS, base, overrides = NO_OVERRIDES, readOnly = false,
     snapEnabled, onSeek, onSelect, onChange, onZoom, onAddAt,
+    markers = NO_LIST, selectedMarkers = NO_SET, onMarkerSelect = noop, onMarkersChange = noop, onMarkerRename = noop,
+    onsets = NO_LIST, snapExtra = NO_LIST, loop = null, fps = 25, muted = NO_SET, solo = NO_SET,
+    onToggleMute, onToggleSolo, viewReq = null, expanded = NO_SET, onToggleExpand,
   } = props
   const editable = !readOnly
 
@@ -89,9 +98,12 @@ export function TimelineView(props: TimelineViewProps) {
   const seekPointer = useRef<number | null>(null)
   const zoomAnchor = useRef<{ t: number; cx: number; pps: number } | null>(null)
   const lastPlayhead = useRef(playhead)
+  // Scroll viewport in px, fed by scroll/resize events; the minimap converts to seconds.
+  const [vp, setVp] = useState({ left: 0, width: 0 })
 
   const contentW = Math.max(duration, 1) * pxPerSec + 40
   const lanesH = lanes.reduce((n, l) => n + laneHeight(l), 0)
+  const isMuted = (id: string) => muted.has(id) || (solo.size > 0 && !solo.has(id))
   const boardByMac = useMemo(() => new Map(boards.map((b) => [b.mac, b])), [boards])
   const boardsKey = boards.map((b) => b.mac).join(',')
   // Rebuilt on doc/base changes only (deferred so drags stay smooth); the playhead never invalidates it.
@@ -106,7 +118,11 @@ export function TimelineView(props: TimelineViewProps) {
     const m = new Map<string, LaneItem[]>()
     const lists = new Map<string, TLCue[]>()
     for (const l of lanes) lists.set(l.id, [])
-    for (const c of cues) for (const id of lanesOf(c)) lists.get(id)?.push(c)
+    for (const c of cues) {
+      // Segment cues of a collapsed board are drawn once on the board lane.
+      const ids = new Set(lanesOf(c).map((id) => (lists.has(id) ? id : parseLaneId(id).mac)))
+      for (const id of ids) lists.get(id)?.push(c)
+    }
     for (const [id, list] of lists) {
       list.sort((a, b) => a.start_s - b.start_s)
       m.set(id, list.map((cue, i) => {
@@ -122,13 +138,24 @@ export function TimelineView(props: TimelineViewProps) {
   }, [cues, lanes, duration])
 
   const ticks = useMemo(() => {
+    // Zoomed in far enough that single frames are distinguishable: tick per frame, label every 5.
+    // Only the visible window (plus one screen each side): a full-length frame ruler is ~90k nodes per hour.
+    if (pxPerSec / fps >= 8) {
+      const n = Math.floor(Math.max(duration, 1) * fps + 1e-6)
+      const w = vp.width || 2000
+      const lo = Math.max(0, Math.floor(((vp.left - w) / pxPerSec) * fps))
+      const hi = Math.min(n, Math.ceil(((vp.left + 2 * w) / pxPerSec) * fps))
+      const out: { t: number; major: boolean }[] = []
+      for (let i = lo - (lo % 5); i <= hi; i++) out.push({ t: i / fps, major: i % 5 === 0 })
+      return { step: 0, list: out }
+    }
     const step = STEPS.find((s) => s * pxPerSec >= 60) ?? STEPS[STEPS.length - 1]
     const minor = step / 5
     const n = Math.floor(Math.max(duration, 1) / minor + 1e-6)
     const out: { t: number; major: boolean }[] = []
     for (let i = 0; i <= n; i++) out.push({ t: i * minor, major: i % 5 === 0 })
     return { step, list: out }
-  }, [duration, pxPerSec])
+  }, [duration, pxPerSec, fps, vp])
 
   // Keep the moving playhead in view (only reacts to playhead changes, not zoom).
   useEffect(() => {
@@ -163,13 +190,48 @@ export function TimelineView(props: TimelineViewProps) {
     return () => el.removeEventListener('wheel', onWheel)
   }, [pxPerSec, onZoom])
 
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const update = () => setVp({ left: el.scrollLeft, width: el.clientWidth })
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    el.addEventListener('scroll', update, { passive: true })
+    return () => { ro.disconnect(); el.removeEventListener('scroll', update) }
+  }, [])
+
+  // Zoom to fit / zoom to selection: reuse the zoom anchor so the scroll lands after the re-render.
+  const viewN = viewReq?.n
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!viewReq || !el) return
+    const pad = el.clientWidth * 0.025
+    const span = Math.max(viewReq.end - viewReq.start, 0.1)
+    const next = clamp((el.clientWidth - 2 * pad) / span, 5, 400)
+    if (next === pxPerSec) { el.scrollLeft = Math.max(0, viewReq.start * pxPerSec - pad); return }
+    zoomAnchor.current = { t: viewReq.start, cx: pad, pps: next }
+    onZoom(next)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fire once per request
+  }, [viewN])
+
   useLayoutEffect(() => {
     const a = zoomAnchor.current
     const el = scrollRef.current
-    if (!a || !el) return
-    zoomAnchor.current = null
-    el.scrollLeft = Math.max(0, a.t * pxPerSec - a.cx)
+    if (!el) return
+    if (a) {
+      zoomAnchor.current = null
+      el.scrollLeft = Math.max(0, a.t * pxPerSec - a.cx)
+    }
+    // Zooming doesn't always fire a scroll event; keep the minimap window in step.
+    setVp({ left: el.scrollLeft, width: el.clientWidth })
   }, [pxPerSec])
+
+  // Memoized: TimelineView re-renders every animation frame during playback.
+  const onsetLayer = useMemo(() => onsets.map((o) => (
+    <div key={o.t} className="pointer-events-none absolute bottom-0 w-px bg-slime"
+      style={{ left: o.t * pxPerSec, height: `${Math.round(30 + o.strength * 70)}%`, opacity: 0.4 + o.strength * 0.6 }} />
+  )), [onsets, pxPerSec])
 
   const timeAt = (clientX: number, target: Element) =>
     clamp((clientX - target.getBoundingClientRect().left) / pxPerSec, 0, duration)
@@ -233,7 +295,7 @@ export function TimelineView(props: TimelineViewProps) {
       base: cues,
       orig,
       rightBase: cue.duration_s ?? Math.max(MIN_DUR, visualEnd - cue.start_s),
-      cands: snapCandidates(cues, keys, playhead),
+      cands: [...snapCandidates(cues, keys, playhead), ...snapExtra],
       snap: snapEnabled,
       latest: null,
     }
@@ -287,10 +349,22 @@ export function TimelineView(props: TimelineViewProps) {
   }
 
   return (
-    <div className="flex w-full select-none overflow-hidden rounded-xl border border-line bg-bg text-ink">
+    <div className="w-full select-none overflow-hidden rounded-xl border border-line bg-bg text-ink">
+      <div className="flex border-b border-line">
+        <div className="w-32 shrink-0 border-r border-line bg-panel px-2 text-[10px] leading-6 text-mute">Overview</div>
+        <div className="min-w-0 flex-1">
+          <Minimap duration={duration} cues={cues} markers={markers} playhead={playhead}
+            viewStart={vp.left / pxPerSec} viewSpan={vp.width / pxPerSec}
+            onScrollTo={(t) => { const el = scrollRef.current; if (el) el.scrollLeft = Math.max(0, t * pxPerSec) }} />
+        </div>
+      </div>
+    <div className="flex w-full">
       {/* label column */}
       <div className="w-32 shrink-0 border-r border-line bg-panel">
         <div className="border-b border-line" style={{ height: RULER_H }} />
+        <div className="flex items-center border-b border-line px-2 text-[10px] text-mute" style={{ height: MARKERS_H }}>
+          Markers (M)
+        </div>
         <div className="flex items-center border-b border-line px-2 text-xs text-mute" style={{ height: STRIP_H }}>
           Media
         </div>
@@ -304,19 +378,32 @@ export function TimelineView(props: TimelineViewProps) {
             title={l.label}
           >
             {l.kind === 'board' && <span className={`h-2 w-2 shrink-0 rounded-full ${DOT[l.status ?? 'unknown']}`} />}
+            {l.kind === 'segment' && <span className="w-3 shrink-0 text-mute">└</span>}
+            {l.kind === 'board' && onToggleExpand && (boardByMac.get(l.id)?.segments.length ?? 0) > 1 && (
+              <button type="button" className="shrink-0 text-[10px] text-mute hover:text-ink" title="Show segments"
+                onClick={() => onToggleExpand(l.id)}>{expanded.has(l.id) ? '▾' : '▸'}</button>
+            )}
             <div className="min-w-0 flex-1">
               <div className="truncate">{l.label}</div>
               {l.kind === 'board' && boardByMac.has(l.id) && (
                 <LanePreview ctx={resolveCtx} board={boardByMac.get(l.id)!} t={playhead} />
               )}
             </div>
+            {l.kind === 'board' && onToggleMute && onToggleSolo && (
+              <div className="flex shrink-0 flex-col gap-0.5">
+                <button type="button" title="Mute in audition" onClick={() => onToggleMute(l.id)}
+                  className={`rounded px-1 text-[9px] font-bold leading-tight ${muted.has(l.id) ? 'bg-blood text-white' : 'bg-panel-2 text-mute'}`}>M</button>
+                <button type="button" title="Solo in audition" onClick={() => onToggleSolo(l.id)}
+                  className={`rounded px-1 text-[9px] font-bold leading-tight ${solo.has(l.id) ? 'bg-slime text-black' : 'bg-panel-2 text-mute'}`}>S</button>
+              </div>
+            )}
           </div>
         ))}
       </div>
 
       {/* scroll area */}
       <div ref={scrollRef} className="min-w-0 flex-1 overflow-x-auto overflow-y-hidden">
-        <div className="relative" style={{ width: contentW, height: RULER_H + STRIP_H + lanesH }}>
+        <div className="relative" style={{ width: contentW, height: RULER_H + MARKERS_H + STRIP_H + lanesH }}>
           <div
             className="cursor-pointer touch-none"
             onPointerDown={onSeekDown}
@@ -334,15 +421,31 @@ export function TimelineView(props: TimelineViewProps) {
                 >
                   {major && (
                     <span className="absolute -top-2.5 left-1 whitespace-nowrap text-[10px] leading-none text-mute">
-                      {fmt(t, ticks.step)}
+                      {ticks.step === 0 ? timecode(t, fps) : fmt(t, ticks.step)}
                     </span>
                   )}
                 </div>
               ))}
             </div>
-            <div style={{ height: STRIP_H }}>
-              <MediaStrip mediaId={mediaId} duration={duration} pxPerSec={pxPerSec} />
-            </div>
+          </div>
+          <div className="border-b border-line bg-panel">
+            <MarkersLane markers={markers} duration={duration} pxPerSec={pxPerSec} selected={selectedMarkers}
+              readOnly={readOnly}
+              snap={(t, id) => (snapEnabled
+                ? snap(t, [...snapCandidates(cues, NO_SET, playhead), ...snapExtra, ...markers.filter((m) => m.id !== id).map((m) => m.t)], SNAP_PX / pxPerSec)
+                : t)}
+              onSelect={onMarkerSelect} onChange={onMarkersChange} onRename={onMarkerRename} onSeek={onSeek} />
+          </div>
+          <div
+            className="relative cursor-pointer touch-none"
+            style={{ height: STRIP_H }}
+            onPointerDown={onSeekDown}
+            onPointerMove={onSeekMove}
+            onPointerUp={onSeekUp}
+            onPointerCancel={onSeekUp}
+          >
+            <MediaStrip mediaId={mediaId} duration={duration} pxPerSec={pxPerSec} />
+            {onsetLayer}
           </div>
 
           {/* lanes */}
@@ -351,7 +454,7 @@ export function TimelineView(props: TimelineViewProps) {
               key={l.id}
               className={`relative border-b border-line ${
                 l.id === ALL_LANE ? 'bg-ghost/10' : i % 2 ? 'bg-panel-2' : 'bg-panel'
-              }`}
+              } ${l.kind === 'board' && isMuted(l.id) ? 'opacity-40' : ''}`}
               style={{ height: laneHeight(l) }}
               onClick={onLaneClick}
               onDoubleClick={(e) => onLaneDouble(e, l.id)}
@@ -382,13 +485,13 @@ export function TimelineView(props: TimelineViewProps) {
                         : undefined,
                       borderLeft: `3px solid ${col}`,
                     }}
-                    title={stateLabel(cue, [])}
+                    title={cue.label || stateLabel(cue, boardByMac.get(l.id)?.effects ?? [])}
                     onPointerDown={(e) => onBlockDown(e, cue, 'move', end)}
                     onPointerMove={onBlockMove}
                     onPointerUp={onBlockUp}
                     onPointerCancel={onBlockUp}
                   >
-                    <span className="pointer-events-none truncate px-1.5">{stateLabel(cue, [])}</span>
+                    <span className="pointer-events-none truncate px-1.5">{cue.label || stateLabel(cue, boardByMac.get(l.id)?.effects ?? [])}</span>
                     {isOverlap && (
                       <span className="pointer-events-none absolute right-0.5 top-0 text-[10px] text-blood">⚠</span>
                     )}
@@ -410,6 +513,11 @@ export function TimelineView(props: TimelineViewProps) {
             </div>
           ))}
 
+          {loop && loop.b > loop.a && (
+            <div className="pointer-events-none absolute inset-y-0 z-10 border-x border-ghost/70 bg-ghost/10"
+              style={{ left: loop.a * pxPerSec, width: (loop.b - loop.a) * pxPerSec }} />
+          )}
+
           {/* playhead */}
           <div
             className="pointer-events-none absolute inset-y-0 z-20 w-0.5 -translate-x-1/2 bg-pumpkin"
@@ -417,6 +525,7 @@ export function TimelineView(props: TimelineViewProps) {
           />
         </div>
       </div>
+    </div>
     </div>
   )
 }

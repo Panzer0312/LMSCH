@@ -7,7 +7,15 @@ interface Fixture {
   base: ResolveState
   cues: CueSpec[]
   expect_overlaps?: Record<string, [number, number][]>
-  probes: { mac: string; t: number; expect_cue: number | null; expect_state: ResolveState }[]
+  expect_seg_overlaps?: Record<string, [number, number][]>
+  probes: {
+    mac: string
+    t: number
+    seg?: number
+    expect_cue: number | null
+    expect_state: ResolveState
+    expect_segs?: Record<string, number>
+  }[]
 }
 
 const files = import.meta.glob<Fixture>('../../../backend/tests/fixtures/resolve/*.json', {
@@ -15,19 +23,41 @@ const files = import.meta.glob<Fixture>('../../../backend/tests/fixtures/resolve
   import: 'default',
 })
 const fixtures = Object.values(files)
+const segFiles = import.meta.glob<Fixture>(
+  '../../../backend/tests/fixtures/resolve/segments/*.json',
+  { eager: true, import: 'default' },
+)
+const segFixtures = Object.values(segFiles)
 
 describe('resolve fixtures (shared with pytest)', () => {
   it('loads at least 10 fixtures', () => expect(fixtures.length).toBeGreaterThanOrEqual(10))
-  for (const f of fixtures) {
+  it('loads at least 4 segment fixtures', () => expect(segFixtures.length).toBeGreaterThanOrEqual(4))
+  for (const f of [...fixtures, ...segFixtures]) {
     it(f.name, () => {
       const tl = new Timeline(f.cues, f.macs)
       for (const p of f.probes) {
-        const [id, st] = tl.stateAt(p.mac, p.t, f.base)
-        expect(id, JSON.stringify(p)).toBe(p.expect_cue)
-        expect(st, JSON.stringify(p)).toStrictEqual(p.expect_state)
+        const [id, st] =
+          p.seg == null ? tl.stateAt(p.mac, p.t, f.base) : tl.segStateAt(p.mac, p.seg, p.t, f.base)
+        const msg = JSON.stringify(p)
+        expect(id, msg).toBe(p.expect_cue)
+        expect(st, msg).toStrictEqual(p.expect_state)
+        if (p.expect_segs) {
+          const [[boardId, segIds], boardState, segStates] = tl.boardAt(p.mac, p.t, f.base)
+          expect(boardId, msg).toBe(id)
+          expect(boardState, msg).toStrictEqual(st)
+          expect(Object.fromEntries(segIds.map(([s, c]) => [String(s), c])), msg).toStrictEqual(
+            p.expect_segs,
+          )
+          expect([...segStates.keys()].sort((a, b) => a - b), msg).toStrictEqual(
+            Object.keys(p.expect_segs).map(Number).sort((a, b) => a - b),
+          )
+        }
       }
       if (f.expect_overlaps) {
         expect(Object.fromEntries(tl.overlaps())).toStrictEqual(f.expect_overlaps)
+      }
+      if (f.expect_seg_overlaps) {
+        expect(Object.fromEntries(tl.segOverlaps())).toStrictEqual(f.expect_seg_overlaps)
       }
     })
   }

@@ -49,19 +49,23 @@
 | `api/routes_events.py` | `GET /api/events`, `/api/events/stats` |
 | `lock.py` | Show-lock middleware: mutating `/api` calls get 423 unless allowlisted |
 | `sdnotify.py` | `sd_notify` over `NOTIFY_SOCKET`: READY, WATCHDOG, STOPPING. No-op outside systemd |
-| `media/*` | Upload, probe, derive (`<id>.thumbs.jpg/.json`, `<id>.wave.json`), transcode |
+| `media/*` | Upload, probe, derive (`<id>.thumbs.jpg/.json`, `<id>.wave.json`, `<id>.onsets.json`), transcode |
+| `media/analyze.py` | Pure-Python onsets + BPM: 100 Hz RMS envelope, log-energy flux, median + 3·MAD peaks (≥ 80 ms apart), autocorrelation BPM. Output `{rate, onsets: [{t, strength}], bpm}` |
 
 ## Data model
 
 | Table | Key fields |
 |---|---|
-| `Board` | `mac` (PK), ip, name, adopted, firmware, led_count, effects, palettes, presets, last_seen, `offset_ms` (per-board sync, -500..500) |
+| `Board` | `mac` (PK), ip, name, adopted, firmware, led_count, effects, palettes, `fxdata` (WLED effect metadata strings), presets, `segments` `[{id, name, start, stop}]` from `/json/state`, last_seen, `offset_ms` (per-board sync, -500..500) |
 | `Media` | id, filename, path, size, duration_s, width, height, codec |
-| `Profile` | id, name, type `light`/`video`, sort, selection `{all, macs}`, base_state, overrides `{mac: LightState}`, media_id, idle_media_id, playback_mode `once`/`loop`/`idle_trigger`, cooldown_s |
-| `Cue` | id, profile_id, start_s, duration_s?, target `{all, macs}`, state (LightState), transition_ms? |
+| `Profile` | id, name, type `light`/`video`, sort, selection `{all, macs}`, base_state, overrides `{mac: LightState}`, media_id, idle_media_id, playback_mode `once`/`loop`/`idle_trigger`, cooldown_s, `markers` JSON `[{id, t, label, color?}]` sorted by t |
+| `Cue` | id, profile_id, start_s, duration_s?, target `{all, macs, segs?}`, state (LightState), transition_ms?, label? (≤200), color? (`#rrggbb`) |
+| `CueTemplate` | id, name, cues JSON `[{offset_s, duration_s?, lane all/first/same, state, transition_ms?, label?, color?}]` (1–500), created_at |
 | `EventLog` | id, ts, level, kind (`trigger`, `board`, `player`, …), message, data JSON. Kept 7 days |
 | `Setting` | key/value JSON. Key `runtime` holds `RuntimeSettings` |
 
+`CueTarget.segs` `{mac: [seg ids]}`: on that board the cue drives only those WLED segments,
+never the whole board. Absent = whole boards only.
 `LightState`: preset? or explicit on, bri, fx, pal, colors (≤3 RGB), sx, ix, transition_ms.
 `RuntimeSettings`: sync_offset_ms (±2000), master_brightness (0–1), health_interval_s,
 default_transition_ms, log_level, mpv_vo, mpv_gpu_context, mpv_drm_connector, mpv_drm_mode,
@@ -112,6 +116,15 @@ current master value.
 - Most recently started active cue wins. "All selected" and board cues follow the same rule.
 - Short cue ending inside a longer one ⇒ longer resumes. Nothing active ⇒ profile base state.
 - Seek recomputes state at new position; cues in between are not replayed.
+- Segments: the whole-board state ignores segment cues. A segment `(mac, seg)` resolves by the
+  same latest-start rule over the board's whole-board cues plus that segment's cues. A later
+  whole-board cue covers an earlier segment cue and vice versa.
+- `Timeline.board_at` returns the whole-board state plus states only for segments whose own
+  segment cue wins. Change key = (board cue id, ((seg, cue id), …)).
+- `boards/client.py` sends one `/json/state` body per board: board state plus
+  `seg: [{id, fx, pal, sx, ix, col}]`. `on`, `bri` and transition are board-wide in WLED and come
+  from the board state.
+- Audition `muted` MACs are held at the profile base.
 
 ## API
 
@@ -121,9 +134,10 @@ REST under `/api` (OpenAPI at `/docs`). Routers in `api/routes_*.py`:
 |---|---|
 | auth | `GET status`, `POST login/logout`, `PUT pin`, `GET/PUT trigger_token` |
 | boards | list, `scan`, `add`, `{mac}/adopt`, PATCH (`name`, `offset_ms`), DELETE, `identify`, `POST state`, `DELETE state` (clear manual override), `refresh`, `capture`, `recommendations[/{id}/apply]`, `POST fallback`, `POST {mac}/fallback` |
-| profiles | CRUD, `duplicate`, `activate`, `PUT {pid}/cues`, `export`, `import` |
-| media | list, upload, `transcode`, `thumbs`, `thumbs.jpg`, `waveform`, `file` (range), DELETE |
-| show | `GET state`, `POST trigger` (external, token), `show/trigger|play|stop|seek|pause|next|deactivate`, `blackout`, `GET/PUT settings`, `audition[/stop]`, `profiles/{pid}/play_from` |
+| profiles | CRUD, `duplicate`, `activate`, `PUT {pid}/cues`, `PUT {pid}/markers` (replace all, ids unique), `export`, `import` |
+| templates | `GET templates`, `POST templates {name, cues}`, `DELETE templates/{tid}` |
+| media | list, upload, `transcode`, `thumbs`, `thumbs.jpg`, `waveform`, `{mid}/onsets` (empty list if not derived), `file` (range), DELETE |
+| show | `GET state`, `POST trigger` (external, token), `show/trigger|play|stop|seek|pause|next|deactivate`, `blackout`, `GET/PUT settings`, `audition[/stop]` (body adds `muted: [mac]`), `profiles/{pid}/play_from` |
 | setup | `GET setup/outputs`, `GET setup/audio_devices`, `POST setup/test_sound`, `POST setup/calibration {on}`, `GET setup/triggers`, `GET preflight`, `POST preflight/test_all` |
 | events | `GET events?since&kind&limit`, `GET events/stats?since` (triggers total + per hour) |
 | admin | `show/test_pattern`, `POST show_lock {on, pin?}`, `GET backup`, `POST backup/restore` |
@@ -145,3 +159,17 @@ Frontend reducer: `frontend/src/live.ts`.
 React 19 + TS + Vite + Tailwind 4, built to `frontend/dist`, served by FastAPI.
 `pages/` one file per route · `timeline/` editor (model, view, strip, cue panel, templates) ·
 `components/` shared UI · `api.ts` REST client · `live.ts` WS state · `types.ts` shared types.
+
+`timeline/` modules:
+
+| File | Role |
+|---|---|
+| `model.ts` | `TLCue`, lanes, undo history over `Doc {cues, markers}`. Lane ids: `__all__`, `mac`, `mac#seg`. Set mode `amend` replaces the last step (panel edits within 800 ms = one undo step) |
+| `resolve.ts` | Client mirror of `show/resolve.py`; shared JSON fixtures run on both sides |
+| `timeops.ts` | Ripple, insert/delete time, `mm:ss.ff` timecode, clipboard (`spookhub.clipboard`, `{v: 1, cues}`) |
+| `generators.ts` | Parametric cue generators (client-side) |
+| `fxdata.ts` | Parse WLED fxdata: which sliders, palette, color slots an effect uses |
+| `TimelineView`, `Minimap`, `MarkersLane`, `CuePanel` | Rendering and editing |
+| `GenerateDialog`, `TemplateDialog`, `RemapDialog` | Generators, saved templates, lane remap on paste |
+
+Editor FPS is fixed at 25. Tests: `npm test` (vitest).

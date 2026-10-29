@@ -1,4 +1,4 @@
-import type { Board, Cue, Media, Profile, ProfileIn, Settings, LightState, ThumbsMeta, Waveform, Recommendation, ProfileExport, AppState, Preflight, DrmOutput, AudioDevice, EventRow, EventStats, FallbackResult, LastTrigger } from './types'
+import type { Board, Cue, Media, Profile, ProfileIn, Settings, LightState, ThumbsMeta, Waveform, Recommendation, ProfileExport, AppState, Preflight, DrmOutput, AudioDevice, EventRow, EventStats, FallbackResult, LastTrigger, Marker, Onsets, SavedTemplate, TemplateCue } from './types'
 
 export class ApiError extends Error {
   status: number
@@ -81,6 +81,7 @@ export const api = {
     duplicate: (id: number) => post<Profile>(`/api/profiles/${id}/duplicate`),
     activate: (id: number) => post(`/api/profiles/${id}/activate`),
     setCues: (id: number, cues: Cue[]) => req<Profile>('PUT', `/api/profiles/${id}/cues`, cues),
+    setMarkers: (id: number, markers: Marker[]) => req<Profile>('PUT', `/api/profiles/${id}/markers`, markers),
     /** Start the real show on the projector at a position (activates the profile). */
     playFrom: (id: number, from_s: number) => post(`/api/profiles/${id}/play_from`, { from_s }),
     /** Download URL (Content-Disposition attachment). */
@@ -98,10 +99,15 @@ export const api = {
     deactivate: () => post('/api/show/deactivate'),
     blackout: (on: boolean) => post('/api/blackout', { on }),
     /** Live audition: report preview playhead; call on play/pause/seek and every ~1 s. */
-    audition: (profile_id: number, t: number, playing: boolean) =>
-      post<{ ok: boolean; message: string }>('/api/audition', { profile_id, t, playing }),
+    audition: (profile_id: number, t: number, playing: boolean, muted: string[] = []) =>
+      post<{ ok: boolean; message: string }>('/api/audition', { profile_id, t, playing, muted }),
     auditionStop: () => post('/api/audition/stop'),
     testPattern: (on: boolean) => post('/api/show/test_pattern', { on }),
+  },
+  templates: {
+    list: () => req<SavedTemplate[]>('GET', '/api/templates'),
+    create: (name: string, cues: TemplateCue[]) => post<SavedTemplate>('/api/templates', { name, cues }),
+    remove: (id: number) => req<{ ok: boolean }>('DELETE', `/api/templates/${id}`),
   },
   settings: {
     get: () => req<Settings>('GET', '/api/settings'),
@@ -114,6 +120,7 @@ export const api = {
     thumbsUrl: (id: number) => `/api/media/${id}/thumbs.jpg`,
     thumbs: (id: number) => req<ThumbsMeta>('GET', `/api/media/${id}/thumbs`),
     waveform: (id: number) => req<Waveform>('GET', `/api/media/${id}/waveform`),
+    onsets: (id: number) => req<Onsets>('GET', `/api/media/${id}/onsets`),
     transcode: (id: number) => post(`/api/media/${id}/transcode`),
     /** XHR instead of fetch: fetch has no upload progress events. */
     upload: (file: File, onProgress: (frac: number) => void) =>

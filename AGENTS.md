@@ -34,7 +34,7 @@ belongs in git. Keep each doc under ~250 lines; split by topic if it grows.
 
 ```bash
 cd backend && uv run pytest -q && uv run ruff check . && uv run ruff format --check .
-cd frontend && npx tsc -b && npm run lint
+cd frontend && npx tsc -b && npm run lint && npm test
 ```
 
 ## Deploy reality

@@ -5,7 +5,9 @@ LED boards (ESP32) in sync over WiFi. Runs on one Debian 13 mini PC, controlled 
 desktop browser.
 
 **Status:** M1 core show, M2 timeline editor, M3 polish and phase 1 (setup page, preflight, sync
-calibration, show mode, run log, watchdog and fallbacks) built and tested against the simulator.
+calibration, show mode, run log, watchdog and fallbacks) and phase 2 (timeline editing: markers,
+onsets, templates, time editing, clipboard, effect picker, WLED segments) built and tested against
+the simulator.
 Not yet run on real hardware. Next work: [`docs/roadmap/`](docs/roadmap/README.md).
 
 ## Quick start (dev)

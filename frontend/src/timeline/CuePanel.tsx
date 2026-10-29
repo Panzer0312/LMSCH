@@ -4,7 +4,7 @@ import { LightStateEditor } from '../components/LightStateEditor'
 import { ErrorText } from '../components/ui'
 import { fmtTime, useAction } from '../lib'
 import type { Board } from '../types'
-import { round3, stateLabel, type Lane, type TLCue } from './model'
+import { lanesOf, parseLaneId, round3, segLaneId, stateLabel, targetFromLanes, type Lane, type TLCue } from './model'
 
 const fmt = (v: number | null) => (v == null ? '' : String(v))
 
@@ -37,7 +37,9 @@ function NumField({ value, onCommit, step, min = 0, placeholder, disabled }: {
   )
 }
 
-export function CuePanel({ cue, boards, onChange, onDelete, onDuplicate, readOnly }: {
+const MIN_DUR = 0.05
+
+export function CuePanel({ cue, boards, onChange, onDelete, onDuplicate, readOnly, fps = 25 }: {
   cue: TLCue
   boards: Board[]
   lanes?: Lane[]
@@ -45,6 +47,7 @@ export function CuePanel({ cue, boards, onChange, onDelete, onDuplicate, readOnl
   onDelete: () => void
   onDuplicate: () => void
   readOnly?: boolean
+  fps?: number
 }) {
   const [capSel, setCapSel] = useState('')
   const { busy, error, run } = useAction()
@@ -54,6 +57,11 @@ export function CuePanel({ cue, boards, onChange, onDelete, onDuplicate, readOnl
     ? capSel
     : (cue.target.all ? undefined : cue.target.macs.find((m) => boards.some((b) => b.mac === m))) ?? boards[0]?.mac ?? ''
   const effects = boards.find((b) => b.effects.length)?.effects ?? []
+  const fxBoard = cue.target.all
+    ? boards.find((b) => b.fxdata.length > 0)
+    : cue.target.macs.map((m) => boards.find((b) => b.mac === m)).find((b) => b != null)
+  const frame = 1 / (fps > 0 ? fps : 25)
+  const nudges: [string, number][] = [['−1f', -frame], ['−0.1', -0.1], ['+0.1', 0.1], ['+1f', frame]]
 
   if (readOnly) {
     return (
@@ -62,16 +70,27 @@ export function CuePanel({ cue, boards, onChange, onDelete, onDuplicate, readOnl
         <p>Start: {fmtTime(cue.start_s)} ({cue.start_s.toFixed(2)} s)</p>
         <p>Duration: {cue.duration_s == null ? 'hold until next cue' : `${cue.duration_s.toFixed(2)} s`}</p>
         <p>Transition: {cue.transition_ms == null ? 'default' : `${cue.transition_ms} ms`}</p>
-        <p>Target: {cue.target.all ? 'All selected boards' : cue.target.macs.map(nameOf).join(', ')}</p>
+        <p>Target: {cue.target.all ? 'All selected boards' : lanesOf(cue).map((id) => {
+          const { mac, seg } = parseLaneId(id)
+          return seg == null ? nameOf(mac) : `${nameOf(mac)} seg ${seg}`
+        }).join(', ')}</p>
         <p>State: {stateLabel(cue, effects)}</p>
         <p className="text-mute">Editing works on desktop.</p>
       </div>
     )
   }
 
+  // Targets are edited as a lane-id set: a board lane and its segment lanes are mutually exclusive.
+  const cur = lanesOf(cue)
+  const setLanes = (ids: string[]) => { if (ids.length) onChange({ ...cue, target: targetFromLanes(ids) }) }
   const toggleMac = (mac: string, on: boolean) => {
-    const macs = on ? [...cue.target.macs, mac] : cue.target.macs.filter((m) => m !== mac)
-    if (macs.length) onChange({ ...cue, target: { all: false, macs } })
+    const rest = cur.filter((id) => parseLaneId(id).mac !== mac)
+    setLanes(on ? [...rest, mac] : rest)
+  }
+  const toggleSeg = (mac: string, seg: number, on: boolean) => {
+    const id = segLaneId(mac, seg)
+    const rest = cur.filter((x) => x !== id && x !== mac)
+    setLanes(on ? [...rest, id] : rest)
   }
 
   return (
@@ -85,14 +104,42 @@ export function CuePanel({ cue, boards, onChange, onDelete, onDuplicate, readOnl
       </div>
 
       <div className="grid grid-cols-2 gap-3">
+        <div className="col-span-2">
+          <span className="label">Label</span>
+          <input className="input" value={cue.label ?? ''} placeholder="(none)"
+            onChange={(e) => onChange({ ...cue, label: e.target.value === '' ? null : e.target.value })} />
+        </div>
+        <div className="col-span-2">
+          <span className="label">Color</span>
+          <div className="flex items-center gap-2">
+            <input type="color" className="h-9 w-12 cursor-pointer rounded border border-line bg-transparent"
+              value={cue.color ?? '#808080'} onChange={(e) => onChange({ ...cue, color: e.target.value })} />
+            <span className="text-xs text-mute">{cue.color ?? 'auto'}</span>
+            <button type="button" className="btn" disabled={cue.color == null} onClick={() => onChange({ ...cue, color: null })}>Clear</button>
+          </div>
+        </div>
         <div>
           <span className="label">Start (s)</span>
-          <NumField value={cue.start_s} step={0.01} onCommit={(v) => v != null && onChange({ ...cue, start_s: round3(v) })} />
+          <NumField value={cue.start_s} step={0.001} onCommit={(v) => v != null && onChange({ ...cue, start_s: round3(v) })} />
+          <div className="mt-1 flex flex-wrap gap-1">
+            {nudges.map(([lbl, d]) => (
+              <button key={lbl} type="button" className="btn px-2 py-1 text-xs"
+                onClick={() => onChange({ ...cue, start_s: round3(Math.max(0, cue.start_s + d)) })}>{lbl}</button>
+            ))}
+          </div>
         </div>
         <div>
           <span className="label">Duration (s)</span>
-          <NumField value={cue.duration_s} step={0.01} placeholder="hold" disabled={cue.duration_s == null}
-            onCommit={(v) => onChange({ ...cue, duration_s: v == null ? null : round3(v) })} />
+          <NumField value={cue.duration_s} step={0.001} min={MIN_DUR} placeholder="hold" disabled={cue.duration_s == null}
+            onCommit={(v) => onChange({ ...cue, duration_s: v == null ? null : round3(Math.max(MIN_DUR, v)) })} />
+          {cue.duration_s != null && (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {nudges.map(([lbl, d]) => (
+                <button key={lbl} type="button" className="btn px-2 py-1 text-xs"
+                  onClick={() => cue.duration_s != null && onChange({ ...cue, duration_s: round3(Math.max(MIN_DUR, cue.duration_s + d)) })}>{lbl}</button>
+              ))}
+            </div>
+          )}
           <label className="mt-1 flex items-center gap-2 text-xs text-mute">
             <input type="checkbox" checked={cue.duration_s == null}
               onChange={(e) => onChange({ ...cue, duration_s: e.target.checked ? null : 1 })} /> hold
@@ -115,18 +162,34 @@ export function CuePanel({ cue, boards, onChange, onDelete, onDuplicate, readOnl
         {!cue.target.all && (
           <div className="space-y-1 pl-5">
             {boards.map((b) => {
-              const on = cue.target.macs.includes(b.mac)
+              const on = cur.includes(b.mac)
               return (
-                <label key={b.mac} className="flex items-center gap-2">
-                  <input type="checkbox" checked={on} disabled={on && cue.target.macs.length === 1}
-                    onChange={(e) => toggleMac(b.mac, e.target.checked)} />
-                  {b.name}
-                </label>
+                <div key={b.mac}>
+                  <label className="flex items-center gap-2">
+                    <input type="checkbox" checked={on} disabled={on && cur.length === 1}
+                      onChange={(e) => toggleMac(b.mac, e.target.checked)} />
+                    {b.name}
+                  </label>
+                  {b.segments.length > 1 && (
+                    <div className="flex flex-wrap gap-x-3 pl-5 text-xs text-mute">
+                      {b.segments.map((sg) => {
+                        const sOn = cur.includes(segLaneId(b.mac, sg.id))
+                        return (
+                          <label key={sg.id} className="flex items-center gap-1">
+                            <input type="checkbox" checked={sOn} disabled={sOn && cur.length === 1}
+                              onChange={(e) => toggleSeg(b.mac, sg.id, e.target.checked)} />
+                            {sg.name || `Seg ${sg.id}`}
+                          </label>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
               )
             })}
             {extraMacs.map((m) => (
               <label key={m} className="flex items-center gap-2 text-mute">
-                <input type="checkbox" checked disabled={cue.target.macs.length === 1} onChange={() => toggleMac(m, false)} />
+                <input type="checkbox" checked disabled={cur.length === 1} onChange={() => toggleMac(m, false)} />
                 {m} (not in selection)
               </label>
             ))}
@@ -134,7 +197,7 @@ export function CuePanel({ cue, boards, onChange, onDelete, onDuplicate, readOnl
         )}
       </div>
 
-      <LightStateEditor value={cue.state} boards={boards} onChange={(state) => onChange({ ...cue, state })} />
+      <LightStateEditor value={cue.state} boards={boards} fxdata={fxBoard?.fxdata} onChange={(state) => onChange({ ...cue, state })} />
 
       <div className="space-y-1">
         <span className="label">Capture from board</span>

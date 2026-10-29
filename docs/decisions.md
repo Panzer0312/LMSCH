@@ -35,3 +35,12 @@ Choices made where the spec was open. Append new rows; mark replaced rows "super
 | Blackout vs fallback save | Blackout always reaches the board; a fallback save in progress aborts at its next step ("blackout active"). |
 | Trigger seen | The preflight "recent trigger" check counts only accepted triggers from `POST /api/trigger` (source `external`). |
 | Sync offset range | Global `sync_offset_ms` is limited to ±2000, finite. Stored out-of-range values are dropped on load. |
+| Timeline markers | JSON column `Profile.markers`, not a table. Few per profile, always loaded with the profile, replaced as a whole. |
+| Onset detection | Pure Python, no numpy: RMS envelope, log-energy flux, moving median + MAD peak picking. Keeps the hub free of heavy deps. |
+| Cue clipboard | `localStorage` key `spookhub.clipboard`, `{v: 1, cues: [{offset_s, lanes, …}]}`. Works across profiles and tabs. Paste onto lanes that don't exist opens a remap dialog. |
+| Frontend tests | vitest (`npm test`). Same toolchain as Vite. |
+| Segment payload | Board and segment states merge into one `/json/state` request per board, so the latest-wins queue stays per board. `on`, `bri`, transition stay board-wide (WLED limit). |
+| Cue templates | Parametric generators run client-side (TS). Saved templates are stored server-side (`CueTemplate`). |
+| Timeline FPS | Fixed at 25. ffprobe data carries no frame rate. |
+| Panel undo | Edits to the same cue within 800 ms coalesce into one undo step. |
+| Audition mute | Muted lanes' boards get the profile base during audition. |

@@ -3,7 +3,7 @@
  * Pure logic, shared by TimelineView (rendering + pointer editing) and TimelineEditor (page).
  */
 import { useCallback, useState } from 'react'
-import type { Board, BoardStatus, Cue, LightState } from '../types'
+import type { Board, BoardStatus, Cue, CueTarget, LightState, Marker, Onset } from '../types'
 
 /** Lane id of the "All selected boards" lane (always the first lane). */
 export const ALL_LANE = '__all__'
@@ -12,7 +12,26 @@ export const ALL_LANE = '__all__'
 export interface TLCue extends Cue { key: string }
 
 /** `sound` (phase 4) and `device` (phase 5) kinds extend this union. */
-export interface Lane { kind: 'all' | 'board'; id: string; label: string; status?: BoardStatus }
+export interface Lane { kind: 'all' | 'board' | 'segment'; id: string; label: string; status?: BoardStatus; mac?: string; seg?: number }
+
+/** Segment lanes are keyed `mac#seg` so lane ids stay plain strings everywhere else. */
+export const segLaneId = (mac: string, seg: number) => `${mac}#${seg}`
+export function parseLaneId(id: string): { mac: string; seg: number | null } {
+  const i = id.lastIndexOf('#')
+  return i < 0 ? { mac: id, seg: null } : { mac: id.slice(0, i), seg: Number(id.slice(i + 1)) }
+}
+
+/** Cue target for a set of lane ids (ALL lane wins over everything else). */
+export function targetFromLanes(lanes: string[]): CueTarget {
+  if (lanes.includes(ALL_LANE)) return { all: true, macs: [] }
+  const macs: string[] = []
+  const segs: Record<string, number[]> = {}
+  for (const id of lanes) {
+    const { mac, seg } = parseLaneId(id)
+    if (seg == null) { if (!macs.includes(mac)) macs.push(mac) } else if (!(segs[mac] ?? []).includes(seg)) segs[mac] = [...(segs[mac] ?? []), seg]
+  }
+  return Object.keys(segs).length ? { all: false, macs, segs } : { all: false, macs }
+}
 
 let seq = 0
 export const newKey = () => `c${Date.now().toString(36)}${(seq++).toString(36)}`
@@ -25,8 +44,13 @@ export const toServer = (cues: TLCue[]): Cue[] =>
 
 export const round3 = (n: number) => Math.round(n * 1000) / 1000
 
-/** Lanes a cue is drawn on: the ALL lane, or each targeted board lane. */
-export const lanesOf = (c: Cue): string[] => (c.target.all ? [ALL_LANE] : c.target.macs)
+/** Lanes a cue is drawn on: the ALL lane, or each targeted board and segment lane. */
+export const lanesOf = (c: Pick<Cue, 'target'>): string[] => {
+  if (c.target.all) return [ALL_LANE]
+  const segs = c.target.segs
+  if (!segs) return c.target.macs
+  return [...c.target.macs.filter((m) => !(m in segs)), ...Object.entries(segs).flatMap(([m, ids]) => ids.map((i) => segLaneId(m, i)))]
+}
 
 /** Boards a cue affects (for overlap checks), given the profile's selected boards. */
 const boardsOf = (c: Cue, macs: string[]) => (c.target.all ? macs : c.target.macs.filter((m) => macs.includes(m)))
@@ -78,29 +102,37 @@ export function snap(t: number, candidates: number[], threshold: number): number
 
 export const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 
-export interface History {
-  doc: TLCue[]
-  /**
-   * Update the document. transient=true (during a drag) replaces the present without creating
-   * an undo step; the next non-transient set records one step from the last committed state.
-   */
-  set: (doc: TLCue[], transient?: boolean) => void
+/** Undoable editor document: cues and markers share one history so undo order stays intuitive. */
+export interface Doc { cues: TLCue[]; markers: Marker[] }
+
+/**
+ * transient (true): replace the present without an undo step (drag preview); the next commit records
+ * one step from the last committed state. 'amend': replace the last committed step in place, used to
+ * coalesce a burst of panel edits (slider drags, typing) into one undo step.
+ */
+export type SetMode = boolean | 'amend'
+
+export interface History<T> {
+  doc: T
+  set: (doc: T, mode?: SetMode) => void
   undo: () => void
   redo: () => void
-  reset: (doc: TLCue[]) => void
+  reset: (doc: T) => void
   canUndo: boolean
   canRedo: boolean
 }
 
-interface HState { past: TLCue[][]; base: TLCue[]; present: TLCue[]; future: TLCue[][] }
+interface HState<T> { past: T[]; base: T; present: T; future: T[] }
 const LIMIT = 200
 
-export function useHistory(initial: TLCue[]): History {
-  const [h, setH] = useState<HState>({ past: [], base: initial, present: initial, future: [] })
-  const set = useCallback((doc: TLCue[], transient = false) => {
-    setH((s) => transient
-      ? { ...s, present: doc }
-      : { past: [...s.past, s.base].slice(-LIMIT), base: doc, present: doc, future: [] })
+export function useHistory<T>(initial: T): History<T> {
+  const [h, setH] = useState<HState<T>>({ past: [], base: initial, present: initial, future: [] })
+  const set = useCallback((doc: T, mode: SetMode = false) => {
+    setH((s) => {
+      if (mode === true) return { ...s, present: doc }
+      if (mode === 'amend' && s.past.length) return { ...s, base: doc, present: doc, future: [] }
+      return { past: [...s.past, s.base].slice(-LIMIT), base: doc, present: doc, future: [] }
+    })
   }, [])
   const undo = useCallback(() => {
     setH((s) => {
@@ -116,7 +148,7 @@ export function useHistory(initial: TLCue[]): History {
       return { past: [...s.past, s.base], base: next, present: next, future: rest }
     })
   }, [])
-  const reset = useCallback((doc: TLCue[]) => setH({ past: [], base: doc, present: doc, future: [] }), [])
+  const reset = useCallback((doc: T) => setH({ past: [], base: doc, present: doc, future: [] }), [])
   return { doc: h.present, set, undo, redo, reset, canUndo: h.past.length > 0, canRedo: h.future.length > 0 }
 }
 
@@ -143,6 +175,26 @@ export interface TimelineViewProps {
   onZoom: (pxPerSec: number) => void
   /** Double-click on empty lane space. */
   onAddAt: (t: number, laneId: string) => void
+  markers?: Marker[]
+  selectedMarkers?: Set<string>
+  onMarkerSelect?: (ids: Set<string>) => void
+  onMarkersChange?: (markers: Marker[], commit: boolean) => void
+  onMarkerRename?: (id: string, label: string) => void
+  /** Onsets already filtered by the threshold; drawn as ticks on the waveform. */
+  onsets?: Onset[]
+  /** Extra snap points (markers, onsets) on top of cue edges and the playhead. */
+  snapExtra?: number[]
+  loop?: { a: number; b: number } | null
+  fps?: number
+  muted?: Set<string>
+  solo?: Set<string>
+  onToggleMute?: (laneId: string) => void
+  onToggleSolo?: (laneId: string) => void
+  /** Bump `n` to zoom/scroll so [start, end] fills the visible width. */
+  viewReq?: { start: number; end: number; n: number } | null
+  /** Board macs whose segment sub-lanes are shown. */
+  expanded?: Set<string>
+  onToggleExpand?: (mac: string) => void
 }
 
 /** Short human summary of a cue's light state for block labels. */
@@ -156,8 +208,9 @@ export function stateLabel(c: Cue, effects: string[]): string {
   return parts.join(' · ') || 'State'
 }
 
-/** CSS color for a cue block: its first color, else a neutral accent. */
+/** CSS color for a cue block: custom color, else its first light color, else a neutral accent. */
 export function cueColor(c: Cue): string {
+  if (c.color) return c.color
   const col = c.state.colors?.[0]
   if (c.state.on === false) return '#333'
   return col ? `rgb(${col[0]},${col[1]},${col[2]})` : '#b49cff'

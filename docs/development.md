@@ -27,8 +27,12 @@ curl localhost:9001/sim/log                         # received commands + timest
 
 ```bash
 cd backend && uv run pytest -q && uv run ruff check . && uv run ruff format --check .
-cd frontend && npx tsc -b && npm run lint
+cd frontend && npx tsc -b && npm run lint && npm test
 ```
+
+`npm test` runs vitest on `frontend/src/**/*.test.ts`: the TS resolver against the shared fixtures in
+`backend/tests/fixtures/resolve/` (pytest runs the same files), ribbon runs, time editing and clipboard
+ops (`timeops.ts`), parametric templates (`generators.ts`).
 
 | Test file | Covers |
 |---|---|

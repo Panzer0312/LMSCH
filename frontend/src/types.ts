@@ -30,6 +30,9 @@ export interface Board {
   live: { on?: boolean; bri?: number; fx?: number; pal?: number; col?: number[][]; ps?: number }
   effects: string[]
   palettes: string[]
+  /** WLED /json/fxdata strings, same index as effects; may be empty. */
+  fxdata: string[]
+  segments: Segment[]
   presets: Record<string, string> // id -> name
 }
 
@@ -37,7 +40,9 @@ export type ProfileType = 'light' | 'video'
 export type PlaybackMode = 'once' | 'loop' | 'idle_trigger'
 
 export interface BoardSelection { all: boolean; macs: string[] }
-export interface CueTarget { all: boolean; macs: string[] }
+/** segs: per-board WLED segment ids; a mac listed there is hit only on those segments. */
+export interface CueTarget { all: boolean; macs: string[]; segs?: Record<string, number[]> | null }
+export interface Segment { id: number; name: string; start: number; stop: number }
 
 export interface Cue {
   id?: number
@@ -46,7 +51,26 @@ export interface Cue {
   target: CueTarget
   state: LightState
   transition_ms: number | null
+  label?: string | null
+  color?: string | null // '#rrggbb'
 }
+
+export interface Marker { id: string; t: number; label: string; color: string | null }
+
+export interface Onset { t: number; strength: number } // strength 0..1
+export interface Onsets { rate: number; onsets: Onset[]; bpm: number | null }
+
+/** Saved multi-cue template (server). lane: all = ALL lane, first = first target lane, same = paste lane. */
+export interface TemplateCue {
+  offset_s: number
+  duration_s: number | null
+  lane: 'all' | 'first' | 'same'
+  state: LightState
+  transition_ms: number | null
+  label?: string | null
+  color?: string | null
+}
+export interface SavedTemplate { id: number; name: string; cues: TemplateCue[]; created_at: string }
 
 export interface ProfileIn {
   name: string
@@ -58,9 +82,11 @@ export interface ProfileIn {
   idle_media_id: number | null
   playback_mode: PlaybackMode
   cooldown_s: number
+  /** Omit on update to leave stored markers untouched. */
+  markers?: Marker[] | null
 }
 
-export interface Profile extends ProfileIn { id: number; sort: number; cues: Cue[] }
+export interface Profile extends ProfileIn { id: number; sort: number; cues: Cue[]; markers: Marker[] }
 
 export interface Media {
   id: number
