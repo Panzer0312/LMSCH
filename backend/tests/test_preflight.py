@@ -301,7 +301,7 @@ async def test_wifi_sleep_cached(client):  # noqa: F811
     hub = client.hub
     b = _board(hub, "aa")
     assert (await _check(hub, "wifi_sleep"))["detail"] == "not checked"
-    b.wifi_sleep = False
+    b.wifi_sleep, b.wifi_sleep_at = False, time.time()
     assert (await _check(hub, "wifi_sleep"))["status"] == "ok"
     b.wifi_sleep = True
     c = await _check(hub, "wifi_sleep")
@@ -326,6 +326,8 @@ async def test_mpv_restart_grace(client, fake):  # noqa: F811
     c = await _check(hub, "mpv")
     assert c["status"] == "warn" and c["detail"] == "restarting"
     fake.restart_began = time.monotonic() - 10
+    assert (await _check(hub, "mpv"))["status"] == "warn"  # still inside 15 s
+    fake.restart_began = time.monotonic() - 20
     assert (await _check(hub, "mpv"))["status"] == "fail"
 
 
@@ -465,3 +467,33 @@ async def test_test_all_works_without_player(client):  # noqa: F811
     await hub.engine.run_test_all("/s.wav", "/p.png", flash_s=0.05)
     await wait_for(lambda: not hub.engine.snapshot()["setup_busy"])
     assert not b.hold_white
+
+
+async def test_wifi_cache_expires_after_6h(client):  # noqa: F811
+    hub = client.hub
+    b = _board(hub, "aa")
+    b.wifi_sleep, b.wifi_sleep_at = True, time.time() - 7 * 3600
+    c = await _check(hub, "wifi_sleep")
+    assert c["status"] == "ok" and c["detail"] == "not checked"
+    b.wifi_sleep_at = time.time() - 3600
+    assert (await _check(hub, "wifi_sleep"))["status"] == "warn"
+
+
+async def test_detail_change_publishes_for_nonvolatile(client):  # noqa: F811
+    hub = client.hub
+    await hub.preflight.stop()
+    _board(hub, "aa", BoardStatus.offline)
+    await hub.preflight.run()
+    seen = _capture(hub)
+    hub.boards.boards.pop("aa")
+    _board(hub, "bb", BoardStatus.offline)
+    await hub.preflight.run()
+    assert seen.count("preflight") == 1  # offline A -> offline B
+
+
+async def test_ready_clears_restart_began():
+    import inspect
+
+    from spookhub.player.process import MpvPlayer
+
+    assert "self.restart_began = None" in inspect.getsource(MpvPlayer._run_once)

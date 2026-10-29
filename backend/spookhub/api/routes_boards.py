@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -129,7 +130,7 @@ async def recommendations(mac: str, hub: HubDep) -> list[dict[str, Any]]:
     checks = run_checks(cfg)
     for c in checks:
         if c.id == "wifi_sleep":
-            b.wifi_sleep = not c.ok  # feeds the preflight wifi_sleep check
+            b.wifi_sleep, b.wifi_sleep_at = not c.ok, time.time()  # feeds preflight
     return [
         {"id": c.id, "title": c.title, "ok": c.ok, "detail": c.detail, "fixable": c.fix is not None}
         for c in checks
@@ -148,7 +149,7 @@ async def apply_recommendation(mac: str, check_id: str, hub: HubDep) -> dict[str
             return {"ok": True}
         await hub.wled.set_cfg(b.ip, check.fix)
         if check.id == "wifi_sleep":
-            b.wifi_sleep = False
+            b.wifi_sleep, b.wifi_sleep_at = False, time.time()
     except WledError as e:
         raise HTTPException(502, f"board unreachable: {e}") from e
     hub.bus.event("info", f"Applied '{check.title}' on {b.name or mac}", mac=mac)

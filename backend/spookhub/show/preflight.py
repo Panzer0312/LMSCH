@@ -29,7 +29,9 @@ MIN_FREE_BYTES = 2 * 1024**3
 TRIGGER_STALE_S = 30 * 60
 GOOD_CODECS = {"h264", "hevc"}
 MAX_HEIGHT = 1080
-RESTART_GRACE_S = 5.0
+RESTART_GRACE_S = 15.0
+WIFI_CACHE_MAX_S = 6 * 3600
+VOLATILE = {"latency", "disk", "trigger_recent"}
 
 
 class Check(BaseModel):
@@ -138,7 +140,18 @@ class Preflight:
         worst = max((c.status for c in checks), key=order.__getitem__, default="ok")
         result = {"checks": [c.model_dump() for c in checks], "worst": worst}
         # Detail text carries live numbers (latency, minutes); only state changes are news.
-        sig = (tuple((c.id, c.status, c.fix) for c in checks), worst)
+        sig = (
+            tuple(
+                (
+                    c.id,
+                    c.status,
+                    c.fix,
+                    c.detail if c.status != "ok" and c.id not in VOLATILE else "",
+                )
+                for c in checks
+            ),
+            worst,
+        )
         self.last = result
         if sig != self._last_sig:
             self._last_sig = sig
@@ -176,7 +189,14 @@ class Preflight:
     async def _wifi_sleep(self) -> Check:
         # Only the cached reading from the board recommendations check; never poll boards here.
         label = "WiFi sleep off"
-        known = [b for b in self.hub.boards.adopted() if b.wifi_sleep is not None]
+        now = self.now()
+        known = [
+            b
+            for b in self.hub.boards.adopted()
+            if b.wifi_sleep is not None
+            and b.wifi_sleep_at is not None
+            and now - b.wifi_sleep_at < WIFI_CACHE_MAX_S
+        ]
         if not known:
             return _c("wifi_sleep", label, "ok", "not checked", "/boards")
         bad = [b.name or b.mac for b in known if b.wifi_sleep]

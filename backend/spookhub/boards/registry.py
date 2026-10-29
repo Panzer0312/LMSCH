@@ -69,6 +69,7 @@ class BoardRuntime:
     hold_white: bool = False
     # Last WiFi-sleep reading from the recommendations check; None = never checked.
     wifi_sleep: bool | None = None
+    wifi_sleep_at: float | None = None  # time.time() of that reading
     queue: LatestWinsQueue | None = None
     _persisted_seen: float = 0.0
 

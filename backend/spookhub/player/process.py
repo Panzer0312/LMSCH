@@ -209,6 +209,7 @@ class MpvPlayer:
                 log.warning("mpv ipc setup failed: %s", exc)
             else:
                 self.ready.set()
+                self.restart_began = None
                 self._notify("restart")
                 waiters = {
                     asyncio.create_task(proc.wait()),
