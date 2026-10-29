@@ -39,7 +39,7 @@ export function NumberRow({ label, value, min, max, step, fine, unit, disabled, 
             value={draft ?? fmt(value)}
             onFocus={() => setDraft(fmt(value))}
             onChange={(e) => setDraft(e.target.value)}
-            onBlur={(e) => { commit(e.target.value); setDraft(null) }}
+            onBlur={(e) => { if (e.target.value !== fmt(value)) commit(e.target.value); setDraft(null) }}
             onKeyDown={(e) => {
               if (e.key === 'Enter') { commit(e.currentTarget.value); setDraft(null); e.currentTarget.blur(); return }
               nudge(e, value, step, f, (v) => { set(v); setDraft(fmt(clamp(v, min, max))) })

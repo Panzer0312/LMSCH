@@ -149,10 +149,10 @@ function MediaCard({ m, profiles, defaultProfile, onChanged }: {
 }
 
 export default function Media() {
-  const { mediaRev, settings } = useLive()
+  const { mediaRev, displayProfilesRev, settings } = useLive()
   const [displayProfiles, setDisplayProfiles] = useState<DisplayProfile[]>([])
   const loadDisplay = useCallback(() => { api.display.profiles().then(setDisplayProfiles, () => undefined) }, [])
-  useEffect(loadDisplay, [loadDisplay, mediaRev])
+  useEffect(loadDisplay, [loadDisplay, mediaRev, displayProfilesRev])
   const defaultId = settings?.display_profile_id ?? null
   const defaultProfile = defaultId != null ? displayProfiles.find((p) => p.id === defaultId) ?? null : null
   const [items, setItems] = useState<MediaItem[] | null>(null)
@@ -167,11 +167,12 @@ export default function Media() {
     if (r) setItems(r)
   }, [run])
 
+  // A deleted display profile clears media.display_profile_id, so refetch on that too.
   useEffect(() => {
     void run(() => api.media.list()).then((r) => {
       if (r) setItems(r)
     })
-  }, [run, mediaRev])
+  }, [run, mediaRev, displayProfilesRev])
 
   const onFile = async (file: File | undefined) => {
     if (fileRef.current) fileRef.current.value = ''

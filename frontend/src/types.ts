@@ -227,6 +227,8 @@ export interface DisplayState {
   live: DisplayGeometry | null
   resolved_profile_id: number | null
   geometry: DisplayGeometry
+  /** False when mpv runs a vo without user-shader support; keystone/mask/flip are then ignored. */
+  warp_supported: boolean
 }
 
 export interface PatternInfo { id: string; label: string; kind: 'image' | 'video' }

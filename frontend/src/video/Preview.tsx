@@ -78,13 +78,36 @@ void main() {
 interface GlState {
   gl: WebGLRenderingContext
   prog: WebGLProgram
+  shaders: WebGLShader[]
+  buf: WebGLBuffer | null
   tex: WebGLTexture
   u: Record<string, WebGLUniformLocation | null>
 }
 
+/*
+ * Losing the context is deferred: StrictMode (and fast remounts) reuse the same canvas right
+ * after cleanup, and a lost context cannot be revived synchronously.
+ */
+const pendingLose = new WeakMap<HTMLCanvasElement, number>()
+
+function disposeGl(s: GlState) {
+  const { gl } = s
+  gl.deleteTexture(s.tex)
+  gl.deleteBuffer(s.buf)
+  s.shaders.forEach((sh) => { gl.detachShader(s.prog, sh); gl.deleteShader(sh) })
+  gl.deleteProgram(s.prog)
+  const cv = gl.canvas as HTMLCanvasElement
+  pendingLose.set(cv, window.setTimeout(() => {
+    pendingLose.delete(cv)
+    gl.getExtension('WEBGL_lose_context')?.loseContext()
+  }, 0))
+}
+
 function initGl(cv: HTMLCanvasElement): GlState | null {
+  window.clearTimeout(pendingLose.get(cv))
+  pendingLose.delete(cv)
   const gl = cv.getContext('webgl', { antialias: false, preserveDrawingBuffer: false })
-  if (!gl) return null
+  if (!gl || gl.isContextLost()) return null
   const sh = (type: number, src: string) => {
     const s = gl.createShader(type)!
     gl.shaderSource(s, src)
@@ -93,10 +116,15 @@ function initGl(cv: HTMLCanvasElement): GlState | null {
     return s
   }
   const prog = gl.createProgram()!
-  gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS))
-  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS))
+  const shaders = [sh(gl.VERTEX_SHADER, VS), sh(gl.FRAGMENT_SHADER, FS)]
+  shaders.forEach((x) => gl.attachShader(prog, x))
   gl.linkProgram(prog)
-  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { console.error(gl.getProgramInfoLog(prog)); return null }
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(prog))
+    shaders.forEach((x) => gl.deleteShader(x))
+    gl.deleteProgram(prog)
+    return null
+  }
   gl.useProgram(prog)
   const buf = gl.createBuffer()
   gl.bindBuffer(gl.ARRAY_BUFFER, buf)
@@ -113,7 +141,7 @@ function initGl(cv: HTMLCanvasElement): GlState | null {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
   const names = ['u_m', 'u_tex', 'u_has', 'u_inv', 'u_rect', 'u_crop', 'u_rot', 'u_flip', 'u_mask', 'u_feather', 'u_img', 'u_outline', 'u_px']
   const u = Object.fromEntries(names.map((n) => [n, gl.getUniformLocation(prog, n)]))
-  return { gl, prog, tex, u }
+  return { gl, prog, shaders, buf, tex, u }
 }
 
 function draw(s: GlState, g: DisplayGeometry, srcW: number, srcH: number, has: boolean, outline: boolean) {
@@ -140,8 +168,11 @@ function draw(s: GlState, g: DisplayGeometry, srcW: number, srcH: number, has: b
 const LABELS = ['1', '2', '3', '4']
 const BASE: [number, number][] = [[0, 0], [1, 0], [1, 1], [0, 1]]
 
-export function Preview({ geometry, source, scrubT, onCorners }: {
+export function Preview({ geometry, editCorners, source, scrubT, onCorners }: {
+  /** What is drawn (may be the saved A side while comparing). */
   geometry: DisplayGeometry
+  /** Corners of the edited geometry; handle moves start from these so A/B never clobbers edits. */
+  editCorners: [number, number][]
   source: PreviewSource
   /** Media scrub position; the hidden video follows it. */
   scrubT: number | null
@@ -174,7 +205,7 @@ export function Preview({ geometry, source, scrubT, onCorners }: {
       redraw()
     })
     ro.observe(cv)
-    return () => { ro.disconnect(); gls.current = null }
+    return () => { ro.disconnect(); gls.current = null; disposeGl(s) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -237,9 +268,10 @@ export function Preview({ geometry, source, scrubT, onCorners }: {
     const el = stage.current
     if (!el) return
     const r = el.getBoundingClientRect()
-    const ox = ((clientX - r.left) / r.width) * SPAN - M
-    const oy = ((clientY - r.top) / r.height) * SPAN - M
-    const next = geometry.corners.map((c) => [...c] as [number, number])
+    // Clamp to the visible stage so a dragged handle can always be grabbed again.
+    const ox = clamp(((clientX - r.left) / r.width) * SPAN - M, -M, 1 + M)
+    const oy = clamp(((clientY - r.top) / r.height) * SPAN - M, -M, 1 + M)
+    const next = editCorners.map((c) => [...c] as [number, number])
     next[i] = [clamp(ox - BASE[i][0], -0.5, 0.5), clamp(oy - BASE[i][1], -0.5, 0.5)]
     onCorners(next)
   }
@@ -258,7 +290,7 @@ export function Preview({ geometry, source, scrubT, onCorners }: {
     const k = delta[e.key]
     if (!k) return
     e.preventDefault()
-    const next = geometry.corners.map((c) => [...c] as [number, number])
+    const next = editCorners.map((c) => [...c] as [number, number])
     next[i] = [clamp(next[i][0] + k[0], -0.5, 0.5), clamp(next[i][1] + k[1], -0.5, 0.5)]
     onCorners(next)
   }

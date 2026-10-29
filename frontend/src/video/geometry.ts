@@ -27,6 +27,13 @@ export function sameGeometry(a: DisplayGeometry, b: DisplayGeometry): boolean {
   return JSON.stringify(normalize(a)) === JSON.stringify(normalize(b))
 }
 
+/** True when the geometry uses parts only the warp shader renders (keystone, mask, flip). */
+export function needsWarp(g: DisplayGeometry): boolean {
+  const m = g.mask
+  return g.flip_h || g.flip_v || g.corners.some(([x, y]) => x !== 0 || y !== 0)
+    || m.top !== 0 || m.right !== 0 || m.bottom !== 0 || m.left !== 0
+}
+
 export const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 
 export type Group = 'frame' | 'keystone' | 'mask' | 'image'

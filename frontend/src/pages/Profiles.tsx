@@ -158,7 +158,7 @@ function ProfileEditor({ id }: { id: string }) {
   }, [id, isNew, loadRun])
 
   useEffect(() => { api.media.list().then(setMedia).catch(() => setMedia([])) }, [live.mediaRev])
-  useEffect(() => { api.display.profiles().then(setDisplays).catch(() => setDisplays([])) }, [])
+  useEffect(() => { api.display.profiles().then(setDisplays).catch(() => setDisplays([])) }, [live.displayProfilesRev])
 
   const back = <Link to="/profiles" className="text-sm text-ghost hover:underline">← Back to profiles</Link>
 

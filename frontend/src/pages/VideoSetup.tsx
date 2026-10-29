@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 import { useLive } from '../live'
 import type { DisplayGeometry, DisplayProfile, DisplaySource, Media, PatternInfo, Profile } from '../types'
@@ -7,8 +7,8 @@ import { fmtTime, useAction } from '../lib'
 import { Controls } from '../video/Controls'
 import { ProfileBar } from '../video/ProfileBar'
 import { Preview, type PreviewSource } from '../video/Preview'
-import { useDisplayState, useThrottled } from '../video/hooks'
-import { IDENTITY, normalize, sameGeometry } from '../video/geometry'
+import { useDisplayState, useSerialSender, useSetupSession, useThrottled } from '../video/hooks'
+import { IDENTITY, needsWarp, normalize, sameGeometry } from '../video/geometry'
 
 const DEFAULT_SOURCE: DisplaySource = { kind: 'pattern', id: 'grid' }
 
@@ -22,7 +22,7 @@ const parseKey = (k: string): DisplaySource | null => {
 }
 
 export default function VideoSetup() {
-  const { settings, show, mediaRev } = useLive()
+  const { settings, show, mediaRev, displayProfilesRev } = useLive()
   const { display, error: stateError } = useDisplayState()
   const [profiles, setProfiles] = useState<DisplayProfile[] | null>(null)
   const [patterns, setPatterns] = useState<PatternInfo[]>([])
@@ -36,15 +36,14 @@ export default function VideoSetup() {
   const [previewOpen, setPreviewOpen] = useState(true)
   const act = useAction()
   const live = useAction()
-  const entered = useRef(false)
+  const session = useSetupSession()
 
   const loadProfiles = useCallback(async () => setProfiles(await api.display.profiles()), [])
   const { run } = act
-  useEffect(() => {
-    void run(loadProfiles)
-    api.display.patterns().then(setPatterns, () => undefined)
-  }, [run, loadProfiles])
-  useEffect(() => { api.media.list().then(setMedia, () => undefined) }, [mediaRev])
+  useEffect(() => { api.display.patterns().then(setPatterns, () => undefined) }, [])
+  useEffect(() => { void run(loadProfiles) }, [run, loadProfiles, displayProfilesRev])
+  // Deleting a display profile clears media.display_profile_id, so refetch media on that too.
+  useEffect(() => { api.media.list().then(setMedia, () => undefined) }, [mediaRev, displayProfilesRev])
   const activeShowId = settings?.active_profile_id ?? null
   useEffect(() => {
     if (activeShowId == null) return
@@ -52,11 +51,6 @@ export default function VideoSetup() {
     api.profiles.get(activeShowId).then((p) => { if (alive) setShowProfile(p) }, () => undefined)
     return () => { alive = false }
   }, [activeShowId])
-
-  // Leave setup mode when navigating away so the hub returns to its idle state.
-  useEffect(() => () => {
-    if (entered.current) void api.display.setup(false).catch(() => undefined)
-  }, [])
 
   const idleProfile = activeShowId != null && showProfile?.id === activeShowId ? showProfile : null
   const setupOn = !!display?.setup
@@ -69,9 +63,10 @@ export default function VideoSetup() {
   const dirty = edit !== null && !sameGeometry(edit, saved)
   const shown = ab === 'A' && dirty ? saved : edited
 
-  const sendLive = useThrottled((g: DisplayGeometry) => {
-    api.display.live(g).then(() => live.setError(null), (e) => live.setError(e instanceof Error ? e.message : String(e)))
-  }, 30)
+  const { setError: setLiveError } = live
+  const postLive = useSerialSender((g: DisplayGeometry) =>
+    api.display.live(g).then(() => setLiveError(null), (e) => setLiveError(e instanceof Error ? e.message : String(e))))
+  const sendLive = useThrottled(postLive, 30)
   useEffect(() => { if (setupOn) sendLive(shown) }, [setupOn, shown, sendLive])
 
   const sendSeek = useThrottled((t: number) => { void api.display.seek(t).catch(() => undefined) }, 120)
@@ -90,14 +85,9 @@ export default function VideoSetup() {
       : mediaSrc ? { kind: 'video', url: api.media.fileUrl(mediaSrc.id), w: mediaSrc.width, h: mediaSrc.height } : null
 
   const enter = (src: DisplaySource) => act.run(async () => {
-    await api.display.setup(true, src)
-    entered.current = true
-    setScrubT(null)
+    if (await session.enter(src)) setScrubT(null)
   })
-  const leave = () => act.run(async () => {
-    await api.display.setup(false)
-    entered.current = false
-  })
+  const leave = () => act.run(session.leave)
 
   const select = (id: number | null) => {
     if (dirty && !window.confirm('Discard unsaved changes?')) return
@@ -137,11 +127,13 @@ export default function VideoSetup() {
     })
   }
   const setDefault = () => { if (selected) void act.run(() => api.settings.update({ display_profile_id: selected.id })) }
+  // Pinning needs an explicit pick: the inherited/resolved profile may just be the default.
+  const pinId = pickedId ?? null
   const useForMedia = (on: boolean) => {
-    if (!mediaSrc) return
+    if (!mediaSrc || (on && pinId === null)) return
     void act.run(async () => {
-      const m = await api.media.setDisplayProfile(mediaSrc.id, on ? effectiveId : null)
-      setMedia((l) => l.map((x) => (x.id === m.id ? { ...x, display_profile_id: m.display_profile_id ?? null } : x)))
+      const m = await api.media.setDisplayProfile(mediaSrc.id, on ? pinId : null)
+      setMedia((l) => l.map((x) => (x.id === m.id ? { ...x, display_profile_id: m.display_profile_id } : x)))
     })
   }
 
@@ -170,6 +162,11 @@ export default function VideoSetup() {
       {locked && <p className="text-sm text-pumpkin">Show mode is on. Turn it off in Settings to adjust the projector.</p>}
       {!setupOn && !locked && <p className="text-sm text-mute">Starting setup mode stops any show. Leaving restores the idle state. Edits and saving work without it, but only setup mode shows them live.</p>}
       <ErrorText error={act.error ?? live.error ?? stateError} />
+      {display && !display.warp_supported && needsWarp(edited) && (
+        <p className="rounded-lg border border-pumpkin/50 bg-pumpkin/10 p-2 text-sm text-pumpkin">
+          Keystone, mask and flip need mpv vo = gpu-next (Settings). The projector ignores them right now.
+        </p>
+      )}
 
       <div className="card space-y-2">
         <label className="label" htmlFor="vs-source">Source on projector</label>
@@ -198,6 +195,7 @@ export default function VideoSetup() {
       <ProfileBar profiles={profiles ?? []} selectedId={effectiveId} defaultId={defaultId} dirty={dirty} busy={act.busy}
         mediaName={mediaSrc?.filename ?? null}
         mediaUsesSelected={mediaSrc != null && mediaSrc.display_profile_id != null && mediaSrc.display_profile_id === effectiveId}
+        canPin={pinId !== null}
         ab={ab} onSelect={select} onSave={() => void save()} onSaveAs={saveAs} onRename={rename} onDelete={remove}
         onSetDefault={setDefault} onUseForMedia={useForMedia} onAb={setAb} />
 
@@ -207,7 +205,7 @@ export default function VideoSetup() {
             {previewOpen ? 'Hide preview' : 'Show preview'}
           </button>
           <div className={`${previewOpen ? '' : 'hidden'} space-y-1 sm:block`}>
-            <Preview geometry={shown} source={preview} scrubT={scrubT}
+            <Preview geometry={shown} editCorners={edited.corners} source={preview} scrubT={scrubT}
               onCorners={(corners) => change({ ...edited, corners })} />
             <p className="text-xs text-mute">Browser mimic. Orange = output bounds; the projector is the truth.{ab === 'A' && dirty ? ' Showing A (saved).' : ''}</p>
           </div>

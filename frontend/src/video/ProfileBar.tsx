@@ -1,6 +1,6 @@
 import type { DisplayProfile } from '../types'
 
-export function ProfileBar({ profiles, selectedId, defaultId, dirty, busy, mediaName, mediaUsesSelected, ab, onSelect, onSave, onSaveAs, onRename, onDelete, onSetDefault, onUseForMedia, onAb }: {
+export function ProfileBar({ profiles, selectedId, defaultId, dirty, busy, mediaName, mediaUsesSelected, canPin, ab, onSelect, onSave, onSaveAs, onRename, onDelete, onSetDefault, onUseForMedia, onAb }: {
   profiles: DisplayProfile[]
   selectedId: number | null
   defaultId: number | null
@@ -9,6 +9,8 @@ export function ProfileBar({ profiles, selectedId, defaultId, dirty, busy, media
   /** Filename of the media source, when one is shown. */
   mediaName: string | null
   mediaUsesSelected: boolean
+  /** A profile was picked explicitly in this bar, so it can be pinned to the video. */
+  canPin: boolean
   ab: 'A' | 'B'
   onSelect: (id: number | null) => void
   onSave: () => void
@@ -43,8 +45,8 @@ export function ProfileBar({ profiles, selectedId, defaultId, dirty, busy, media
           {selectedId !== null && selectedId === defaultId ? 'Is default' : 'Set as default'}
         </button>
         {mediaName && (
-          <button className="btn" disabled={busy || (none && !mediaUsesSelected)} onClick={() => onUseForMedia(!mediaUsesSelected)}
-            title={mediaName}>
+          <button className="btn" disabled={busy || (!canPin && !mediaUsesSelected)} onClick={() => onUseForMedia(!mediaUsesSelected)}
+            title={canPin || mediaUsesSelected ? mediaName : 'Pick a profile in the list first'}>
             {mediaUsesSelected ? 'Stop using for this video' : 'Use for this video'}
           </button>
         )}

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Ctx, initial, reduce, type Live } from './live'
+import { Ctx, initial, reduce, setDisplay, type Live, type Msg } from './live'
 
 /** Single WebSocket for all live state; reconnects with backoff (phones sleep). */
 export function LiveProvider({ children }: { children: ReactNode }) {
@@ -19,7 +19,13 @@ export function LiveProvider({ children }: { children: ReactNode }) {
         setState((s) => ({ ...s, connected: true }))
         ping = window.setInterval(() => ws?.readyState === 1 && ws.send('ping'), 20000)
       }
-      ws.onmessage = (e) => setState((s) => reduce(s, JSON.parse(e.data)))
+      ws.onmessage = (e) => {
+        const m = JSON.parse(e.data) as Msg
+        // `display` goes to its own store so drag-rate updates skip the shared context.
+        if (m.type === 'display') { setDisplay(m.data); return }
+        if (m.type === 'snapshot' && m.data.display) setDisplay(m.data.display)
+        setState((s) => reduce(s, m))
+      }
       ws.onclose = () => {
         window.clearInterval(ping)
         setState((s) => ({ ...s, connected: false }))

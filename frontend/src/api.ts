@@ -139,7 +139,7 @@ export const api = {
     transcode: (id: number) => post(`/api/media/${id}/transcode`),
     blackCheck: (id: number) => req<BlackCheck>('GET', `/api/media/${id}/black_check`),
     setDisplayProfile: (id: number, display_profile_id: number | null) =>
-      req<Media>('PATCH', `/api/media/${id}`, { display_profile_id }),
+      req<{ id: number; display_profile_id: number | null }>('PATCH', `/api/media/${id}`, { display_profile_id }),
     /** XHR instead of fetch: fetch has no upload progress events. */
     upload: (file: File, onProgress: (frac: number) => void) =>
       new Promise<Media>((resolve, reject) => {

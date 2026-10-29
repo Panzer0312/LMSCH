@@ -6,7 +6,7 @@ import type { AudioDevice, Board, DrmOutput, LastTrigger, PatternInfo, Recommend
 import { ErrorText } from '../components/ui'
 import { SetupStep, type StepStatus } from '../components/SetupStep'
 import { ago, useAction } from '../lib'
-import { useDisplayState } from '../video/hooks'
+import { useDisplayState, useSetupSession } from '../video/hooks'
 
 const LOCK_HINT = 'A show is playing or setup is busy. Stop the show to change this.'
 const SHOW_LOCK_HINT = 'Show mode is on — turn it off in Settings or Show mode'
@@ -72,10 +72,13 @@ function PatternPicker() {
   const { display } = useDisplayState()
   const [patterns, setPatterns] = useState<PatternInfo[] | null>(null)
   const act = useAction()
+  const session = useSetupSession()
   useEffect(() => { api.display.patterns().then(setPatterns, () => setPatterns([])) }, [])
   const cur = display?.setup && display.source?.kind === 'pattern' ? display.source.id : ''
-  const blocked = !!settings?.show_lock || !!show?.blackout
-  const pick = (id: string) => void act.run(() => (id ? api.display.setup(true, { kind: 'pattern', id }) : api.display.setup(false)))
+  // Setup mode would stop the running show; make that a deliberate step on /video instead.
+  const playing = show?.phase === 'playing' || show?.phase === 'paused'
+  const blocked = !!settings?.show_lock || !!show?.blackout || playing
+  const pick = (id: string) => void act.run(async () => { if (id) await session.enter({ kind: 'pattern', id }); else await session.leave() })
   return (
     <div className="space-y-1">
       <div className="flex flex-wrap items-center gap-2">
@@ -86,6 +89,7 @@ function PatternPicker() {
         </select>
         <Link className="btn" to="/video">Open video setup</Link>
       </div>
+      {playing && <p className="text-xs text-mute">A show is playing. Stop it to show alignment patterns.</p>}
       <ErrorText error={act.error} />
     </div>
   )
