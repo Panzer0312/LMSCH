@@ -16,7 +16,10 @@ ENV_RATE = 100  # envelope frames per second
 MIN_SPACING = 0.08  # seconds between onsets
 MEDIAN_HALF = 50  # frames each side of the moving-median window (~1 s window)
 MAD_K = 3.0
-FLOOR_FRAC = 0.1  # absolute threshold floor, fraction of the loudest onset
+# Global threshold floor (fraction of the loudest onset in the clip). It keeps noise out of
+# silent passages, but also means a very quiet hit next to a much louder one (< 10 % of its
+# strength) is not reported.
+FLOOR_FRAC = 0.1
 MIN_LAG_S, MAX_LAG_S = 0.3, 1.5
 BPM_MIN_CONFIDENCE = 0.15
 
@@ -34,8 +37,8 @@ def envelope(raw: bytes, sample_rate: int) -> list[float]:
 
 
 def onset_strength(env: list[float]) -> list[float]:
-    logs = [math.log1p(e) for e in env]
-    return [0.0] + [max(0.0, logs[i] - logs[i - 1]) for i in range(1, len(logs))]
+    logs = [0.0] + [math.log1p(e) for e in env]  # leading silent frame: onset at t=0 counts
+    return [max(0.0, logs[i] - logs[i - 1]) for i in range(1, len(logs))]
 
 
 def _median(vals: list[float]) -> float:
@@ -75,8 +78,12 @@ def estimate_bpm(strength: list[float]) -> float | None:
     zero = sum(map(mul, x, x))
     if zero <= 0:
         return None
-    ac = {lag: sum(map(mul, x, x[lag:])) for lag in range(lo - 1, hi + 2)}
-    best = max(range(lo, hi + 1), key=lambda lag: (ac[lag], -lag))
+    n = len(x)
+    ac = {lag: sum(map(mul, x, x[lag:])) * n / (n - lag) for lag in range(lo - 1, hi + 2)}
+    best = lo
+    for lag in range(lo + 1, hi + 1):
+        if ac[lag] > ac[best] * 1.05:  # prefer the shorter lag over near-ties (sub-harmonics)
+            best = lag
     if ac[best] / zero < BPM_MIN_CONFIDENCE:
         return None
     a, b, c = ac[best - 1], ac[best], ac[best + 1]

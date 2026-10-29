@@ -114,7 +114,7 @@ async def _transcode_job(hub: Hub, m: Media) -> None:
         s.commit()
     if src != dest:
         src.unlink(missing_ok=True)
-    derive.remove(hub.cfg.paths.media_dir, mid)
+    await derive.remove(hub.cfg.paths.media_dir, mid)
     hub.transcodes.pop(mid, None)
     hub.bus.event("info", f"Transcoded {m.filename} to H.264")
     hub.bus.publish("media_changed")
@@ -185,7 +185,7 @@ def file(mid: int) -> FileResponse:
 
 
 @router.delete("/{mid}")
-def delete(mid: int, hub: HubDep) -> dict[str, bool]:
+async def delete(mid: int, hub: HubDep) -> dict[str, bool]:
     users = _users(mid)
     if users:
         raise HTTPException(409, f"used by: {', '.join(users)}")
@@ -194,8 +194,8 @@ def delete(mid: int, hub: HubDep) -> dict[str, bool]:
         if m is None:
             raise HTTPException(404, "media not found")
         Path(m.path).unlink(missing_ok=True)
-        derive.remove(hub.cfg.paths.media_dir, mid)
         s.delete(m)
         s.commit()
+    await derive.remove(hub.cfg.paths.media_dir, mid)
     hub.bus.publish("media_changed")
     return {"ok": True}

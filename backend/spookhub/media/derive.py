@@ -10,6 +10,7 @@ import array
 import asyncio
 import json
 import logging
+import os
 import weakref
 from pathlib import Path
 from typing import Any
@@ -61,7 +62,7 @@ async def make_thumbs(src: Path, duration: float, sprite: Path, meta: Path) -> d
         "-q:v", "5", str(sprite),
     )  # fmt: skip
     data = {"count": count, "interval": interval, "tile_w": THUMB_W, "tile_h": THUMB_H}
-    meta.write_text(json.dumps(data))
+    _write_json(meta, data)
     return data
 
 
@@ -82,46 +83,100 @@ def _peaks(raw: bytes, duration: float) -> dict[str, Any]:
     return {"rate": rate, "peaks": [round(p / top, 3) for p in peaks]}
 
 
+async def _has_audio(src: Path) -> bool:
+    out = await _run(
+        "ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index",
+        "-of", "csv=p=0", str(src),
+    )  # fmt: skip
+    return bool(out.strip())
+
+
 async def _decode(src: Path) -> bytes:
+    """Mono s16le PCM; b"" only when the file clearly has no audio. Other failures raise."""
+    if not await _has_audio(src):
+        return b""
+    return await _run(
+        "ffmpeg", "-v", "error", "-i", str(src), "-vn", "-ac", "1",
+        "-ar", str(WAVE_SAMPLE_RATE), "-f", "s16le", "-",
+    )  # fmt: skip
+
+
+def _write_json(path: Path, data: Any) -> None:
+    """Atomic write so a crash never leaves a truncated file behind."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data))
+    os.replace(tmp, path)
+
+
+def _valid(path: Path) -> bool:
+    """True if the file exists and parses; a corrupt file is deleted and counts as missing."""
     try:
-        return await _run(
-            "ffmpeg", "-v", "error", "-i", str(src), "-vn", "-ac", "1",
-            "-ar", str(WAVE_SAMPLE_RATE), "-f", "s16le", "-",
-        )  # fmt: skip
-    except RuntimeError:
-        return b""  # no audio stream
+        json.loads(path.read_text())
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        path.unlink(missing_ok=True)
+        return False
+    return True
 
 
-async def make_onsets(src: Path, out: Path) -> dict[str, Any]:
-    raw = await _decode(src)
+async def make_onsets(src: Path, out: Path, raw: bytes | None = None) -> dict[str, Any]:
+    if raw is None:
+        raw = await _decode(src)
     data = await asyncio.to_thread(analyze.analyze, raw, WAVE_SAMPLE_RATE)
-    out.write_text(json.dumps(data))
+    _write_json(out, data)
     return data
 
 
-async def make_wave(src: Path, duration: float, out: Path) -> dict[str, Any]:
-    raw = await _decode(src)
+async def make_wave(
+    src: Path, duration: float, out: Path, raw: bytes | None = None
+) -> dict[str, Any]:
+    if raw is None:
+        raw = await _decode(src)
     data = await asyncio.to_thread(_peaks, raw, duration)
-    out.write_text(json.dumps(data))
+    _write_json(out, data)
     return data
+
+
+def _lock(mid: int) -> asyncio.Lock:
+    return _locks.setdefault(asyncio.get_running_loop(), {}).setdefault(mid, asyncio.Lock())
+
+
+def _prune(mid: int) -> None:
+    _locks.get(asyncio.get_running_loop(), {}).pop(mid, None)
 
 
 async def ensure(media_dir: Path, mid: int, src: Path, duration: float) -> None:
     """Generate any missing derived assets (idempotent, serialised per media item)."""
-    lock = _locks.setdefault(asyncio.get_running_loop(), {}).setdefault(mid, asyncio.Lock())
-    async with lock:
+    async with _lock(mid):
         p = paths(media_dir, mid)
         try:
-            if not (p["sprite"].exists() and p["thumbs"].exists()):
+            if not (p["sprite"].exists() and _valid(p["thumbs"])):
                 await make_thumbs(src, duration, p["sprite"], p["thumbs"])
-            if not p["wave"].exists():
-                await make_wave(src, duration, p["wave"])
-            if not p["onsets"].exists():
-                await make_onsets(src, p["onsets"])
         except Exception as e:  # noqa: BLE001
-            log.warning("deriving assets for media %s failed: %s", mid, e)
+            log.warning("thumbnails for media %s failed: %s", mid, e)
+        need_wave, need_onsets = not _valid(p["wave"]), not _valid(p["onsets"])
+        raw: bytes | None = None
+        if need_wave or need_onsets:
+            try:
+                raw = await _decode(src)  # decoded once, shared by both analyses
+            except Exception as e:  # noqa: BLE001
+                log.warning("decoding audio of media %s failed: %s", mid, e)
+        if raw is not None and need_wave:
+            try:
+                await make_wave(src, duration, p["wave"], raw)
+            except Exception as e:  # noqa: BLE001
+                log.warning("waveform for media %s failed: %s", mid, e)
+        if raw is not None and need_onsets:
+            try:
+                await make_onsets(src, p["onsets"], raw)
+            except Exception as e:  # noqa: BLE001
+                log.warning("onset analysis for media %s failed: %s", mid, e)
+    _prune(mid)
 
 
-def remove(media_dir: Path, mid: int) -> None:
-    for f in paths(media_dir, mid).values():
-        f.unlink(missing_ok=True)
+async def remove(media_dir: Path, mid: int) -> None:
+    async with _lock(mid):
+        for f in paths(media_dir, mid).values():
+            f.unlink(missing_ok=True)
+    _prune(mid)
