@@ -4,6 +4,7 @@ import { Timeline, merged } from './resolve'
 import type { CueSpec, ResolveState } from './resolve'
 
 export const OFF_COLOR = '#16121c'
+const PRESET_COLOR = '#8a8697'
 const DEFAULT_COLOR = '#e8e4f0'
 
 export interface ResolveCtx {
@@ -28,20 +29,24 @@ export function toSpecs(cues: Cue[] & { key?: string }[]): CueSpec[] {
   }))
 }
 
-export interface Look { color: string; fx: number; label: string }
+export interface Look { color: string; hatched: boolean; label: string }
+export interface Names { effects: string[]; presets: Record<string, string> }
 
-/** Visual summary of a resolved state. fx > 0 means a moving effect (drawn hatched). */
-export function look(st: ResolveState, board: Board | undefined): Look {
-  if (st.on === false) return { color: OFF_COLOR, fx: 0, label: 'Off' }
-  if (st.preset != null) {
-    const c = st.colors?.[0]
-    return { color: c ? `rgb(${c[0]},${c[1]},${c[2]})` : DEFAULT_COLOR, fx: 1, label: board?.presets[String(st.preset)] ?? `Preset ${st.preset}` }
-  }
+/** Visual summary of a resolved state. Effects and presets are drawn hatched. */
+export function look(st: ResolveState, names: Names): Look {
   const c = st.colors?.[0]
+  if (st.on === false || st.bri === 0) return { color: OFF_COLOR, hatched: false, label: 'Off' }
+  if (st.preset != null) {
+    return {
+      color: c ? `rgb(${c[0]},${c[1]},${c[2]})` : PRESET_COLOR,
+      hatched: true,
+      label: names.presets[String(st.preset)] ?? `Preset ${st.preset}`,
+    }
+  }
   const fx = st.fx ?? 0
   const bri = st.bri == null ? 1 : Math.max(0.15, st.bri / 255)
   const color = c ? `rgb(${Math.round(c[0] * bri)},${Math.round(c[1] * bri)},${Math.round(c[2] * bri)})` : DEFAULT_COLOR
-  return { color, fx, label: fx > 0 ? (board?.effects[fx] ?? `fx ${fx}`) : 'Solid' }
+  return { color, hatched: fx > 0, label: fx > 0 ? (names.effects[fx] ?? `fx ${fx}`) : 'Solid' }
 }
 
 export function lookAt(ctx: ResolveCtx, board: Board, t: number): Look {
@@ -49,24 +54,29 @@ export function lookAt(ctx: ResolveCtx, board: Board, t: number): Look {
   return look(st, board)
 }
 
-export interface Run { x: number; w: number; color: string; hatched: boolean; label: string }
+/** A stretch of constant look, in seconds. */
+export interface Run { t0: number; t1: number; color: string; hatched: boolean; label: string }
 
-/** Sample the resolved state every `stepPx` and merge equal neighbours into runs. */
-export function ribbonRuns(ctx: ResolveCtx, board: Board, duration: number, pxPerSec: number, stepPx = 4): Run[] {
-  const total = Math.max(duration, 1) * pxPerSec
-  const base = boardBase(ctx.base, ctx.overrides, board.mac)
+/**
+ * Runs from cue boundaries: the state only changes at a cue start/end, so evaluate once per
+ * segment (at its midpoint) and merge equal neighbours. O(cues) per board, independent of zoom.
+ */
+export function ribbonRuns(ctx: ResolveCtx, mac: string, names: Names, duration: number): Run[] {
+  const total = Math.max(duration, 1)
+  const base = boardBase(ctx.base, ctx.overrides, mac)
+  const pts = new Set<number>([0, total])
+  for (const c of ctx.timeline.byBoard.get(mac) ?? []) {
+    pts.add(Math.min(Math.max(c.start, 0), total))
+    if (c.duration != null) pts.add(Math.min(Math.max(c.start + c.duration, 0), total))
+  }
+  const ts = [...pts].sort((a, b) => a - b)
   const runs: Run[] = []
-  let cur: (Run & { key: string }) | null = null
-  for (let x = 0; x < total; x += stepPx) {
-    const [, st] = ctx.timeline.stateAt(board.mac, x / pxPerSec, base)
-    const l = look(st, board)
-    const key = `${l.color}|${l.fx > 0}|${l.label}`
-    if (cur && cur.key === key) {
-      cur.w = x + stepPx - cur.x
-    } else {
-      cur = { key, x, w: stepPx, color: l.color, hatched: l.fx > 0, label: l.label }
-      runs.push(cur)
-    }
+  for (let i = 0; i + 1 < ts.length; i++) {
+    const [, st] = ctx.timeline.stateAt(mac, (ts[i] + ts[i + 1]) / 2, base)
+    const l = look(st, names)
+    const last = runs[runs.length - 1]
+    if (last && last.color === l.color && last.hatched === l.hatched && last.label === l.label) last.t1 = ts[i + 1]
+    else runs.push({ t0: ts[i], t1: ts[i + 1], ...l })
   }
   return runs
 }

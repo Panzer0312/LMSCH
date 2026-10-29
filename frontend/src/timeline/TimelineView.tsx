@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
+import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react'
 import type { Board, BoardStatus } from '../types'
 import { MediaStrip } from './Strip'
@@ -94,13 +94,13 @@ export function TimelineView(props: TimelineViewProps) {
   const lanesH = lanes.reduce((n, l) => n + laneHeight(l), 0)
   const boardByMac = useMemo(() => new Map(boards.map((b) => [b.mac, b])), [boards])
   const boardsKey = boards.map((b) => b.mac).join(',')
-  // Rebuilt on doc/base changes only; the playhead never invalidates it.
+  // Rebuilt on doc/base changes only (deferred so drags stay smooth); the playhead never invalidates it.
+  const deferredCues = useDeferredValue(cues)
   const resolveCtx = useMemo<ResolveCtx>(() => ({
-    timeline: new Timeline(toSpecs(cues), boardsKey ? boardsKey.split(',') : []),
+    timeline: new Timeline(toSpecs(deferredCues), boardsKey ? boardsKey.split(',') : []),
     base: base ?? {},
     overrides,
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- boardsKey stands in for boards
-  }), [cues, boardsKey, base, overrides])
+  }), [deferredCues, boardsKey, base, overrides])
 
   const laneItems = useMemo(() => {
     const m = new Map<string, LaneItem[]>()
@@ -357,7 +357,7 @@ export function TimelineView(props: TimelineViewProps) {
               onDoubleClick={(e) => onLaneDouble(e, l.id)}
             >
               {l.kind === 'board' && boardByMac.has(l.id) && (
-                <Ribbon ctx={resolveCtx} board={boardByMac.get(l.id)!} duration={duration} pxPerSec={pxPerSec} height={RIBBON_H} />
+                <Ribbon ctx={resolveCtx} mac={l.id} effects={boardByMac.get(l.id)!.effects} presets={boardByMac.get(l.id)!.presets} duration={duration} pxPerSec={pxPerSec} height={RIBBON_H} />
               )}
               {(laneItems.get(l.id) ?? []).map(({ cue, end, open }) => {
                 const col = cueColor(cue)
