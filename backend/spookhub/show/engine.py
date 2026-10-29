@@ -177,6 +177,8 @@ class ShowEngine:
         self._stall_task: asyncio.Task[None] | None = None
         self._stall_restarted = asyncio.Event()
         self._stall_pending = False
+        # Stall clock floor: unpause/seek make time-pos legitimately stand still for a while.
+        self._resumed_mono = 0.0
         self.stall_s = STALL_S
         self.stall_poll_s = STALL_POLL_S
         self.stall_restart_timeout_s = STALL_RESTART_TIMEOUT_S
@@ -392,7 +394,9 @@ class ShowEngine:
 
     async def seek(self, t: float) -> None:
         if self.playing_main:
+            self._resumed_mono = time.monotonic()  # hr-seek can hold time-pos for a while
             await self._safe(self.player.seek(t))
+            self._resumed_mono = time.monotonic()
 
     async def pause(self, paused: bool) -> None:
         if self.playing_main:
@@ -420,7 +424,9 @@ class ShowEngine:
         assert self.timeline
         self._start_scheduler(a, self.timeline, self._player_clock)
         # Main show only: calibration, test sounds and idle loops never get stall recovery.
-        self._stall_task = asyncio.create_task(self._stall_watch(a))
+        self._resumed_mono = time.monotonic()
+        if self.player.cfg.enabled:
+            self._stall_task = asyncio.create_task(self._stall_watch(a))
         return True
 
     async def _go_idle(self) -> None:
@@ -466,6 +472,8 @@ class ShowEngine:
             # mpv crashed mid-show: return to a defined state rather than guess.
             spawn(self._finish("interrupted (player restarted)"))
         elif prop == "pause":
+            if not self.player.paused:
+                self._resumed_mono = time.monotonic()
             self.phase = Phase.paused if self.player.paused else Phase.playing
             self._publish()
 
@@ -479,16 +487,21 @@ class ShowEngine:
 
     def _stalled(self) -> bool:
         p = self.player
-        if p.paused or p.eof or p._loading or p.time_pos is None:
+        if p.paused or p.eof or p.loading or p.seeking or p.buffering or p.time_pos is None:
             return False
-        return time.monotonic() - p.pos_mono >= self.stall_s
+        return time.monotonic() - max(p.pos_mono, self._resumed_mono) >= self.stall_s
 
     async def _stall_watch(self, a: ActiveProfile) -> None:
         """Restart a frozen mpv once and resume; a second freeze in the same play ends the show."""
         recovered = False
+        seen: float | None = None
         while True:
             await asyncio.sleep(self.stall_poll_s)
             if not self.playing_main or not self._stalled():
+                seen = None
+                continue
+            if seen != self.player.time_pos:  # confirm on a second poll at the same position
+                seen = self.player.time_pos
                 continue
             if recovered:
                 self.bus.event("error", "video stalled again, ending show", kind="player")
@@ -517,7 +530,12 @@ class ShowEngine:
                 return True  # show ended meanwhile; nothing to resume
             assert a.media_path
             loop = a.mode == PlaybackMode.loop
-            return await self._safe(self.player.load(a.media_path, start=at, loop=loop))
+            ok = await self._safe(self.player.load(a.media_path, start=at, loop=loop))
+            # Re-resolve the cue at the resume position for every board.
+            self._last_cue = {m: None for m in self._last_cue}
+            self._last_t = None
+            self._resumed_mono = time.monotonic()
+            return ok
 
     # ----- scheduler -----
 
@@ -676,6 +694,12 @@ class ShowEngine:
         self._publish()
 
     # ----- setup activities (test sound now; test-all / calibration later) -----
+
+    def fallback_blocker(self) -> str | None:
+        """Why board fallback may not be saved now (it rewrites live boards), or None."""
+        if self.calibrating:
+            return "calibration running"
+        return self.setup_blocker()
 
     def setup_blocker(self) -> str | None:
         """Why a setup action may not start now, or None."""

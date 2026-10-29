@@ -32,6 +32,7 @@ IDENTIFY_STATE = LightState(on=True, bri=255, fx=0, colors=[(255, 255, 255)], tr
 LAST_SEEN_PERSIST_S = 60.0
 FALLBACK_PRESET = 250
 FALLBACK_NAME = "Spookhub fallback"
+FALLBACK_WRITE_TIMEOUT_S = 5.0  # flash writes on the board are slow
 
 
 class BoardStatus(enum.StrEnum):
@@ -74,6 +75,8 @@ class BoardRuntime:
     wifi_sleep: bool | None = None
     wifi_sleep_at: float | None = None  # time.time() of that reading
     queue: LatestWinsQueue | None = None
+    fallback_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    saving_fallback: bool = False  # push() is a no-op meanwhile; save_fallback replays it
     _persisted_seen: float = 0.0
 
     def snapshot(self) -> dict[str, Any]:
@@ -210,7 +213,7 @@ class BoardManager:
     def push(self, mac: str, critical: bool = False) -> None:
         """Deliver the current desired state for a board (no-op if nothing desired)."""
         b = self.boards.get(mac)
-        if not b or not b.adopted or b.queue is None:
+        if not b or not b.adopted or b.queue is None or b.saving_fallback:
             return
         state = self.desired(b)
         if state is None:
@@ -272,23 +275,45 @@ class BoardManager:
     async def save_fallback(self, mac: str, state: LightState | None) -> str | None:
         """Make `state` the board's boot state (WLED preset 250 + boot preset). None = ok.
 
-        Sent directly, not through the queue: psave must follow the state it stores, and a
-        queued desired-state push in between would be saved instead.
+        Sent directly, not through the queue: psave must follow the state it stores. Desired-state
+        pushes for this board are deferred meanwhile and replayed afterwards, so the board returns
+        to what the show wants (master applied) instead of keeping the saved look.
         """
         b = self.boards[mac]
-        t = self.timing.command_timeout_s
-        try:
-            if state is not None:
-                # Full brightness: master/cap are show-night knobs, not part of the boot look.
-                payload = build_payload(state, presets=b.presets, seg_ids=b.seg_ids)
-                if payload:
-                    await self.wled.set_state(b.ip, payload, t)
-            await self.wled.set_state(
-                b.ip, {"psave": FALLBACK_PRESET, "n": FALLBACK_NAME, "ib": True, "sb": True}, t
-            )
-            await self.wled.set_cfg(b.ip, {"def": {"ps": FALLBACK_PRESET, "on": True}})
-        except WledError as e:
-            return str(e)
+        if state is None:
+            return "no base state"
+        # Full brightness: master/cap are show-night knobs, not part of the boot look.
+        payload = build_payload(state, presets=b.presets, seg_ids=b.seg_ids)
+        if not payload:
+            return "no base state"
+        async with b.fallback_lock:
+            b.saving_fallback = True
+            ok = False
+            try:
+                if b.queue is not None:
+                    try:
+                        async with asyncio.timeout(FALLBACK_WRITE_TIMEOUT_S):
+                            while not b.queue.idle:  # noqa: ASYNC110  (queue has no idle event)
+                                await asyncio.sleep(0.02)
+                    except TimeoutError:
+                        return "board busy"
+                await self.wled.set_state(b.ip, payload, FALLBACK_WRITE_TIMEOUT_S)
+                await self.wled.set_state(
+                    b.ip,
+                    {"psave": FALLBACK_PRESET, "n": FALLBACK_NAME, "ib": True, "sb": True},
+                    FALLBACK_WRITE_TIMEOUT_S,
+                )
+                await self.wled.set_cfg(
+                    b.ip, {"def": {"ps": FALLBACK_PRESET, "on": True}}, FALLBACK_WRITE_TIMEOUT_S
+                )
+                ok = True
+            except WledError as e:
+                return str(e)
+            finally:
+                b.saving_fallback = False
+                self.push(mac)
+                if ok:
+                    spawn(self.refresh_meta(mac))  # preset cache now includes 250
         return None
 
     # ----- health & reconciliation -----

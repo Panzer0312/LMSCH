@@ -56,13 +56,16 @@ async def add(body: AddIn, hub: HubDep) -> dict[str, Any]:
 
 
 async def _fallback(hub: Hub, macs: list[str]) -> dict[str, Any]:
+    why = hub.engine.fallback_blocker()
+    if why:
+        raise HTTPException(409, why)
     active = hub.engine.active
     results = []
     for mac in macs:
         b = hub.boards.boards[mac]
-        # Active profile's base is the look the boards should boot into; with no profile
-        # fall back to whatever they are showing now.
-        state = active.base_for(mac) if active else hub.boards.desired(b)
+        # The profile's base is the look boards should boot into. Without a profile only an
+        # explicit manual state counts; desired() could be a cue, blackout or identify flash.
+        state = active.base_for(mac) if active else b.manual
         err = await hub.boards.save_fallback(mac, state)
         results.append({"mac": mac, "name": b.name or mac, "ok": err is None, "error": err})
     return {"results": results}

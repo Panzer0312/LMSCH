@@ -21,7 +21,15 @@ MAX_EXTRAPOLATE_S = 0.5
 
 log = logging.getLogger("spookhub.mpv")
 
-OBSERVED = ("time-pos", "pause", "eof-reached", "path", "duration")
+OBSERVED = (
+    "time-pos",
+    "pause",
+    "eof-reached",
+    "path",
+    "duration",
+    "seeking",
+    "paused-for-cache",
+)
 READY_TIMEOUT_S = 5.0
 QUICK_CRASH_S = 5.0
 MAX_RESTART_DELAY_S = 10.0
@@ -36,6 +44,8 @@ class MpvPlayer:
         self.time_pos: float | None = None
         self.paused: bool = False
         self.eof: bool = False
+        self._seeking: bool = False
+        self._buffering: bool = False
         self.duration: float | None = None
         self.path: str | None = None
         self.pos_mono: float = time.monotonic()
@@ -144,10 +154,11 @@ class MpvPlayer:
         if not self.cfg.enabled:
             return
         # Supervisor sees the exit and respawns with current args (picks up vo overrides).
-        self._restart_requested = True
         self.restart_began = time.monotonic()
         proc = self._proc
         if proc is not None and proc.returncode is None:
+            # Only with a live process: a stale flag would hide the next real crash.
+            self._restart_requested = True
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
 
@@ -252,7 +263,21 @@ class MpvPlayer:
                 return
             log.debug("%s", line.decode(errors="replace").rstrip())
 
+    @property
+    def loading(self) -> bool:
+        return self._loading
+
+    @property
+    def seeking(self) -> bool:
+        return self._seeking
+
+    @property
+    def buffering(self) -> bool:
+        """mpv paused itself to refill its cache; time-pos legitimately stands still."""
+        return self._buffering
+
     def _reset_state(self) -> None:
+        self._seeking = self._buffering = False
         self.time_pos = None
         self.path = None
         self.eof = False
@@ -282,6 +307,10 @@ class MpvPlayer:
                 self.pos_mono = time.monotonic()
             case "pause":
                 self.paused = bool(data)
+            case "seeking":
+                self._seeking = bool(data)
+            case "paused-for-cache":
+                self._buffering = bool(data)
             case "eof-reached":
                 self.eof = bool(data)
             case "path":

@@ -9,6 +9,7 @@ Type=notify
 NotifyAccess=main
 # Pings come from the asyncio loop; a hung loop gets the service restarted.
 WatchdogSec=30
+TimeoutStartSec=60
 User=spookhub
 Group=spookhub
 # DRM/KMS output, VA-API decode and ALSA audio for the mpv child process.

@@ -1,6 +1,7 @@
 """Phase 1 task 6: stall watchdog, sd_notify, board fallback."""
 
 import asyncio
+import os
 import socket
 import time
 
@@ -20,6 +21,8 @@ class StallPlayer(FakePlayer):
         super().__init__()
         self.loads = []
         self.restarts = 0
+        self.seeks = []
+        self.revive = True
 
     async def load(self, path, start=0.0, loop=False):
         await super().load(path, start, loop)
@@ -29,7 +32,11 @@ class StallPlayer(FakePlayer):
     async def restart(self):
         self.restarts += 1
         self.time_pos = None
-        asyncio.get_running_loop().call_soon(self._notify, "restart")  # mpv back up
+        if self.revive:
+            asyncio.get_running_loop().call_soon(self._notify, "restart")  # mpv back up
+
+    async def seek(self, t):
+        self.seeks.append(t)
 
 
 def _video_prof(mode=PlaybackMode.once):
@@ -46,7 +53,7 @@ def stall(client):  # noqa: F811
     p = StallPlayer()
     eng.player = p
     p.on_change = eng._on_player_change
-    eng.stall_s, eng.stall_poll_s = 0.15, 0.02
+    eng.stall_s, eng.stall_poll_s = 0.4, 0.05
     eng.active = _video_prof()
     eng.timeline = None
     return eng, p
@@ -97,9 +104,142 @@ async def test_no_stall_while_advancing_paused_or_loading(stall):
     await eng._end_show("stopped")
 
 
-async def test_calibration_style_scheduler_has_no_stall_watch(stall):
+async def test_calibration_scheduler_has_no_stall_watch(stall):
+    from spookhub.show.calibration import calibration_cues
+    from spookhub.show.resolve import Timeline
+
     eng, p = stall
-    assert eng._stall_task is None  # only _play_main starts it
+    prof = _video_prof(PlaybackMode.loop)
+    prof.cues = calibration_cues()
+    eng.calibrating = True
+    eng._start_scheduler(prof, Timeline(prof.cues, []), eng._player_clock)
+    _tick_pos(p, 3.0)
+    await asyncio.sleep(1.2)  # frozen for 3x stall_s
+    assert eng._stall_task is None and p.restarts == 0
+    await eng._stop_scheduler()
+
+
+async def test_unpause_after_long_pause_is_not_a_stall(stall):
+    from spookhub.show.resolve import Timeline
+
+    eng, p = stall
+    eng.timeline = Timeline([], [])
+    await eng._play_main(0.0)
+    p.paused = True
+    _tick_pos(p, 5.0)
+    await asyncio.sleep(1.0)  # pos_mono is now far older than stall_s
+    p.paused = False
+    eng._on_player_change("pause")
+    await asyncio.sleep(0.2)  # < stall_s since unpause
+    assert p.restarts == 0
+    await wait_for(lambda: p.restarts == 1)  # a real freeze after unpause is still caught
+    await eng._end_show("stopped")
+
+
+async def test_seek_resets_clock_and_seeking_or_cache_skip_check(stall):
+    from spookhub.show.resolve import Timeline
+
+    eng, p = stall
+    eng.timeline = Timeline([], [])
+    await eng._play_main(0.0)
+    before = time.monotonic()
+    await eng.seek(20.0)
+    assert p.seeks == [20.0] and eng._resumed_mono >= before
+    for flag in ("_seeking", "_buffering", "_loading"):
+        setattr(p, flag, True)
+        _tick_pos(p, 5.0)
+        await asyncio.sleep(1.0)
+        setattr(p, flag, False)
+        assert p.restarts == 0, flag
+        eng._resumed_mono = time.monotonic()
+    assert (p.seeking, p.buffering, p.loading) == (False, False, False)
+    await eng._end_show("stopped")
+
+
+async def test_advancing_loop_wrap_and_eof_are_not_stalls(stall):
+    from spookhub.show.resolve import Timeline
+
+    eng, p = stall
+    eng.active = _video_prof(PlaybackMode.loop)
+    eng.timeline = Timeline([], [])
+    await eng._play_main(0.0)
+    for t in (29.0, 29.8, 0.0, 0.8, 1.6):  # wraps, each report is movement
+        _tick_pos(p, t)
+        await asyncio.sleep(0.25)
+    p.eof = True
+    _tick_pos(p, 30.0)
+    await asyncio.sleep(1.0)
+    assert p.restarts == 0
+    p.eof = False
+    await eng._end_show("stopped")
+
+
+async def test_crash_restart_still_ends_show_as_interrupted(stall):
+    from spookhub.show.resolve import Timeline
+
+    eng, p = stall
+    eng.timeline = Timeline([], [])
+    await eng._play_main(0.0)
+    p._notify("restart")  # not requested by the stall watch
+    await wait_for(lambda: not eng.playing_main)
+    assert any("interrupted" in e["message"] for e in eng.bus.log) and p.restarts == 0
+
+
+async def test_restart_timeout_ends_show_idle(stall):
+    from spookhub.show.resolve import Timeline
+
+    eng, p = stall
+    p.revive = False
+    eng.stall_restart_timeout_s = 0.3
+    eng.timeline = Timeline([], [])
+    await eng._play_main(0.0)
+    _tick_pos(p, 5.0)
+    await wait_for(lambda: not eng.playing_main)
+    assert p.restarts == 1 and eng.phase == Phase.idle and len(p.loads) == 1
+
+
+async def test_blackout_during_recovery_wins(stall):
+    from spookhub.show.resolve import Timeline
+
+    eng, p = stall
+    p.revive = False
+    eng.stall_restart_timeout_s = 30
+    eng.timeline = Timeline([], [])
+    await eng._play_main(0.0)
+    _tick_pos(p, 5.0)
+    await wait_for(lambda: p.restarts == 1)
+    await eng.set_blackout(True)
+    p._notify("restart")  # late player-up must not resume the video
+    await asyncio.sleep(0.3)
+    assert eng.phase == Phase.blackout and not eng.playing_main
+    assert len(p.loads) == 1 and eng._stall_task is None
+
+
+async def test_resume_reapplies_cue_at_position_only(client, farm, stall):  # noqa: F811
+    from spookhub.show.resolve import CueSpec, Timeline
+
+    (mac,) = await _adopt(client, farm, 1)
+    eng, p = stall
+    red = LightState(on=True, colors=[(255, 0, 0)])
+    blue = LightState(on=True, colors=[(0, 0, 255)])
+    cues = [
+        CueSpec(id=1, start=1.0, duration=2.0, targets=None, state=red, transition_ms=0),
+        CueSpec(id=2, start=4.0, duration=3.0, targets=None, state=blue, transition_ms=0),
+    ]
+    eng.active = _video_prof()
+    eng.active.cues = cues
+    eng.timeline = Timeline(cues, [mac])
+    sent = []
+    eng.boards.set_show_state = lambda m, st, critical: sent.append(st.colors)  # type: ignore[method-assign]
+    await eng._play_main(0.0)
+    _tick_pos(p, 5.0)
+    await wait_for(lambda: len(p.loads) == 2)
+    sent.clear()
+    _tick_pos(p, 5.0)  # mpv reports the resumed position
+    await wait_for(lambda: bool(sent))
+    assert sent[0] == [(0, 0, 255)]  # cue active at 5 s; red (2 s) is not re-fired
+    assert [(255, 0, 0)] not in sent
+    await eng._end_show("stopped")
 
 
 def test_sd_notify_unset_is_noop(monkeypatch):
@@ -162,6 +302,14 @@ async def test_hub_pings_watchdog_and_stops(cfg, monkeypatch, tmp_path):
     srv.close()
 
 
+def test_watchdog_pid_must_match(monkeypatch):
+    monkeypatch.setenv("WATCHDOG_USEC", "30000000")
+    monkeypatch.setenv("WATCHDOG_PID", "1")
+    assert sdnotify.watchdog_interval_s() is None
+    monkeypatch.setenv("WATCHDOG_PID", str(os.getpid()))
+    assert sdnotify.watchdog_interval_s() == 15.0
+
+
 async def test_fallback_payloads_one_and_all(client, farm):  # noqa: F811
     macs = await _adopt(client, farm, 2)
     a, b = farm.boards
@@ -195,13 +343,66 @@ async def test_fallback_payloads_one_and_all(client, farm):  # noqa: F811
     r = await client.post(f"/api/boards/{macs[1]}/fallback")
     assert r.json()["results"][0]["ok"] and b.cfg["def"]["ps"] == 250
     assert (await client.post("/api/boards/nope/fallback")).status_code == 404
+    # Board returns to its desired state (master applied), and the preset cache learns 250.
+    await wait_for(lambda: a.state["bri"] == 90 and b.state["bri"] != 0)
+    await wait_for(lambda: "250" in client.hub.boards.boards[macs[0]].presets)
 
 
-async def test_fallback_reports_error_per_board(client, farm):  # noqa: F811
+async def test_fallback_reports_error_per_board(client, farm, monkeypatch):  # noqa: F811
     macs = await _adopt(client, farm, 2)
+    monkeypatch.setattr("spookhub.boards.registry.FALLBACK_WRITE_TIMEOUT_S", 0.3)
+    for m in macs:
+        client.hub.boards.set_manual(m, LightState(on=True, bri=50))
+    await wait_for(lambda: all(b.state["bri"] == 50 for b in farm.boards))
     farm.boards[1].dropout = True
-    client.hub.boards.timing.command_timeout_s = 0.2
     res = (await client.post("/api/boards/fallback")).json()["results"]
     by = {x["mac"]: x for x in res}
     assert by[macs[0]]["ok"] and not by[macs[1]]["ok"] and by[macs[1]]["error"]
     farm.boards[1].dropout = False
+
+
+async def test_fallback_refused_during_blackout_and_show(client, farm):  # noqa: F811
+    await _adopt(client, farm, 1)
+    sim = farm.boards[0]
+    await client.post("/api/blackout", json={"on": True})
+    assert (await client.post("/api/boards/fallback")).status_code == 409
+    await client.post("/api/blackout", json={"on": False})
+    client.hub.engine.playing_main = True
+    assert (await client.post("/api/boards/fallback")).status_code == 409
+    mac = client.hub.boards.adopted_macs()[0]
+    assert (await client.post(f"/api/boards/{mac}/fallback")).status_code == 409
+    client.hub.engine.playing_main = False
+    client.hub.engine.calibrating = True
+    assert (await client.post("/api/boards/fallback")).status_code == 409
+    client.hub.engine.calibrating = False
+    assert "250" not in sim.presets and "def" not in sim.cfg
+
+
+async def test_fallback_without_profile_uses_manual_or_errors(client, farm):  # noqa: F811
+    (mac,) = await _adopt(client, farm, 1)
+    sim = farm.boards[0]
+    sim.log.clear()
+    res = (await client.post("/api/boards/fallback")).json()["results"]
+    assert res[0]["ok"] is False and res[0]["error"] == "no base state"
+    assert sim.log == [] and "def" not in sim.cfg  # nothing written, no psave
+    client.hub.boards.set_manual(mac, LightState(on=True, bri=77))
+    await wait_for(lambda: sim.state["bri"] == 77)
+    res = (await client.post("/api/boards/fallback")).json()["results"]
+    assert res[0]["ok"] and sim.presets["250"]["bri"] == 77
+
+
+async def test_fallback_saves_base_not_inflight_push(client, farm):  # noqa: F811
+    (mac,) = await _adopt(client, farm, 1)
+    sim = farm.boards[0]
+    r = await client.post(
+        "/api/profiles", json={"name": "P", "base_state": {"on": True, "bri": 180}}
+    )
+    await client.post(f"/api/profiles/{r.json()['id']}/activate")
+    await wait_for(lambda: sim.state["bri"] == 180)
+    sim.latency_ms = 300
+    client.hub.boards.set_manual(mac, LightState(bri=33))  # in flight when fallback starts
+    await asyncio.sleep(0.1)
+    res = (await client.post("/api/boards/fallback")).json()["results"]
+    sim.latency_ms = 0
+    assert res[0]["ok"] and sim.presets["250"]["bri"] == 180
+    await wait_for(lambda: sim.state["bri"] == 33)  # desired state replayed afterwards

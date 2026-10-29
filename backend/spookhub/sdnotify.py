@@ -19,7 +19,7 @@ def notify(msg: str) -> bool:
         addr = "\0" + addr[1:]  # abstract namespace socket
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_CLOEXEC) as s:
-            s.settimeout(1.0)
+            s.settimeout(0.2)  # never stall the event loop on a wedged socket
             s.connect(addr)
             s.sendall(msg.encode())
     except OSError as exc:
@@ -30,6 +30,9 @@ def notify(msg: str) -> bool:
 
 def watchdog_interval_s() -> float | None:
     """Half the unit's WatchdogSec, or None when the watchdog is not enabled."""
+    pid = os.environ.get("WATCHDOG_PID")
+    if pid and pid != str(os.getpid()):
+        return None  # the watchdog is meant for another process
     try:
         usec = int(os.environ.get("WATCHDOG_USEC", ""))
     except ValueError:

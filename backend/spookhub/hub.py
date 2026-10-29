@@ -105,12 +105,15 @@ class Hub:
         interval = sdnotify.watchdog_interval_s()
         if interval is not None:
             self._watchdog = asyncio.create_task(sdnotify.watchdog_loop(interval))
+        # Sent when startup work is done; uvicorn binds the port right after the lifespan.
         sdnotify.notify("READY=1")
 
     async def stop(self) -> None:
         try:
+            sdnotify.notify("STOPPING=1")
             if self._watchdog:
                 self._watchdog.cancel()
+                await asyncio.gather(self._watchdog, return_exceptions=True)
                 self._watchdog = None
             await self.preflight.stop()
             await self.engine.stop()
