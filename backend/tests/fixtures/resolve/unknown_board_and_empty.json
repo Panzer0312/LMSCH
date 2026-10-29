@@ -1,0 +1,35 @@
+{
+ "name": "unknown_board_and_empty",
+ "macs": [
+  "aa",
+  "bb"
+ ],
+ "base": {
+  "on": true,
+  "bri": 50,
+  "fx": 0
+ },
+ "cues": [],
+ "probes": [
+  {
+   "mac": "aa",
+   "t": 0,
+   "expect_cue": null,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 0
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 9,
+   "expect_cue": null,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 0
+   }
+  }
+ ]
+}

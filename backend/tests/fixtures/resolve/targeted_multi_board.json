@@ -1,0 +1,113 @@
+{
+ "name": "targeted_multi_board",
+ "macs": [
+  "aa",
+  "bb"
+ ],
+ "base": {
+  "on": true,
+  "bri": 50,
+  "fx": 0
+ },
+ "cues": [
+  {
+   "id": 1,
+   "start": 0,
+   "duration": 5,
+   "targets": [
+    "aa",
+    "bb"
+   ],
+   "state": {
+    "fx": 1
+   },
+   "transition_ms": null
+  },
+  {
+   "id": 2,
+   "start": 1,
+   "duration": 1,
+   "targets": [
+    "aa"
+   ],
+   "state": {
+    "fx": 2
+   },
+   "transition_ms": null
+  },
+  {
+   "id": 3,
+   "start": 4,
+   "duration": null,
+   "targets": [
+    "bb"
+   ],
+   "state": {
+    "fx": 3
+   },
+   "transition_ms": null
+  }
+ ],
+ "probes": [
+  {
+   "mac": "aa",
+   "t": 1.5,
+   "expect_cue": 2,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 2
+   }
+  },
+  {
+   "mac": "bb",
+   "t": 1.5,
+   "expect_cue": 1,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 1
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 3,
+   "expect_cue": 1,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 1
+   }
+  },
+  {
+   "mac": "bb",
+   "t": 4.5,
+   "expect_cue": 3,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 3
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 6,
+   "expect_cue": null,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 0
+   }
+  },
+  {
+   "mac": "bb",
+   "t": 100,
+   "expect_cue": 3,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 3
+   }
+  }
+ ]
+}

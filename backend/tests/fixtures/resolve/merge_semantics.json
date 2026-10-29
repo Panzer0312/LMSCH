@@ -1,0 +1,181 @@
+{
+ "name": "merge_semantics",
+ "macs": [
+  "aa",
+  "bb"
+ ],
+ "base": {
+  "preset": 2,
+  "on": true,
+  "bri": 50,
+  "colors": [
+   [
+    1,
+    2,
+    3
+   ]
+  ]
+ },
+ "cues": [
+  {
+   "id": 1,
+   "start": 0,
+   "duration": 20,
+   "targets": null,
+   "state": {
+    "colors": [
+     [
+      255,
+      0,
+      0
+     ]
+    ],
+    "bri": 200
+   },
+   "transition_ms": null
+  },
+  {
+   "id": 2,
+   "start": 2,
+   "duration": 1,
+   "targets": null,
+   "state": {
+    "preset": 4
+   },
+   "transition_ms": null
+  },
+  {
+   "id": 3,
+   "start": 5,
+   "duration": 1,
+   "targets": null,
+   "state": {
+    "on": false
+   },
+   "transition_ms": null
+  },
+  {
+   "id": 4,
+   "start": 8,
+   "duration": null,
+   "targets": null,
+   "state": {
+    "colors": [
+     [
+      0,
+      0,
+      255
+     ],
+     [
+      0,
+      255,
+      0
+     ]
+    ],
+    "sx": 10
+   },
+   "transition_ms": null
+  }
+ ],
+ "probes": [
+  {
+   "mac": "aa",
+   "t": 1,
+   "expect_cue": 1,
+   "expect_state": {
+    "preset": 2,
+    "on": true,
+    "bri": 200,
+    "colors": [
+     [
+      255,
+      0,
+      0
+     ]
+    ]
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 2.5,
+   "expect_cue": 2,
+   "expect_state": {
+    "preset": 4
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 3.5,
+   "expect_cue": 1,
+   "expect_state": {
+    "preset": 2,
+    "on": true,
+    "bri": 200,
+    "colors": [
+     [
+      255,
+      0,
+      0
+     ]
+    ]
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 5.5,
+   "expect_cue": 3,
+   "expect_state": {
+    "preset": 2,
+    "on": false,
+    "bri": 50,
+    "colors": [
+     [
+      1,
+      2,
+      3
+     ]
+    ]
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 6.5,
+   "expect_cue": 1,
+   "expect_state": {
+    "preset": 2,
+    "on": true,
+    "bri": 200,
+    "colors": [
+     [
+      255,
+      0,
+      0
+     ]
+    ]
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 9,
+   "expect_cue": 4,
+   "expect_state": {
+    "preset": 2,
+    "on": true,
+    "bri": 50,
+    "colors": [
+     [
+      0,
+      0,
+      255
+     ],
+     [
+      0,
+      255,
+      0
+     ]
+    ],
+    "sx": 10
+   }
+  }
+ ]
+}

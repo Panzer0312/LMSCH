@@ -1,0 +1,86 @@
+{
+ "name": "equal_starts_id_tiebreak",
+ "macs": [
+  "aa",
+  "bb"
+ ],
+ "base": {
+  "on": true,
+  "bri": 50,
+  "fx": 0
+ },
+ "cues": [
+  {
+   "id": 7,
+   "start": 2,
+   "duration": 5,
+   "targets": null,
+   "state": {
+    "fx": 7
+   },
+   "transition_ms": null
+  },
+  {
+   "id": 3,
+   "start": 2,
+   "duration": 5,
+   "targets": null,
+   "state": {
+    "fx": 3
+   },
+   "transition_ms": null
+  },
+  {
+   "id": 5,
+   "start": 2,
+   "duration": 1,
+   "targets": null,
+   "state": {
+    "fx": 5
+   },
+   "transition_ms": null
+  }
+ ],
+ "probes": [
+  {
+   "mac": "aa",
+   "t": 2,
+   "expect_cue": 7,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 7
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 3.5,
+   "expect_cue": 7,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 7
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 5,
+   "expect_cue": 7,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 7
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 7,
+   "expect_cue": null,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 0
+   }
+  }
+ ]
+}

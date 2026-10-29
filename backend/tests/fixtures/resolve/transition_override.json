@@ -1,0 +1,69 @@
+{
+ "name": "transition_override",
+ "macs": [
+  "aa",
+  "bb"
+ ],
+ "base": {
+  "on": true,
+  "bri": 50,
+  "fx": 0
+ },
+ "cues": [
+  {
+   "id": 1,
+   "start": 1,
+   "duration": null,
+   "targets": null,
+   "state": {
+    "fx": 5,
+    "transition_ms": 100
+   },
+   "transition_ms": 900
+  },
+  {
+   "id": 2,
+   "start": 3,
+   "duration": null,
+   "targets": null,
+   "state": {
+    "bri": 9
+   },
+   "transition_ms": 0
+  }
+ ],
+ "probes": [
+  {
+   "mac": "aa",
+   "t": 1,
+   "expect_cue": 1,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 5,
+    "transition_ms": 900
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 3,
+   "expect_cue": 2,
+   "expect_state": {
+    "on": true,
+    "bri": 9,
+    "fx": 0,
+    "transition_ms": 0
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 0,
+   "expect_cue": null,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 0
+   }
+  }
+ ]
+}

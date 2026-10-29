@@ -1,0 +1,76 @@
+{
+ "name": "duration_end_resumes_longer",
+ "macs": [
+  "aa",
+  "bb"
+ ],
+ "base": {
+  "on": true,
+  "bri": 50,
+  "fx": 0
+ },
+ "cues": [
+  {
+   "id": 1,
+   "start": 0,
+   "duration": 10,
+   "targets": null,
+   "state": {
+    "fx": 1
+   },
+   "transition_ms": null
+  },
+  {
+   "id": 2,
+   "start": 2,
+   "duration": 2,
+   "targets": null,
+   "state": {
+    "fx": 2
+   },
+   "transition_ms": null
+  }
+ ],
+ "probes": [
+  {
+   "mac": "aa",
+   "t": 3,
+   "expect_cue": 2,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 2
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 4,
+   "expect_cue": 1,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 1
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 9.99,
+   "expect_cue": 1,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 1
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 10,
+   "expect_cue": null,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 0
+   }
+  }
+ ]
+}

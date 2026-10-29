@@ -1,0 +1,98 @@
+{
+ "name": "all_vs_board_cue",
+ "macs": [
+  "aa",
+  "bb"
+ ],
+ "base": {
+  "on": true,
+  "bri": 50,
+  "fx": 0
+ },
+ "cues": [
+  {
+   "id": 1,
+   "start": 0,
+   "duration": null,
+   "targets": null,
+   "state": {
+    "fx": 1
+   },
+   "transition_ms": null
+  },
+  {
+   "id": 2,
+   "start": 1,
+   "duration": null,
+   "targets": [
+    "bb"
+   ],
+   "state": {
+    "fx": 2
+   },
+   "transition_ms": null
+  },
+  {
+   "id": 3,
+   "start": 3,
+   "duration": 1,
+   "targets": null,
+   "state": {
+    "fx": 3
+   },
+   "transition_ms": null
+  }
+ ],
+ "probes": [
+  {
+   "mac": "aa",
+   "t": 2,
+   "expect_cue": 1,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 1
+   }
+  },
+  {
+   "mac": "bb",
+   "t": 2,
+   "expect_cue": 2,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 2
+   }
+  },
+  {
+   "mac": "bb",
+   "t": 3.5,
+   "expect_cue": 3,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 3
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 3.5,
+   "expect_cue": 3,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 3
+   }
+  },
+  {
+   "mac": "bb",
+   "t": 5,
+   "expect_cue": null,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 0
+   }
+  }
+ ]
+}
