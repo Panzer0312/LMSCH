@@ -5,10 +5,12 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from spookhub.api.deps import get_hub
 from spookhub.hub import Hub
 from spookhub.player.devices import drm_outputs
+from spookhub.show.calibration import ensure_calibration_clip
 from spookhub.show.engine import SetupBusy, SetupUnavailable
 from spookhub.show.sounds import ensure_test_sound
 from spookhub.show.testpattern import ensure_pattern
@@ -46,6 +48,34 @@ async def test_sound(hub: HubDep) -> dict[str, bool]:
     except SetupUnavailable as e:
         raise HTTPException(503, str(e)) from e
     return {"ok": True, "started": True}
+
+
+class CalibrationIn(BaseModel):
+    on: bool
+
+
+@router.post("/calibration")
+async def calibration(body: CalibrationIn, hub: HubDep) -> dict[str, bool]:
+    """Starts or stops the sync calibration clip; refused while a show plays."""
+    eng = hub.engine
+    if not body.on:
+        await eng.set_calibration(False)
+        return {"ok": True, "calibrating": False}
+    if not eng.calibrating:
+        why = eng.setup_blocker()
+        if why:
+            raise HTTPException(409, why)
+    try:
+        path = await ensure_calibration_clip(hub.cfg.paths.data_dir)
+    except (RuntimeError, OSError) as e:
+        raise HTTPException(500, f"could not render calibration clip: {e}") from e
+    try:
+        await eng.set_calibration(True, str(path))
+    except SetupBusy as e:
+        raise HTTPException(409, str(e)) from e
+    except SetupUnavailable as e:
+        raise HTTPException(503, str(e)) from e
+    return {"ok": True, "calibrating": True}
 
 
 @router.get("/triggers")

@@ -56,6 +56,7 @@ class BoardRuntime:
     last_seen: float | None = None
     status: BoardStatus = BoardStatus.unknown
     latency_ms: float | None = None
+    offset_ms: float = 0.0
     failures: int = 0
     live: dict[str, Any] = field(default_factory=dict)
     seg_ids: list[int] = field(default_factory=lambda: [0])
@@ -86,6 +87,7 @@ class BoardRuntime:
             "last_seen": self.last_seen,
             "status": self.status.value,
             "latency_ms": round(self.latency_ms, 1) if self.latency_ms is not None else None,
+            "offset_ms": self.offset_ms,
             "live": self.live,
             "effects": self.effects,
             "palettes": self.palettes,
@@ -128,6 +130,7 @@ class BoardManager:
                     adopted=row.adopted,
                     firmware=row.firmware,
                     led_count=row.led_count,
+                    offset_ms=row.offset_ms or 0.0,
                     effects=list(row.effects or []),
                     palettes=list(row.palettes or []),
                     presets=dict(row.presets or {}),
@@ -191,10 +194,14 @@ class BoardManager:
 
     def latency_comp_ms(self, mac: str) -> float:
         b = self.boards.get(mac)
-        if not b or b.latency_ms is None:
+        if not b:
             return 0.0
-        # One-way ≈ half the round trip; WLED applies on receipt.
-        return min(b.latency_ms / 2.0, self.timing.latency_comp_cap_ms)
+        # One-way ≈ half the round trip; WLED applies on receipt. The cap limits only this
+        # measured part: the manual offset is the user's decision.
+        measured = 0.0
+        if b.latency_ms is not None:
+            measured = min(b.latency_ms / 2.0, self.timing.latency_comp_cap_ms)
+        return measured + b.offset_ms
 
     # ----- commands -----
 
@@ -373,6 +380,7 @@ class BoardManager:
             row.adopted = b.adopted
             row.firmware = b.firmware
             row.led_count = b.led_count
+            row.offset_ms = b.offset_ms
             row.effects = b.effects
             row.palettes = b.palettes
             row.presets = b.presets
@@ -436,6 +444,12 @@ class BoardManager:
     def rename(self, mac: str, name: str) -> None:
         b = self.boards[mac]
         b.name = name
+        self._persist(b)
+        self._publish(b)
+
+    def set_offset(self, mac: str, offset_ms: float) -> None:
+        b = self.boards[mac]
+        b.offset_ms = offset_ms
         self._persist(b)
         self._publish(b)
 

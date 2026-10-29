@@ -28,6 +28,7 @@ from spookhub.models import (
 )
 from spookhub.player.process import MpvPlayer
 from spookhub.settings_store import SettingsStore
+from spookhub.show.calibration import CLIP_S, calibration_cues
 from spookhub.show.resolve import CueSpec, Timeline
 from spookhub.tasks import spawn
 
@@ -160,6 +161,8 @@ class ShowEngine:
         self.last_trigger: dict[str, Any] | None = None
         self._setup_task: asyncio.Task[None] | None = None
         self._setup_cleanup: Callable[[], None] | None = None
+        self.calibrating = False
+        self._calib_off = asyncio.Event()
         self._last_cue: dict[str, int | None] = {}
         # What the scheduler is currently driving: main show or browser audition.
         self._sched_prof: ActiveProfile | None = None
@@ -208,6 +211,7 @@ class ShowEngine:
             "player": self.player.state(),
             "last_trigger": self.last_trigger,
             "setup_busy": self._setup_task is not None,
+            "calibrating": self.calibrating,
         }
 
     def _publish(self) -> None:
@@ -737,6 +741,67 @@ class ShowEngine:
 
         # Cleanup also covers cancel: a leftover override would flash white after blackout ends.
         await self.begin_setup(start, wait, self.boards.release_identify)
+
+    # ----- sync calibration -----
+
+    async def set_calibration(self, on: bool, clip: str | None = None) -> None:
+        """Looping flash/beep clip driven through the normal scheduler, so global and per-board
+        offsets apply exactly as in a show. Runs as a setup action until turned off."""
+        if not on:
+            self._calib_off.set()
+            return
+        if self.calibrating:
+            return
+        assert clip
+        self._calib_off = asyncio.Event()
+
+        async def start() -> bool:
+            if not (
+                self.player.cfg.enabled and await self._safe(self.player.load(clip, loop=True))
+            ):
+                return False
+            adopted = self.boards.adopted_macs()
+            # Base off so every flash is visible; ids are unique so each fires once per loop.
+            prof = ActiveProfile(
+                id=-1,
+                name="Calibration",
+                type=ProfileType.video,
+                selection=BoardSelection(all=True),
+                base=LightState(on=False),
+                overrides={},
+                mode=PlaybackMode.loop,
+                cooldown_s=0.0,
+                media_path=clip,
+                media_duration=float(CLIP_S),
+                idle_path=None,
+                cues=calibration_cues(),
+            )
+            self.calibrating = True
+            self._start_scheduler(prof, Timeline(prof.cues, adopted), self._player_clock)
+            for mac in adopted:
+                self.boards.set_show_state(mac, prof.base, critical=False)
+            return True
+
+        async def wait() -> None:
+            await self._calib_off.wait()
+            await self._end_calibration()
+
+        await self.begin_setup(start, wait, self._calibration_cleanup)
+
+    def _calibration_cleanup(self) -> None:
+        # Sync so it also runs on cancel (blackout/activate), where wait() never resumes.
+        self.calibrating = False
+        if self._sched and self._sched is not asyncio.current_task():
+            self._sched.cancel()
+            self._sched = None
+        self._sched_prof = self._sched_tl = None
+
+    async def _end_calibration(self) -> None:
+        await self._stop_scheduler()
+        self._calibration_cleanup()
+        for mac in self.boards.adopted_macs():
+            self.boards.set_show_state(mac, None, critical=False)
+        self._apply_base(critical=False)
 
     # ----- blackout / master -----
 

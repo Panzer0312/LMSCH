@@ -4,7 +4,7 @@ import time
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from spookhub.api.deps import get_hub
 from spookhub.boards.client import WledError
@@ -23,6 +23,11 @@ class AddIn(BaseModel):
 
 class NameIn(BaseModel):
     name: str
+
+
+class BoardPatch(BaseModel):
+    name: str | None = None
+    offset_ms: float | None = Field(default=None, ge=-500, le=500)
 
 
 def _board(hub: Hub, mac: str) -> Any:
@@ -59,9 +64,12 @@ async def adopt(mac: str, body: NameIn, hub: HubDep) -> dict[str, Any]:
 
 
 @router.patch("/{mac}")
-def rename(mac: str, body: NameIn, hub: HubDep) -> dict[str, Any]:
+def patch_board(mac: str, body: BoardPatch, hub: HubDep) -> dict[str, Any]:
     _board(hub, mac)
-    hub.boards.rename(mac, body.name.strip())
+    if body.name is not None:
+        hub.boards.rename(mac, body.name.strip())
+    if body.offset_ms is not None:
+        hub.boards.set_offset(mac, body.offset_ms)
     return hub.boards.boards[mac].snapshot()
 
 

@@ -86,6 +86,8 @@ class Board(SQLModel, table=True):
     palettes: list[str] = SQLField(default_factory=list, sa_column=Column(JSON))
     presets: dict[str, Any] = SQLField(default_factory=dict, sa_column=Column(JSON))
     last_seen: datetime | None = None
+    # Per-board fire-time trim in ms (positive = fire earlier), on top of measured latency.
+    offset_ms: float = SQLField(default=0.0, sa_column_kwargs={"server_default": "0"})
     created_at: datetime = SQLField(default_factory=utcnow)
 
 
