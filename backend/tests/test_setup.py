@@ -75,6 +75,13 @@ def test_drm_edge_cases(tmp_path):
     assert outs[2]["modes"] == ["800x600"]
 
 
+def test_drm_modes_deduped_keep_first_seen_order(tmp_path):
+    modes = ["1920x1080", "1280x720", "1920x1080", "1920x1080", "1280x720", "800x600"]
+    _conn(tmp_path, "card0-HDMI-A-1", "connected", modes)
+    outs = drm_outputs(tmp_path)
+    assert outs[0]["modes"] == ["1920x1080", "1280x720", "800x600"]
+
+
 class FakePlayer(MpvPlayer):
     """Records calls; finishes the sound when told to."""
 

@@ -84,12 +84,11 @@ function FallbackAll() {
 function OffsetField({ board }: { board: Board }) {
   const locked = useLive().settings?.show_lock ?? false
   const [draft, setDraft] = useState<string | null>(null)
-  const [saved, setSaved] = useState<number | null>(null)
+  const [saved, setSaved] = useState<{ value: number; from: number } | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // Keep the saved draft on screen until the live board snapshot catches up.
-  const synced = saved !== null && board.offset_ms === saved
-  const shown = synced ? String(board.offset_ms) : (draft ?? String(board.offset_ms))
+  // Show saved value only until the board snapshot changes at all.
+  const shown = draft ?? (saved && board.offset_ms === saved.from ? String(saved.value) : String(board.offset_ms))
 
   const commit = async () => {
     if (draft === null) return
@@ -99,10 +98,11 @@ function OffsetField({ board }: { board: Board }) {
     setError(null)
     try {
       await api.boards.setOffset(board.mac, n)
-      setSaved(n)
-      setDraft(String(n))
+      setSaved({ value: n, from: board.offset_ms })
+      setDraft(null)
     } catch (e) {
       setError(fmtErr(e))
+      setSaved(null)
       setDraft(null)
     } finally {
       setBusy(false)

@@ -22,7 +22,7 @@ function Header() {
       try {
         await api.showLock(!locked)
       } catch (e) {
-        if (!(e instanceof ApiError) || e.status !== 401 || !locked || !/pin/i.test(e.message)) throw e
+        if (!(e instanceof ApiError) || e.status !== 401 || !locked || !/wrong pin/i.test(e.message)) throw e
         const pin = window.prompt('PIN to unlock')
         if (pin == null) return
         await api.showLock(false, pin)

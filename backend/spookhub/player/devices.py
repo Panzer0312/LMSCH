@@ -40,7 +40,7 @@ def drm_outputs(root: Path = Path("/sys/class/drm")) -> list[dict[str, Any]]:
                 "card": int(m.group(1)),
                 "name": m.group(2),
                 "status": status,
-                "modes": [x for x in _read(d / "modes").splitlines() if x],
+                "modes": list(dict.fromkeys(x for x in _read(d / "modes").splitlines() if x)),
                 "enabled": _read(d / "enabled") == "enabled",
             }
         )
