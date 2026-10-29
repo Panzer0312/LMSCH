@@ -284,6 +284,14 @@ class ShowEngine:
 
     def boards_changed(self) -> None:
         """Adoption/removal: 'All boards' selections pick up new boards immediately."""
+        if self.calibrating and self._sched_prof is not None:
+            prof = self._sched_prof
+            self._sched_tl = Timeline(prof.cues, self.boards.adopted_macs())
+            for mac in prof.macs(self.boards.adopted_macs()):
+                if mac not in self._last_cue:
+                    self._last_cue[mac] = None
+                    self.boards.set_show_state(mac, prof.base, critical=False)
+            return
         if not self.active:
             return
         self.timeline = Timeline(self.active.cues, self.boards.adopted_macs())
@@ -499,7 +507,12 @@ class ShowEngine:
         offset = self.settings.value.sync_offset_ms
         for mac in a.macs(self.boards.adopted_macs()):
             lead = (self.boards.latency_comp_ms(mac) + offset) / 1000.0
-            cue_id, state = tl.state_at(mac, t + lead, a.base_for(mac))
+            at = t + lead
+            if self.calibrating:
+                # The clip loops: a lead past the end (or before 0) must see the neighbouring
+                # loop's flash, else the t=0 flash is lost for boards that fire early.
+                at %= CLIP_S
+            cue_id, state = tl.state_at(mac, at, a.base_for(mac))
             if mac in self._last_cue and self._last_cue[mac] == cue_id:
                 continue
             self._last_cue[mac] = cue_id
@@ -783,14 +796,23 @@ class ShowEngine:
             return True
 
         async def wait() -> None:
+            me = asyncio.current_task()
             await self._calib_off.wait()
-            await self._end_calibration()
+            async with self._lock:
+                if self._setup_task is me:
+                    await self._end_calibration()
 
         await self.begin_setup(start, wait, self._calibration_cleanup)
 
     def _calibration_cleanup(self) -> None:
         # Sync so it also runs on cancel (blackout/activate), where wait() never resumes.
+        # Idempotent: the setup runner calls it again after a normal end.
+        if not self.calibrating:
+            return
         self.calibrating = False
+        # Without this a cancel mid-flash leaves the calibration state (white) on the boards.
+        for mac in self.boards.adopted_macs():
+            self.boards.set_show_state(mac, None, critical=False)
         if self._sched and self._sched is not asyncio.current_task():
             self._sched.cancel()
             self._sched = None
@@ -799,8 +821,6 @@ class ShowEngine:
     async def _end_calibration(self) -> None:
         await self._stop_scheduler()
         self._calibration_cleanup()
-        for mac in self.boards.adopted_macs():
-            self.boards.set_show_state(mac, None, critical=False)
         self._apply_base(critical=False)
 
     # ----- blackout / master -----
