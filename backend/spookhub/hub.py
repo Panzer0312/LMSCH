@@ -103,14 +103,16 @@ class Hub:
         self.bus.event("info", "Spookhub started")
 
     async def stop(self) -> None:
-        await self.preflight.stop()
-        await self.engine.stop()
-        if self.mdns:
-            await self.mdns.stop()
-        await self.boards.stop()
-        await self.player.stop()
-        await self.http.aclose()
-        await self.events.stop()
+        try:
+            await self.preflight.stop()
+            await self.engine.stop()
+            if self.mdns:
+                await self.mdns.stop()
+            await self.boards.stop()
+            await self.player.stop()
+            await self.http.aclose()
+        finally:
+            await self.events.stop()
 
     def scan(self) -> bool:
         if self._scan and not self._scan.done():

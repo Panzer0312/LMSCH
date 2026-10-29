@@ -31,9 +31,26 @@ async def test_lock_blocks_edits_allows_show_actions(client):
     assert (await client.post("/api/trigger")).status_code == 200
     assert (await client.post("/api/blackout", json={"on": True})).status_code == 200
     assert (await client.post("/api/blackout", json={"on": False})).status_code == 200
-    assert (await client.post("/api/boards/aa/identify")).status_code != 423
-    assert (await client.post("/api/boards/aa/state", json={})).status_code != 423
+    r = await client.post("/api/boards/aa/identify")
+    assert r.status_code == 404  # reached the route (unknown board), not the lock
+    r = await client.post("/api/boards/aa/state", json={"on": True})
+    assert r.status_code == 404
     assert (await client.post("/api/setup/test_sound")).status_code == 423
+    assert (await client.post("/api/show/test_pattern", json={"on": True})).status_code == 423
+    assert (await client.put("/api/auth/pin", json={"pin": "1"})).status_code == 423
+    assert (await client.put("/api/auth/trigger_token", json={"token": "x"})).status_code == 423
+    assert (await client.post("/api/auth/login", json={"pin": "x"})).status_code == 200
+    assert (await client.post("/api/auth/logout")).status_code == 200
+    assert (await client.post("/api/show/stop")).status_code == 200
+    assert (await client.post("/api/showX/stop")).status_code == 423
+    assert (await client.post("/api/blackout/", json={"on": False})).status_code != 423
+    r = await client.put("/api/settings", content=b"{nope", headers={"content-type": "x/y"})
+    assert r.status_code == 423
+    r = await client.put("/api/settings", json={"master_volume": 0.5, "pad": "x" * 5000})
+    assert r.status_code == 413
+    r = await client.put("/api/settings", json={"show_lock": False, "master_volume": 0.4})
+    assert r.status_code == 423
+    assert client.hub.settings.value.show_lock
     assert (await client.put("/api/settings", json={"master_volume": 0.5})).status_code == 200
     r = await client.put("/api/settings", json={"master_volume": 0.5, "sync_offset_ms": 5})
     assert r.status_code == 423
@@ -101,3 +118,95 @@ async def test_retention_and_background_flush(client):
     await client.hub.events.stop()  # flushes on stop
     with db.session() as s:
         assert s.exec(select(EventLog).where(EventLog.message == "bg")).first() is not None
+
+
+async def test_second_hub_sees_persisted_events(cfg):
+    from spookhub.hub import Hub
+
+    h1 = Hub(cfg)
+    await h1.start()
+    h1.bus.event("info", "before restart", kind="board")
+    await h1.stop()
+    h2 = Hub(cfg)
+    await h2.start()
+    try:
+        with db.session() as s:
+            msgs = [e.message for e in s.exec(select(EventLog))]
+        assert "before restart" in msgs
+    finally:
+        await h2.stop()
+
+
+async def test_background_flush_prune_and_requeue(cfg, monkeypatch):
+    import asyncio
+
+    from spookhub import events as ev
+
+    db.init_engine(cfg.paths.db_path)
+    bus = EventBus()
+    w = EventWriter(bus, flush_s=0.05, prune_s=0.05)
+    with db.session() as s:
+        s.add(EventLog(ts=time.time() - 8 * 86400, level="info", kind="info", message="old"))
+        s.commit()
+    await w.start()
+    bus.event("info", "fresh", odd=object())  # non-JSON extra must not poison the batch
+    for _ in range(100):
+        await asyncio.sleep(0.05)
+        with db.session() as s:
+            msgs = {e.message for e in s.exec(select(EventLog))}
+        if "fresh" in msgs:
+            break
+    assert "fresh" in msgs and "old" not in msgs
+
+    real = ev._write
+    calls = {"n": 0}
+
+    def flaky(rows):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("db down")
+        real(rows)
+
+    monkeypatch.setattr(ev, "_write", flaky)
+    bus.event("info", "retry-me")
+    await asyncio.sleep(0.4)  # first flush fails, loop retries
+    await w.stop()
+    with db.session() as s:
+        assert s.exec(select(EventLog).where(EventLog.message == "retry-me")).first()
+    assert calls["n"] >= 2
+
+
+async def test_requeue_keeps_newest(cfg, monkeypatch):
+    from spookhub import events as ev
+
+    db.init_engine(cfg.paths.db_path)
+    monkeypatch.setattr(ev, "PENDING_MAX", 3)
+    bus = EventBus()
+    w = EventWriter(bus)
+    w._requeue([{"message": str(i)} for i in range(5)])
+    assert [e["message"] for e in bus.pending] == ["2", "3", "4"]
+
+
+async def test_stats_ignore_refused_triggers(client, tmp_path):
+    from spookhub.models import Media
+    from tests.test_setup import FakePlayer
+
+    client.hub.engine.player = FakePlayer()
+    f = tmp_path / "v.mp4"
+    f.write_bytes(b"x")
+    with db.session() as s:
+        m = Media(filename="v.mp4", path=str(f), duration_s=5)
+        s.add(m)
+        s.commit()
+        s.refresh(m)
+    r = await client.post(
+        "/api/profiles",
+        json={"name": "V", "type": "video", "media_id": m.id, "idle_media_id": m.id,
+              "playback_mode": "idle_trigger", "cooldown_s": 60, "base_state": {"on": True}},
+    )  # fmt: skip
+    await client.hub.engine.activate(r.json()["id"])
+    eng = client.hub.engine
+    assert (await eng.trigger("button"))[0] is True
+    assert (await eng.trigger("button"))[0] is False  # refused: not counted
+    s = (await client.get("/api/events/stats")).json()
+    assert s["triggers"] == 1

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections import deque
@@ -75,6 +76,8 @@ class EventWriter:
         if t:
             t.cancel()
             await asyncio.gather(t, return_exceptions=True)
+        async with self._lock:  # an in-flight thread write finishes first
+            pass
         await self.flush()
 
     async def _loop(self) -> None:
@@ -97,31 +100,49 @@ class EventWriter:
             if not rows:
                 return
             try:
-                await asyncio.to_thread(_write, rows)
-            except Exception:
-                # Keep them for the next attempt (oldest first).
-                self.bus.pending.extendleft(reversed(rows))
+                # Shielded: cancellation must not lose rows whose thread write is running.
+                await asyncio.shield(asyncio.to_thread(_write, rows))
+            except asyncio.CancelledError:
                 raise
+            except Exception:
+                self._requeue(rows)
+                raise
+
+    def _requeue(self, rows: list[dict[str, Any]]) -> None:
+        """Put failed rows back in front; if over the cap, drop the oldest."""
+        merged = rows + list(self.bus.pending)
+        self.bus.pending.clear()
+        self.bus.pending.extend(merged[-PENDING_MAX:])
 
     async def prune(self) -> None:
         cutoff = time.time() - self.retention_s
         await asyncio.to_thread(_prune, cutoff)
 
 
+def _clean(extra: dict[str, Any]) -> dict[str, Any] | None:
+    """JSON-safe copy of the free-form event fields."""
+    if not extra:
+        return None
+    return json.loads(json.dumps(extra, default=str))
+
+
 def _write(rows: list[dict[str, Any]]) -> None:
     reserved = {"ts", "level", "kind", "message"}
     with db.session() as s:
         for e in rows:
-            extra = {k: v for k, v in e.items() if k not in reserved}
-            s.add(
-                EventLog(
-                    ts=e["ts"],
-                    level=e["level"],
-                    kind=e["kind"],
-                    message=e["message"],
-                    data=extra or None,
+            try:
+                extra = _clean({k: v for k, v in e.items() if k not in reserved})
+                s.add(
+                    EventLog(
+                        ts=e["ts"],
+                        level=e["level"],
+                        kind=e["kind"],
+                        message=e["message"],
+                        data=extra,
+                    )
                 )
-            )
+            except (TypeError, ValueError, KeyError):
+                log.warning("dropping unwritable event: %r", e.get("message"))
         s.commit()
 
 
