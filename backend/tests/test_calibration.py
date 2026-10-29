@@ -41,7 +41,7 @@ def _arm(eng):
     eng._sched_prof, eng._sched_tl = prof, Timeline(prof.cues, eng.boards.adopted_macs())
     eng._last_cue = {m: None for m in eng.boards.adopted_macs()}
     sent = []
-    eng.boards.set_show_state = lambda mac, st, critical: sent.append((mac, st.on))  # type: ignore[method-assign]
+    eng.boards.set_show_state = lambda mac, st, critical, segs=None: sent.append((mac, st.on))  # type: ignore[method-assign]
     eng.settings.update(sync_offset_ms=0)
     return sent
 
@@ -111,7 +111,7 @@ async def test_board_offset_shifts_scheduler_fire_time(client, farm):  # noqa: F
     eng._sched_prof, eng._sched_tl = prof, Timeline(prof.cues, eng.boards.adopted_macs())
     eng._last_cue = {m0: None, m1: None}
     sent = []
-    eng.boards.set_show_state = lambda mac, st, critical: sent.append((mac, st.on))  # type: ignore[method-assign]
+    eng.boards.set_show_state = lambda mac, st, critical, segs=None: sent.append((mac, st.on))  # type: ignore[method-assign]
     eng.settings.update(sync_offset_ms=0)
     eng._tick(1.95)  # board 1 looks 100 ms ahead: already inside the 2.0 s flash
     assert (m1, True) in sent and (m0, True) not in sent

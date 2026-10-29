@@ -63,11 +63,15 @@ class BoardRuntime:
     failures: int = 0
     live: dict[str, Any] = field(default_factory=dict)
     seg_ids: list[int] = field(default_factory=lambda: [0])
+    segments: list[dict[str, Any]] = field(default_factory=list)  # [{id, name, start, stop}]
     effects: list[str] = field(default_factory=list)
     palettes: list[str] = field(default_factory=list)
     fxdata: list[str] = field(default_factory=list)
     presets: dict[str, Any] = field(default_factory=dict)
     show_state: LightState | None = None
+    # Segment id -> state for segments whose own segment cue is active. Sent inside
+    # show_state's payload; segments not listed follow show_state.
+    show_segs: dict[int, LightState] = field(default_factory=dict)
     manual: LightState | None = None
     identify_until: float = 0.0
     # Held by the preflight test-all; separate from identify so neither ends the other.
@@ -98,6 +102,7 @@ class BoardRuntime:
             "effects": self.effects,
             "palettes": self.palettes,
             "fxdata": self.fxdata,
+            "segments": self.segments,
             "presets": {
                 k: v.get("n", f"Preset {k}")
                 for k, v in self.presets.items()
@@ -141,9 +146,12 @@ class BoardManager:
                     effects=list(row.effects or []),
                     palettes=list(row.palettes or []),
                     fxdata=list(row.fxdata or []),
+                    segments=list(row.segments or []),
                     presets=dict(row.presets or {}),
                     last_seen=row.last_seen.timestamp() if row.last_seen else None,
                 )
+                if b.segments:
+                    b.seg_ids = [int(sg["id"]) for sg in b.segments]
                 self._attach_queue(b)
                 self.boards[b.mac] = b
 
@@ -200,6 +208,16 @@ class BoardManager:
             return b.manual
         return b.show_state.merged(b.manual)
 
+    def desired_segs(self, b: BoardRuntime) -> dict[int, LightState]:
+        """Segment states on top of desired(); only while the show state is what is shown."""
+        if self.blackout or b.hold_white or b.identify_until > time.monotonic():
+            return {}
+        if b.show_state is None:
+            return {}
+        known = set(b.seg_ids)
+        # Manual (dashboard) control is whole-board and wins over segment cues too.
+        return {i: st.merged(b.manual) for i, st in b.show_segs.items() if i in known}
+
     def latency_comp_ms(self, mac: str) -> float:
         b = self.boards.get(mac)
         if not b:
@@ -232,6 +250,7 @@ class BoardManager:
             seg_ids=b.seg_ids,
             master=self.master(),
             fallback_bri=fallback,
+            seg_states=self.desired_segs(b),
         )
         if payload:
             b.queue.submit(payload, critical)
@@ -240,16 +259,24 @@ class BoardManager:
         for mac in self.adopted_macs():
             self.push(mac, critical)
 
-    def set_show_state(self, mac: str, state: LightState | None, critical: bool) -> None:
+    def set_show_state(
+        self,
+        mac: str,
+        state: LightState | None,
+        critical: bool,
+        segs: dict[int, LightState] | None = None,
+    ) -> None:
         b = self.boards.get(mac)
         if not b:
             return
         b.show_state = state
+        b.show_segs = dict(segs or {})
         self.push(mac, critical)
 
     def clear_show_states(self) -> None:
         for b in self.boards.values():
             b.show_state = None
+            b.show_segs = {}
             b.manual = None
 
     def set_manual(self, mac: str, state: LightState) -> None:
@@ -419,6 +446,18 @@ class BoardManager:
         if isinstance(segs, list) and segs:
             b.seg_ids = [int(s.get("id", i)) for i, s in enumerate(segs)]
             main = segs[0]
+            segments = [
+                {
+                    "id": int(s.get("id", i)),
+                    "name": str(s.get("n") or ""),
+                    "start": int(s.get("start", 0) or 0),
+                    "stop": int(s.get("stop", 0) or 0),
+                }
+                for i, s in enumerate(segs)
+            ]
+            if segments != b.segments:
+                b.segments = segments
+                self._persist(b)
         else:
             main = {}
         b.live = {
@@ -451,6 +490,7 @@ class BoardManager:
             row.effects = b.effects
             row.palettes = b.palettes
             row.fxdata = b.fxdata
+            row.segments = b.segments
             row.presets = b.presets
             if b.last_seen:
                 row.last_seen = datetime.fromtimestamp(b.last_seen, UTC)

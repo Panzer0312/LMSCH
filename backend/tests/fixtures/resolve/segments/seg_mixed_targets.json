@@ -1,0 +1,202 @@
+{
+ "name": "seg_mixed_targets",
+ "macs": [
+  "aa",
+  "bb"
+ ],
+ "base": {
+  "on": true,
+  "bri": 50,
+  "fx": 0
+ },
+ "cues": [
+  {
+   "id": 1,
+   "start": 0,
+   "duration": 5,
+   "targets": null,
+   "state": {
+    "fx": 11
+   },
+   "transition_ms": null,
+   "segs": {
+    "aa": [
+     1
+    ]
+   }
+  },
+  {
+   "id": 2,
+   "start": 1,
+   "duration": 5,
+   "targets": [
+    "aa"
+   ],
+   "state": {
+    "fx": 12
+   },
+   "transition_ms": null,
+   "segs": {
+    "bb": [
+     0
+    ]
+   }
+  },
+  {
+   "id": 3,
+   "start": 2,
+   "duration": 1,
+   "targets": [],
+   "state": {
+    "fx": 13
+   },
+   "transition_ms": null,
+   "segs": {
+    "aa": [],
+    "zz": [
+     0
+    ]
+   }
+  }
+ ],
+ "probes": [
+  {
+   "mac": "aa",
+   "t": 0.5,
+   "expect_cue": null,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 0
+   },
+   "expect_segs": {
+    "1": 1
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 0.5,
+   "expect_cue": 1,
+   "seg": 1,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 11
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 0.5,
+   "expect_cue": null,
+   "seg": 0,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 0
+   }
+  },
+  {
+   "mac": "bb",
+   "t": 0.5,
+   "expect_cue": 1,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 11
+   },
+   "expect_segs": {}
+  },
+  {
+   "mac": "aa",
+   "t": 1.5,
+   "expect_cue": 2,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 12
+   },
+   "expect_segs": {}
+  },
+  {
+   "mac": "aa",
+   "t": 1.5,
+   "expect_cue": 2,
+   "seg": 1,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 12
+   }
+  },
+  {
+   "mac": "bb",
+   "t": 1.5,
+   "expect_cue": 1,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 11
+   },
+   "expect_segs": {
+    "0": 2
+   }
+  },
+  {
+   "mac": "bb",
+   "t": 1.5,
+   "expect_cue": 2,
+   "seg": 0,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 12
+   }
+  },
+  {
+   "mac": "bb",
+   "t": 1.5,
+   "expect_cue": 1,
+   "seg": 1,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 11
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 2.5,
+   "expect_cue": 2,
+   "seg": 1,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 12
+   }
+  },
+  {
+   "mac": "bb",
+   "t": 5.5,
+   "expect_cue": 2,
+   "seg": 0,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 12
+   }
+  },
+  {
+   "mac": "bb",
+   "t": 5.5,
+   "expect_cue": null,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 0
+   },
+   "expect_segs": {
+    "0": 2
+   }
+  }
+ ]
+}

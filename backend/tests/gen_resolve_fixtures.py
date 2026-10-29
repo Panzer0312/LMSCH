@@ -1,4 +1,4 @@
-"""Regenerate tests/fixtures/resolve/*.json (fixed seed). `--check` exits 1 if files differ.
+"""Regenerate tests/fixtures/resolve/{,segments/}*.json (fixed seed); `--check` exits 1 on diff.
 
 Cue ids in probes are written by hand (the "AUTO" probes of the random fixture excepted) and
 asserted against Timeline while generating; expect_state/expect_overlaps come from Timeline.
@@ -149,48 +149,209 @@ fx(
 )
 
 
-def build() -> dict[str, str]:
-    out = {}
-    for f in F.values():
-        tl = Timeline(
-            [
-                CueSpec(
-                    c["id"],
-                    c["start"],
-                    c["duration"],
-                    None if c["targets"] is None else frozenset(c["targets"]),
-                    LightState(**c["state"]),
-                    c["transition_ms"],
-                )
-                for c in f["cues"]
-            ],
-            f["macs"],
+# ---------- segment fixtures (fixtures/resolve/segments/) ----------
+# Cues carry "segs" ({mac: [seg ids]} or null). Probes with "seg" check that segment
+# (Timeline.seg_state_at); probes without it check the whole board and carry "expect_segs"
+# ({seg id as string: cue id}) = segments whose own segment cue wins (Timeline.board_at).
+
+SEG_OUT = OUT / "segments"
+SF: dict[str, dict] = {}
+
+
+def scue(i, start, dur=None, targets=None, segs=None, state=None, tr=None):
+    c = cue(i, start, dur, targets, state, tr)
+    c["segs"] = segs
+    return c
+
+
+def sfx(name, cues, probes, base=BASE, macs=(A, B), overlaps=False):
+    SF[name] = dict(
+        name=name,
+        macs=list(macs),
+        base=base,
+        cues=cues,
+        probes=[
+            dict(mac=m, t=t, expect_cue=e, **({} if sg is None else {"seg": sg}))
+            for m, t, e, sg in probes
+        ],
+    )
+    if overlaps:
+        SF[name]["expect_overlaps"] = True
+        SF[name]["expect_seg_overlaps"] = True
+
+
+sfx(
+    "seg_overlap_board_and_segment",
+    [
+        scue(1, 0, 10),
+        scue(2, 2, 3, targets=[], segs={A: [1]}, state={"colors": [[0, 0, 255]]}),
+        scue(3, 4, 2, targets=[A]),
+        scue(4, 7, None, targets=[], segs={A: [0]}, state={"colors": [[255, 0, 0]]}),
+        scue(5, 9),
+    ],
+    [
+        (A, 3, 1, None),
+        (A, 3, 2, 1),
+        (A, 3, 1, 0),
+        (A, 4.5, 3, 1),
+        (A, 5.5, 3, 1),
+        (A, 6.5, 1, 1),
+        (A, 8, 1, None),
+        (A, 8, 4, 0),
+        (A, 9.5, 5, 0),
+        (B, 3, 1, None),
+        (B, 3, 1, 1),
+    ],
+    overlaps=True,
+)
+sfx(
+    "seg_two_segments_different_cues",
+    [
+        scue(1, 0, 10, state={"fx": 1, "colors": [[255, 160, 0]]}),
+        scue(2, 1, 5, targets=[], segs={A: [0]}, state={"colors": [[255, 0, 0]]}),
+        scue(3, 2, 2, targets=[], segs={A: [1]}, state={"fx": 9, "colors": [[0, 0, 255]]}),
+        scue(4, 3, None, targets=[], segs={A: [0, 1]}, state={"bri": 7}, tr=250),
+    ],
+    [
+        (A, 1.5, 1, None),
+        (A, 2.5, 1, None),
+        (A, 2.5, 2, 0),
+        (A, 2.5, 3, 1),
+        (A, 3.5, 4, 0),
+        (A, 3.5, 4, 1),
+        (A, 7, 1, None),
+        (A, 12, None, None),
+        (A, 12, 4, 1),
+    ],
+    overlaps=True,
+)
+sfx(
+    "seg_mixed_targets",
+    [
+        scue(1, 0, 5, targets=None, segs={A: [1]}, state={"fx": 11}),
+        scue(2, 1, 5, targets=[A], segs={B: [0]}, state={"fx": 12}),
+        scue(3, 2, 1, targets=[], segs={A: [], "zz": [0]}, state={"fx": 13}),
+    ],
+    [
+        (A, 0.5, None, None),
+        (A, 0.5, 1, 1),
+        (A, 0.5, None, 0),
+        (B, 0.5, 1, None),
+        (A, 1.5, 2, None),
+        (A, 1.5, 2, 1),
+        (B, 1.5, 1, None),
+        (B, 1.5, 2, 0),
+        (B, 1.5, 1, 1),
+        (A, 2.5, 2, 1),
+        (B, 5.5, 2, 0),
+        (B, 5.5, None, None),
+    ],
+)
+sfx(
+    "seg_duration_resume",
+    [
+        scue(1, 0, 10, targets=[], segs={A: [1]}, state={"fx": 21}),
+        scue(2, 2, 1, state={"fx": 22}),
+        scue(3, 4, None, targets=[], segs={A: [0]}, state={"fx": 23}),
+        scue(4, 5, 1, targets=[A], state={"fx": 24}),
+        scue(5, 6, 1, targets=[], segs={A: [1]}, state={"fx": 25}, tr=0),
+    ],
+    [
+        (A, 1, 1, 1),
+        (A, 2.5, 2, 1),
+        (A, 3.5, 1, 1),
+        (A, 4.5, 3, 0),
+        (A, 4.5, None, None),
+        (A, 5.5, 4, 0),
+        (A, 5.5, 4, 1),
+        (A, 6.2, 5, 1),
+        (A, 6.2, None, 0),
+        (A, 7.5, 1, 1),
+        (A, 10, None, 1),
+        (A, 10, None, None),
+    ],
+)
+
+srng = random.Random(4321)
+scs = []
+for i in range(1, 41):
+    segs = srng.choice([None, None, {A: [0]}, {A: [1]}, {A: [0, 1]}, {B: [1]}, {A: [1], B: [0]}])
+    scs.append(
+        scue(
+            i,
+            round(srng.uniform(0, 60), 1),
+            srng.choice([None, round(srng.uniform(0.2, 15), 1)]),
+            srng.choice([None, [A], [B], []]),
+            segs,
+            {"fx": i} if i % 3 else {"colors": [[i, 0, 0]], "sx": i},
         )
+    )
+sfx(
+    "seg_random_seek_probes",
+    scs,
+    [
+        (srng.choice([A, B]), round(srng.uniform(-1, 80), 2), "AUTO", srng.choice([None, 0, 1]))
+        for _ in range(300)
+    ],
+    overlaps=True,
+)
+
+
+def spec(c: dict) -> CueSpec:
+    segs = c.get("segs")
+    return CueSpec(
+        c["id"],
+        c["start"],
+        c["duration"],
+        None if c["targets"] is None else frozenset(c["targets"]),
+        LightState(**c["state"]),
+        c["transition_ms"],
+        None if segs is None else {m: frozenset(ids) for m, ids in segs.items()},
+    )
+
+
+def build(fixtures: dict[str, dict]) -> dict[str, str]:
+    out = {}
+    for f in fixtures.values():
+        tl = Timeline([spec(c) for c in f["cues"]], f["macs"])
+        base = LightState(**f["base"])
         for p in f["probes"]:
-            cid, st = tl.state_at(p["mac"], p["t"], LightState(**f["base"]))
+            if "seg" in p:
+                cid, st = tl.seg_state_at(p["mac"], p["seg"], p["t"], base)
+            else:
+                cid, st = tl.state_at(p["mac"], p["t"], base)
             if p["expect_cue"] == "AUTO":
                 p["expect_cue"] = cid
             assert p["expect_cue"] == cid, (f["name"], p)
             p["expect_state"] = st.model_dump(mode="json", exclude_none=True)
+            if fixtures is SF and "seg" not in p:
+                (_, seg_ids), _, _ = tl.board_at(p["mac"], p["t"], base)
+                p["expect_segs"] = {str(sg): c for sg, c in seg_ids}
         if f.get("expect_overlaps"):
             f["expect_overlaps"] = {m: [list(p) for p in ps] for m, ps in tl.overlaps().items()}
+        if f.get("expect_seg_overlaps"):
+            f["expect_seg_overlaps"] = {
+                k: [list(p) for p in ps] for k, ps in tl.seg_overlaps().items()
+            }
         out[f["name"]] = json.dumps(f, indent=1) + "\n"
     return out
 
 
 if __name__ == "__main__":
-    files = build()
-    if "--check" in sys.argv:
-        bad = [
-            n
-            for n, s in files.items()
-            if not (OUT / f"{n}.json").exists() or (OUT / f"{n}.json").read_text() != s
-        ]
-        extra = [p.stem for p in OUT.glob("*.json") if p.stem not in files]
-        if bad or extra:
-            print("fixtures out of date:", bad, extra)
-            sys.exit(1)
-    else:
-        OUT.mkdir(parents=True, exist_ok=True)
-        for n, s in files.items():
-            (OUT / f"{n}.json").write_text(s)
+    bad: list[str] = []
+    for fixtures, out_dir in ((F, OUT), (SF, SEG_OUT)):
+        files = build(fixtures)
+        if "--check" in sys.argv:
+            bad += [
+                n
+                for n, s in files.items()
+                if not (out_dir / f"{n}.json").exists() or (out_dir / f"{n}.json").read_text() != s
+            ]
+            bad += [p.stem for p in out_dir.glob("*.json") if p.stem not in files]
+        else:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            for n, s in files.items():
+                (out_dir / f"{n}.json").write_text(s)
+    if bad:
+        print("fixtures out of date:", bad)
+        sys.exit(1)

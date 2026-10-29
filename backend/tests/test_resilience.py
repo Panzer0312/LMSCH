@@ -312,7 +312,7 @@ async def test_resume_reapplies_cue_at_position_only(client, farm, stall):  # no
     eng.active.cues = cues
     eng.timeline = Timeline(cues, [mac])
     sent = []
-    eng.boards.set_show_state = lambda m, st, critical: sent.append(st.colors)  # type: ignore[method-assign]
+    eng.boards.set_show_state = lambda m, st, critical, segs=None: sent.append(st.colors)  # type: ignore[method-assign]
     await eng._play_main(0.0)
     _tick_pos(p, 5.0)
     await wait_for(lambda: len(p.loads) == 2)

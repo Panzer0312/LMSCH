@@ -116,6 +116,11 @@ def load_active(profile_id: int) -> ActiveProfile | None:
                     targets=None if tgt.all else frozenset(tgt.macs),
                     state=LightState.model_validate(c.state or {}),
                     transition_ms=c.transition_ms,
+                    segs=(
+                        None
+                        if tgt.segs is None
+                        else {m: frozenset(ids) for m, ids in tgt.segs.items()}
+                    ),
                 )
             )
         return ActiveProfile(
@@ -174,7 +179,7 @@ class ShowEngine:
         self._setup_cleanup: Callable[[], None] | None = None
         self.calibrating = False
         self._calib_off = asyncio.Event()
-        self._last_cue: dict[str, int | None] = {}
+        self._last_cue: dict[str, Any] = {}  # mac -> last sent cue key (None = base)
         # What the scheduler is currently driving: main show or browser audition.
         self._sched_prof: ActiveProfile | None = None
         self._sched_tl: Timeline | None = None
@@ -648,14 +653,20 @@ class ShowEngine:
                 # The clip loops: a lead past the end (or before 0) must see the neighbouring
                 # loop's flash, else the t=0 flash is lost for boards that fire early.
                 at %= CLIP_S
+            segs: dict[int, LightState] = {}
+            key: Any
             if self.audition is not None and mac in self.audition.muted:
-                cue_id, state = -1, a.base_for(mac)  # sentinel: no real cue has id -1
+                key, state = -1, a.base_for(mac)  # sentinel: no real cue has id -1
             else:
-                cue_id, state = tl.state_at(mac, at, a.base_for(mac))
-            if mac in self._last_cue and self._last_cue[mac] == cue_id:
+                (key, seg_key), state, segs = tl.board_at(mac, at, a.base_for(mac))
+                if seg_key:
+                    # Segment cues change the payload too; plain cue ids keep None = base.
+                    key = (key, seg_key)
+            if mac in self._last_cue and self._last_cue[mac] == key:
                 continue
-            self._last_cue[mac] = cue_id
-            self.boards.set_show_state(mac, state, critical=True)
+            self._last_cue[mac] = key
+            # One payload per board: segment states ride along in its seg list.
+            self.boards.set_show_state(mac, state, critical=True, segs=segs)
 
     # ----- audition & play from here -----
 

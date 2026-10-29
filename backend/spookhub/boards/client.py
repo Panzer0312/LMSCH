@@ -70,12 +70,17 @@ def build_payload(
     seg_ids: list[int],
     master: float = 1.0,
     fallback_bri: int = 128,
+    seg_states: dict[int, LightState] | None = None,
 ) -> dict[str, Any]:
     """Translate a LightState into a /json/state body.
 
     Presets are expanded from the cached preset file instead of sending {"ps": id}: WLED
     applies "ps" asynchronously, so a brightness in the same request would be overwritten
     and the master-brightness multiplier could not work.
+
+    seg_states: per-segment states merged into the same body's "seg" list, so one request
+    sets the whole board and its segments. Only segment fields (fx, pal, sx, ix, col) are
+    taken from them; on, bri and transition are board-wide in WLED and come from `state`.
     """
     payload: dict[str, Any] = {}
     preset_seg: list[dict[str, Any]] | None = None
@@ -99,17 +104,7 @@ def build_payload(
         payload["tt"] = round(state.transition_ms / 100)
         payload.pop("transition", None)
 
-    seg_fields: dict[str, Any] = {}
-    if state.fx is not None:
-        seg_fields["fx"] = state.fx
-    if state.pal is not None:
-        seg_fields["pal"] = state.pal
-    if state.sx is not None:
-        seg_fields["sx"] = state.sx
-    if state.ix is not None:
-        seg_fields["ix"] = state.ix
-    if state.colors is not None:
-        seg_fields["col"] = [list(c) for c in state.colors]
+    seg_fields = _seg_fields(state)
 
     if preset_seg is not None:
         if seg_fields:
@@ -122,9 +117,58 @@ def build_payload(
         ids = seg_ids or [0]
         payload["seg"] = [{"id": i, **seg_fields} for i in ids]
 
+    if seg_states:
+        _merge_seg_states(payload, seg_states, presets)
+
     if "ps" not in payload and master < 0.999:
         bri = payload.get("bri", fallback_bri)
         payload["bri"] = max(0, min(255, round(bri * master)))
         if payload["bri"] == 0 and payload.get("on", True):
             payload["bri"] = 1
     return payload
+
+
+def _seg_fields(state: LightState) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    if state.fx is not None:
+        out["fx"] = state.fx
+    if state.pal is not None:
+        out["pal"] = state.pal
+    if state.sx is not None:
+        out["sx"] = state.sx
+    if state.ix is not None:
+        out["ix"] = state.ix
+    if state.colors is not None:
+        out["col"] = [list(c) for c in state.colors]
+    return out
+
+
+def _merge_seg_states(
+    payload: dict[str, Any], seg_states: dict[int, LightState], presets: dict[str, Any]
+) -> None:
+    segs: list[dict[str, Any]] = payload.setdefault("seg", [])
+    # WLED maps an id-less array entry to the segment at that index; make it explicit so a
+    # segment override lands on the right entry.
+    for i, s in enumerate(segs):
+        s.setdefault("id", i)
+    by_id = {s["id"]: s for s in segs}
+    for sid in sorted(seg_states):
+        st = seg_states[sid]
+        fields: dict[str, Any] = {}
+        if st.preset is not None:
+            # A preset on a segment: that preset's first segment look, on this segment only.
+            p = presets.get(str(st.preset))
+            raw = p.get("seg") if isinstance(p, dict) else None
+            first = raw[0] if isinstance(raw, list) and raw else raw
+            if isinstance(first, dict):
+                fields = {k: v for k, v in first.items() if k not in ("id", "start", "stop", "n")}
+        fields.update(_seg_fields(st))
+        if not fields:
+            continue
+        if sid in by_id:
+            by_id[sid].update(fields)
+        else:
+            by_id[sid] = {"id": sid, **fields}
+            segs.append(by_id[sid])
+    if not segs:
+        del payload["seg"]

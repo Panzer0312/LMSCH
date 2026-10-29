@@ -1,0 +1,272 @@
+{
+ "name": "seg_two_segments_different_cues",
+ "macs": [
+  "aa",
+  "bb"
+ ],
+ "base": {
+  "on": true,
+  "bri": 50,
+  "fx": 0
+ },
+ "cues": [
+  {
+   "id": 1,
+   "start": 0,
+   "duration": 10,
+   "targets": null,
+   "state": {
+    "fx": 1,
+    "colors": [
+     [
+      255,
+      160,
+      0
+     ]
+    ]
+   },
+   "transition_ms": null,
+   "segs": null
+  },
+  {
+   "id": 2,
+   "start": 1,
+   "duration": 5,
+   "targets": [],
+   "state": {
+    "colors": [
+     [
+      255,
+      0,
+      0
+     ]
+    ]
+   },
+   "transition_ms": null,
+   "segs": {
+    "aa": [
+     0
+    ]
+   }
+  },
+  {
+   "id": 3,
+   "start": 2,
+   "duration": 2,
+   "targets": [],
+   "state": {
+    "fx": 9,
+    "colors": [
+     [
+      0,
+      0,
+      255
+     ]
+    ]
+   },
+   "transition_ms": null,
+   "segs": {
+    "aa": [
+     1
+    ]
+   }
+  },
+  {
+   "id": 4,
+   "start": 3,
+   "duration": null,
+   "targets": [],
+   "state": {
+    "bri": 7
+   },
+   "transition_ms": 250,
+   "segs": {
+    "aa": [
+     0,
+     1
+    ]
+   }
+  }
+ ],
+ "probes": [
+  {
+   "mac": "aa",
+   "t": 1.5,
+   "expect_cue": 1,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 1,
+    "colors": [
+     [
+      255,
+      160,
+      0
+     ]
+    ]
+   },
+   "expect_segs": {
+    "0": 2
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 2.5,
+   "expect_cue": 1,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 1,
+    "colors": [
+     [
+      255,
+      160,
+      0
+     ]
+    ]
+   },
+   "expect_segs": {
+    "0": 2,
+    "1": 3
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 2.5,
+   "expect_cue": 2,
+   "seg": 0,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 0,
+    "colors": [
+     [
+      255,
+      0,
+      0
+     ]
+    ]
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 2.5,
+   "expect_cue": 3,
+   "seg": 1,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 9,
+    "colors": [
+     [
+      0,
+      0,
+      255
+     ]
+    ]
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 3.5,
+   "expect_cue": 4,
+   "seg": 0,
+   "expect_state": {
+    "on": true,
+    "bri": 7,
+    "fx": 0,
+    "transition_ms": 250
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 3.5,
+   "expect_cue": 4,
+   "seg": 1,
+   "expect_state": {
+    "on": true,
+    "bri": 7,
+    "fx": 0,
+    "transition_ms": 250
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 7,
+   "expect_cue": 1,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 1,
+    "colors": [
+     [
+      255,
+      160,
+      0
+     ]
+    ]
+   },
+   "expect_segs": {
+    "0": 4,
+    "1": 4
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 12,
+   "expect_cue": null,
+   "expect_state": {
+    "on": true,
+    "bri": 50,
+    "fx": 0
+   },
+   "expect_segs": {
+    "0": 4,
+    "1": 4
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 12,
+   "expect_cue": 4,
+   "seg": 1,
+   "expect_state": {
+    "on": true,
+    "bri": 7,
+    "fx": 0,
+    "transition_ms": 250
+   }
+  }
+ ],
+ "expect_overlaps": {},
+ "expect_seg_overlaps": {
+  "aa:0": [
+   [
+    1,
+    2
+   ],
+   [
+    1,
+    4
+   ],
+   [
+    2,
+    4
+   ]
+  ],
+  "aa:1": [
+   [
+    1,
+    3
+   ],
+   [
+    1,
+    4
+   ],
+   [
+    3,
+    4
+   ]
+  ]
+ }
+}

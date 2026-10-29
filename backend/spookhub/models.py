@@ -66,10 +66,15 @@ class BoardSelection(BaseModel):
 
 
 class CueTarget(BaseModel):
-    """all=True means 'all selected boards' of the profile."""
+    """all=True means 'all selected boards' of the profile.
+
+    segs maps a board MAC to WLED segment ids: on that board the cue drives only those
+    segments instead of the whole board. None = no segment targeting (whole boards only).
+    """
 
     all: bool = True
     macs: list[str] = []
+    segs: dict[str, list[int]] | None = None
 
 
 # ---------- Tables ----------
@@ -88,6 +93,10 @@ class Board(SQLModel, table=True):
         default_factory=list, sa_column=Column(JSON, nullable=False, server_default="[]")
     )
     presets: dict[str, Any] = SQLField(default_factory=dict, sa_column=Column(JSON))
+    # [{id, name, start, stop}] as last read from the board's /json/state "seg".
+    segments: list[dict[str, Any]] = SQLField(
+        default_factory=list, sa_column=Column(JSON, nullable=False, server_default="[]")
+    )
     last_seen: datetime | None = None
     # Per-board fire-time trim in ms (positive = fire earlier), on top of measured latency.
     offset_ms: float = SQLField(default=0.0, sa_column_kwargs={"server_default": "0"})

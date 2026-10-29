@@ -60,9 +60,13 @@ def _default_state() -> dict[str, Any]:
         "bri": 128,
         "transition": 7,
         "ps": -1,
+        # Two segments (start/stop set from led_count in FakeBoard) so segment cues can be tested.
         "seg": [
             {
-                "id": 0,
+                "id": i,
+                "n": name,
+                "start": 0,
+                "stop": 0,
                 "on": True,
                 "bri": 255,
                 "fx": 0,
@@ -71,6 +75,7 @@ def _default_state() -> dict[str, Any]:
                 "ix": 128,
                 "col": [[255, 160, 0], [0, 0, 0], [0, 0, 0]],
             }
+            for i, name in enumerate(("Left", "Right"))
         ],
     }
 
@@ -117,6 +122,11 @@ class FakeBoard:
             self.name = f"Sim-{self.index}"
         if not self.cfg:
             self.cfg = {"wifi": {"sleep": True}, "id": {"name": self.name}}
+        half = self.led_count // 2
+        bounds = [(0, half), (half, self.led_count)]
+        for seg, (start, stop) in zip(self.state.get("seg", []), bounds, strict=False):
+            if not seg.get("stop"):
+                seg["start"], seg["stop"] = start, stop
 
     def info(self) -> dict[str, Any]:
         return {
