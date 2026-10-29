@@ -2,6 +2,8 @@
 # Spookhub installer for a fresh Debian 13 (trixie) minimal system. Idempotent: safe to re-run.
 # Usage (as root, from the project directory): sudo ./scripts/install.sh
 set -euo pipefail
+# set -e alone exits silently; say where it stopped.
+trap 'echo "install.sh failed at line $LINENO (exit $?): $BASH_COMMAND" >&2' ERR
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP=/opt/spookhub
