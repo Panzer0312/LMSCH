@@ -66,6 +66,7 @@ class EventWriter:
         self.flush_s, self.prune_s, self.retention_s = flush_s, prune_s, retention_s
         self._task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
+        self._inflight: asyncio.Future[None] | None = None
 
     async def start(self) -> None:
         await self.prune()
@@ -76,8 +77,8 @@ class EventWriter:
         if t:
             t.cancel()
             await asyncio.gather(t, return_exceptions=True)
-        async with self._lock:  # an in-flight thread write finishes first
-            pass
+        if self._inflight is not None:  # a write orphaned by the cancel finishes first
+            await asyncio.gather(self._inflight, return_exceptions=True)
         await self.flush()
 
     async def _loop(self) -> None:
@@ -99,14 +100,17 @@ class EventWriter:
                 rows.append(self.bus.pending.popleft())
             if not rows:
                 return
-            try:
-                # Shielded: cancellation must not lose rows whose thread write is running.
-                await asyncio.shield(asyncio.to_thread(_write, rows))
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                self._requeue(rows)
-                raise
+            fut = asyncio.ensure_future(asyncio.to_thread(_write, rows))
+            self._inflight = fut
+
+            def done(f: asyncio.Future[None]) -> None:
+                # Also runs for a write orphaned by cancellation: its rows must not be lost.
+                if not f.cancelled() and f.exception() is not None:
+                    self._requeue(rows)
+
+            fut.add_done_callback(done)
+            # Shielded: cancelling the caller must not abandon the running thread write.
+            await asyncio.shield(fut)
 
     def _requeue(self, rows: list[dict[str, Any]]) -> None:
         """Put failed rows back in front; if over the cap, drop the oldest."""

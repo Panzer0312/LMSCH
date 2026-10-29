@@ -51,9 +51,15 @@ class LockMiddleware(BaseHTTPMiddleware):
                 return locked
             if declared > MAX_BODY:
                 return too_big
-            raw = await request.body()
-            if len(raw) > MAX_BODY:
-                return too_big
+            chunks: list[bytes] = []
+            size = 0
+            async for chunk in request.stream():  # bounded: never buffer more than MAX_BODY
+                size += len(chunk)
+                if size > MAX_BODY:
+                    return too_big
+                chunks.append(chunk)
+            raw = b"".join(chunks)
+            request._body = raw  # let the route (via the cached request) read it again
             try:
                 body = json.loads(raw)
             except ValueError:

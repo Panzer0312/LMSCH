@@ -210,3 +210,70 @@ async def test_stats_ignore_refused_triggers(client, tmp_path):
     assert (await eng.trigger("button"))[0] is False  # refused: not counted
     s = (await client.get("/api/events/stats")).json()
     assert s["triggers"] == 1
+
+
+async def test_stop_during_slow_write_loses_nothing(cfg, monkeypatch):
+    import asyncio
+
+    from spookhub import events as ev
+
+    db.init_engine(cfg.paths.db_path)
+    real = ev._write
+
+    def slow(rows):
+        time.sleep(0.3)
+        real(rows)
+
+    monkeypatch.setattr(ev, "_write", slow)
+    bus = EventBus()
+    w = EventWriter(bus, flush_s=0.05)
+    await w.start()
+    for i in range(5):
+        bus.event("info", f"row{i}")
+    await asyncio.sleep(0.15)  # loop is inside the slow write
+    bus.event("info", "late")
+    await w.stop()
+    with db.session() as s:
+        msgs = {e.message for e in s.exec(select(EventLog))}
+    assert msgs == {f"row{i}" for i in range(5)} | {"late"}
+
+
+async def test_orphaned_write_failure_requeues(cfg, monkeypatch):
+    import asyncio
+
+    from spookhub import events as ev
+
+    db.init_engine(cfg.paths.db_path)
+    real = ev._write
+    n = {"c": 0}
+
+    def flaky(rows):
+        n["c"] += 1
+        time.sleep(0.2)
+        if n["c"] == 1:
+            raise RuntimeError("boom")
+        real(rows)
+
+    monkeypatch.setattr(ev, "_write", flaky)
+    bus = EventBus()
+    w = EventWriter(bus, flush_s=0.05)
+    await w.start()
+    bus.event("info", "keep")
+    await asyncio.sleep(0.15)
+    await w.stop()
+    with db.session() as s:
+        assert s.exec(select(EventLog).where(EventLog.message == "keep")).first()
+
+
+async def test_locked_settings_chunked_body(client):
+    await client.post("/api/show_lock", json={"on": True})
+
+    J = {"content-type": "application/json"}
+
+    async def gen(data):
+        yield data
+
+    r = await client.put("/api/settings", content=gen(b'{"master_volume": 0.3}'), headers=J)
+    assert r.status_code == 200 and client.hub.settings.value.master_volume == 0.3
+    r = await client.put("/api/settings", content=gen(b" " * 5000 + b"{}"), headers=J)
+    assert r.status_code == 413
