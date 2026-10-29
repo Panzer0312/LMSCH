@@ -53,6 +53,7 @@ Every config key has an env override, e.g. `SPOOKHUB_MPV__EXTRA_ARGS='["--drm-co
 
 | Symptom | Check |
 |---|---|
+| `install.sh` stops after a step header | It prints `install.sh failed at line N: <command>`. Fix that step, then re-run (the script is idempotent). |
 | Black screen | `journalctl -u spookhub -e` for mpv errors. `vainfo`. Try `extra_args = ["--drm-connector=HDMI-A-1"]` or `hwdec = "no"`. |
 | "mpv exited, restarting" loop | Another process holds DRM (desktop or KMS getty). User in `video` + `render`? |
 | No sound | `aplay -l`, then `extra_args = ["--audio-device=alsa/hdmi:CARD=PCH,DEV=0"]` or analog device. |
