@@ -149,6 +149,7 @@ class ShowEngine:
         self.test_pattern = False
         self.cooldown_until = 0.0
         self.playing_main = False
+        self.last_trigger: dict[str, Any] | None = None
         self._last_cue: dict[str, int | None] = {}
         # What the scheduler is currently driving: main show or browser audition.
         self._sched_prof: ActiveProfile | None = None
@@ -195,6 +196,7 @@ class ShowEngine:
             if self.audition is None
             else {"profile_id": self.audition.profile_id, "playing": self.audition.playing},
             "player": self.player.state(),
+            "last_trigger": self.last_trigger,
         }
 
     def _publish(self) -> None:
@@ -291,6 +293,18 @@ class ShowEngine:
     # ----- playback -----
 
     async def trigger(self, source: str = "button") -> tuple[bool, str]:
+        accepted, message = await self._trigger(source)
+        # Recorded even when refused: lets the setup page show that a sensor reaches the hub.
+        self.last_trigger = {
+            "ts": time.time(),
+            "source": source,
+            "accepted": accepted,
+            "message": message,
+        }
+        self.bus.publish("trigger_seen", self.last_trigger)
+        return accepted, message
+
+    async def _trigger(self, source: str) -> tuple[bool, str]:
         a = self.active
         if self.blackout:
             return False, "blackout active"
@@ -548,6 +562,30 @@ class ShowEngine:
                 self.phase = Phase.none
                 await self._safe(self.player.black())
         self._publish()
+
+    async def play_test_sound(self, path: str, max_wait_s: float = 6.0) -> bool:
+        """Play a short sound once, then restore the idle state. False if a show is busy."""
+        if self.playing_main or self.test_pattern or self.audition is not None:
+            return False
+        async with self._lock:
+            if self.playing_main or self.test_pattern:
+                return False
+            if await self._safe(self.player.load(path)) and self.player.cfg.enabled:
+                # eof-reached is the only end signal mpv gives for an audio-only file.
+                try:
+                    async with asyncio.timeout(max_wait_s):
+                        while not self.player.eof:  # noqa: ASYNC110 - player exposes no eof event
+                            await asyncio.sleep(0.05)
+                except TimeoutError:
+                    pass
+        if self.blackout:
+            await self._safe(self.player.black())
+        elif self.active:
+            await self.activate(self.active.id, autostart=False)
+        else:
+            await self._safe(self.player.black())
+        self._publish()
+        return True
 
     # ----- blackout / master -----
 

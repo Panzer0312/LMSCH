@@ -14,6 +14,7 @@ from typing import Any
 
 from spookhub.config import MpvCfg
 from spookhub.events import EventBus
+from spookhub.player.devices import parse_audio_devices
 from spookhub.player.ipc import MpvError, MpvIpc
 
 MAX_EXTRAPOLATE_S = 0.5
@@ -376,6 +377,16 @@ class MpvPlayer:
             self.audio_device_override = previous
             log.warning("audio device %s rejected by mpv: %s", name, exc)
             self.bus.event("warn", f"audio device {name} rejected by mpv")
+
+    async def audio_devices(self) -> list[dict[str, str]]:
+        ipc = self._ipc
+        if not self.cfg.enabled or not self.ready.is_set() or ipc is None:
+            return []
+        try:
+            raw = await ipc.get_property("audio-device-list")
+        except MpvError:
+            return []
+        return parse_audio_devices(raw) if isinstance(raw, list) else []
 
     async def black(self) -> None:
         if not self.cfg.enabled:
