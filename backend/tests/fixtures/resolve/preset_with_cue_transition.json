@@ -1,0 +1,74 @@
+{
+ "name": "preset_with_cue_transition",
+ "macs": [
+  "aa",
+  "bb"
+ ],
+ "base": {
+  "on": true,
+  "bri": 10,
+  "transition_ms": 200
+ },
+ "cues": [
+  {
+   "id": 1,
+   "start": 0,
+   "duration": 6,
+   "targets": null,
+   "state": {
+    "preset": 3
+   },
+   "transition_ms": 1200
+  },
+  {
+   "id": 2,
+   "start": 1,
+   "duration": 2,
+   "targets": null,
+   "state": {
+    "preset": 5,
+    "transition_ms": 40
+   },
+   "transition_ms": null
+  }
+ ],
+ "probes": [
+  {
+   "mac": "aa",
+   "t": 0.5,
+   "expect_cue": 1,
+   "expect_state": {
+    "preset": 3,
+    "transition_ms": 1200
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 2,
+   "expect_cue": 2,
+   "expect_state": {
+    "preset": 5,
+    "transition_ms": 40
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 4,
+   "expect_cue": 1,
+   "expect_state": {
+    "preset": 3,
+    "transition_ms": 1200
+   }
+  },
+  {
+   "mac": "aa",
+   "t": 6,
+   "expect_cue": null,
+   "expect_state": {
+    "on": true,
+    "bri": 10,
+    "transition_ms": 200
+   }
+  }
+ ]
+}

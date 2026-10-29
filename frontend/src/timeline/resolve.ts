@@ -49,6 +49,9 @@ export class Timeline {
   }
 
   active(mac: string, t: number): CueSpec | null {
+    // NaN: no cue is active. (Python's bisect would treat NaN as "after all cues"; resolve.py is
+    // only ever fed finite positions, so the guard is TS-only and not part of the shared fixtures.)
+    if (Number.isNaN(t)) return null
     const cues = this.byBoard.get(mac)
     if (!cues || cues.length === 0) return null
     // Last cue with start <= t (bisect_right - 1).
@@ -75,7 +78,7 @@ export class Timeline {
   /** (cue id or null for base, effective state) */
   stateAt(mac: string, t: number, base: ResolveState): [number | null, ResolveState] {
     const cue = this.active(mac, t)
-    if (!cue) return [null, base]
+    if (!cue) return [null, { ...base }]
     let st = merged(base, cue.state)
     if (cue.transition_ms != null) st = { ...st, transition_ms: cue.transition_ms }
     return [cue.id, st]
