@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import enum
 import logging
 import time
@@ -224,6 +223,7 @@ class ShowEngine:
     async def activate(self, profile_id: int, autostart: bool = True) -> None:
         await self._cancel_setup()
         async with self._lock:
+            await self._cancel_setup()  # a setup may have started between the two
             prof = load_active(profile_id)
             if prof is None:
                 raise KeyError(profile_id)
@@ -268,6 +268,7 @@ class ShowEngine:
     async def deactivate(self) -> None:
         await self._cancel_setup()
         async with self._lock:
+            await self._cancel_setup()
             await self._stop_scheduler()
             self.active = None
             self.timeline = None
@@ -631,14 +632,17 @@ class ShowEngine:
         me = asyncio.current_task()
         try:
             await wait()
+            # Cancellation (blackout/activate) skips the restore: the canceller owns the next state.
+            async with self._lock:
+                if self._setup_task is me:
+                    await self._restore_idle()
         except Exception:  # noqa: BLE001
             log.exception("setup action failed")
-        # Cancellation (blackout/activate) skips this: the canceller owns the next state.
-        async with self._lock:
+        finally:
+            # Never leave setup_busy stuck, whatever failed above.
             if self._setup_task is me:
-                await self._restore_idle()
                 self._setup_task = None
-        self._publish()
+                self._publish()
 
     async def _cancel_setup(self) -> None:
         t = self._setup_task
@@ -646,14 +650,18 @@ class ShowEngine:
             return
         self._setup_task = None
         t.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await t
+        # wait() instead of awaiting t: a failed task must not raise into blackout, and our own
+        # cancellation must still propagate.
+        await asyncio.wait({t})
+        if not t.cancelled() and t.exception() is not None:
+            log.warning("setup task ended with error: %s", t.exception())
 
     async def _restore_idle(self) -> None:
         """Back to the idle picture of the active profile. Caller holds the lock."""
-        if self.blackout:
-            self.phase = Phase.blackout
-        elif self.active and load_active(self.active.id) is not None:
+        # Something newer took over while the test ran; do not clobber it.
+        if self.playing_main or self.test_pattern or self.audition is not None or self.blackout:
+            return
+        if self.active and load_active(self.active.id) is not None:
             if self.active.type == ProfileType.light:
                 self.phase = Phase.lights
             else:
@@ -692,6 +700,7 @@ class ShowEngine:
             # Safety control: never waits for a setup test.
             await self._cancel_setup()
             async with self._lock:
+                await self._cancel_setup()
                 await self._stop_scheduler()
                 self.playing_main = False
                 self.audition = None

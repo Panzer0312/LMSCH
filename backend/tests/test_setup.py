@@ -82,12 +82,16 @@ class FakePlayer(MpvPlayer):
         super().__init__(MpvCfg(enabled=True), EventBus())
         self.calls = []
         self.ok = ok
+        self.stale_after_load = False
 
     async def load(self, path, start=0.0, loop=False):
         self.calls.append(("load", path))
         if not self.ok:
             raise MpvError("down")
         self.path, self.eof = path, False
+        if self.stale_after_load:
+            # mpv has not yet reported the new file: old path and eof still show.
+            self.path, self.eof = "/old", True
 
     async def black(self):
         self.calls.append(("black",))
@@ -185,28 +189,99 @@ async def test_test_sound_restores_light_profile_and_ignores_stale_eof(client, f
     eng = client.hub.engine
     pid = await _mk_profile(client)
     await eng.activate(pid)
-    fake.eof = True  # stale from an earlier file
+    fake.stale_after_load = True
     r = await client.post("/api/setup/test_sound")
     assert r.status_code == 200
-    await asyncio.sleep(0.2)
-    assert eng.snapshot()["setup_busy"]  # stale eof did not end it
-    await _finish(eng, fake, fake.path)
+    sound = fake.calls[-1][1]
+    await asyncio.sleep(0.3)
+    assert fake.path == "/old" and eng.snapshot()["setup_busy"]  # stale eof did not end it
+    fake.path, fake.eof = sound, True
+    await wait_for(lambda: not eng.snapshot()["setup_busy"])
     assert eng.phase.value == "lights" and eng.active.id == pid
 
 
-async def test_restore_idle_profile_deleted_and_blackout(client, fake):  # noqa: F811
+async def test_restore_idle_profile_deleted(client, fake):  # noqa: F811
     eng = client.hub.engine
     pid = await _mk_profile(client)
     await eng.activate(pid)
     await client.delete(f"/api/profiles/{pid}")
-    eng.active = eng.active or None
     async with eng._lock:
         await eng._restore_idle()
     assert eng.active is None and eng.phase.value == "none"
-    eng.blackout = True
+
+
+async def test_restore_idle_video_profile_loads_idle_clip(client, fake, tmp_path):  # noqa: F811
+    from spookhub import db
+    from spookhub.models import Media
+
+    idle = tmp_path / "idle.mp4"
+    idle.write_bytes(b"x")
+    with db.session() as s:
+        m = Media(filename="i.mp4", path=str(idle), duration_s=5)
+        s.add(m)
+        s.commit()
+        s.refresh(m)
+    r = await client.post(
+        "/api/profiles",
+        json={"name": "V", "type": "video", "media_id": m.id, "idle_media_id": m.id,
+              "playback_mode": "idle_trigger", "base_state": {"on": True}},
+    )  # fmt: skip
+    eng = client.hub.engine
+    await eng.activate(r.json()["id"])
+    fake.calls.clear()
     async with eng._lock:
         await eng._restore_idle()
-    assert eng.phase.value == "blackout"
+    assert fake.calls == [("load", str(idle))]
+    assert eng.phase.value == "idle"
+
+
+async def test_restore_idle_bails_when_something_took_over(client, fake):  # noqa: F811
+    eng = client.hub.engine
+    for attr, val in [
+        ("playing_main", True),
+        ("test_pattern", True),
+        ("audition", object()),
+        ("blackout", True),
+    ]:
+        fake.calls.clear()
+        setattr(eng, attr, val)
+        phase = eng.phase
+        async with eng._lock:
+            await eng._restore_idle()
+        assert fake.calls == [] and eng.phase == phase, attr
+        setattr(eng, attr, None if attr == "audition" else False)
+
+
+async def test_failing_restore_does_not_stick_busy_and_blackout_works(client, fake, monkeypatch):  # noqa: F811
+    eng = client.hub.engine
+
+    async def boom():
+        raise RuntimeError("restore failed")
+
+    monkeypatch.setattr(eng, "_restore_idle", boom)
+
+    async def start():
+        return True
+
+    async def wait():
+        return None
+
+    await eng.begin_setup(start, wait)
+    await wait_for(lambda: not eng.snapshot()["setup_busy"])
+    # And a cancel of a task that dies with an error must not raise into blackout.
+    ev = asyncio.Event()
+
+    async def wait2():
+        ev.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            raise RuntimeError("dies on cancel") from None
+
+    await eng.begin_setup(start, wait2)
+    await ev.wait()
+    await asyncio.wait_for(eng.set_blackout(True), 2)
+    assert eng.blackout and not eng.snapshot()["setup_busy"]
 
 
 async def _start_setup(client, fake, monkeypatch):  # noqa: F811
