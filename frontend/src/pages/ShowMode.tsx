@@ -22,7 +22,7 @@ function Header() {
       try {
         await api.showLock(!locked)
       } catch (e) {
-        if (!(e instanceof ApiError) || e.status !== 401 || !locked) throw e
+        if (!(e instanceof ApiError) || e.status !== 401 || !locked || !/pin/i.test(e.message)) throw e
         const pin = window.prompt('PIN to unlock')
         if (pin == null) return
         await api.showLock(false, pin)
@@ -202,7 +202,6 @@ function LevelSlider({ label, field, scale, max, unit }: {
 }
 
 const OFF: LightState = { on: false }
-const ON: LightState = { on: true }
 const WHITE: LightState = { on: true, bri: 255, colors: [[255, 255, 255]], fx: 0 }
 
 function BoardPanel() {
@@ -219,8 +218,14 @@ function BoardPanel() {
             <span className="truncate font-semibold">{b.name}</span>
           </div>
           <div className="grid grid-cols-3 gap-2">
-            {([['On', ON], ['Off', OFF], ['White', WHITE]] as const).map(([name, st]) => (
-              <button key={name} type="button" className="btn h-14 text-base" disabled={busy} onClick={() => void run(() => api.boards.setState(b.mac, st))}>
+            {([['Base', null], ['Off', OFF], ['White', WHITE]] as const).map(([name, st]) => (
+              <button
+                key={name}
+                type="button"
+                className="btn h-14 text-base"
+                disabled={busy}
+                onClick={() => void run(() => (st ? api.boards.setState(b.mac, st) : api.boards.clearManual(b.mac)))}
+              >
                 {name}
               </button>
             ))}

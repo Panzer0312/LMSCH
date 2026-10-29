@@ -20,6 +20,7 @@ function fmtErr(e: unknown): string {
   if (e instanceof ApiError && e.status === 409) {
     return `${e.message} (refused: show playing, blackout or setup busy)`
   }
+  if (e instanceof ApiError && e.status === 423) return 'Show mode is on'
   return e instanceof Error ? e.message : String(e)
 }
 
@@ -60,6 +61,7 @@ function useFallback(run: () => Promise<{ results: FallbackResult[] }>, msg: str
 }
 
 function FallbackAll() {
+  const locked = useLive().settings?.show_lock ?? false
   const fb = useFallback(
     () => api.boards.fallbackAll(),
     'Write fallback to ALL boards? This writes each board\'s flash (WLED preset 250 + boot preset) and needs an active profile. Not allowed while a show plays.',
@@ -67,9 +69,10 @@ function FallbackAll() {
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
-        <button className="btn" disabled={fb.busy} onClick={() => void fb.go()}>
+        <button className="btn" disabled={fb.busy || locked} onClick={() => void fb.go()}>
           {fb.busy ? 'Saving…' : 'Save fallback to boards'}
         </button>
+        {locked && <span className="text-xs text-mute">Show mode is on</span>}
         <span className="text-xs text-mute">Boards run this if the Pi dies. Needs an active profile.</span>
       </div>
       <ErrorText error={fb.error} />
@@ -79,10 +82,16 @@ function FallbackAll() {
 }
 
 function OffsetField({ board }: { board: Board }) {
+  const locked = useLive().settings?.show_lock ?? false
   const [draft, setDraft] = useState<string | null>(null)
+  const [saved, setSaved] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const shown = draft ?? String(board.offset_ms)
+
+  useEffect(() => {
+    if (saved !== null && board.offset_ms === saved) { setDraft(null); setSaved(null) }
+  }, [board.offset_ms, saved])
 
   const commit = async () => {
     if (draft === null) return
@@ -92,11 +101,13 @@ function OffsetField({ board }: { board: Board }) {
     setError(null)
     try {
       await api.boards.setOffset(board.mac, n)
+      setSaved(n)
+      setDraft(String(n))
     } catch (e) {
       setError(fmtErr(e))
+      setDraft(null)
     } finally {
       setBusy(false)
-      setDraft(null)
     }
   }
 
@@ -112,12 +123,13 @@ function OffsetField({ board }: { board: Board }) {
           step={1}
           inputMode="numeric"
           value={shown}
-          disabled={busy}
+          disabled={busy || locked}
           aria-label="Board offset in milliseconds"
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => { setSaved(null); setDraft(e.target.value) }}
           onBlur={() => void commit()}
           onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
         />
+        {locked && <span className="text-mute">Show mode is on</span>}
       </label>
       <ErrorText error={error} />
     </div>
@@ -274,6 +286,7 @@ function CheckList({ board, check, onCheck }: { board: Board; check: CheckResult
 
 function BoardCard({ board, check, onCheck }: { board: Board; check: CheckResult | undefined; onCheck: () => Promise<void> }) {
   const act = useAction()
+  const locked = useLive().settings?.show_lock ?? false
   const [renaming, setRenaming] = useState(false)
   const [name, setName] = useState(board.name)
   const [bri, setBri] = useState<number | null>(null)
@@ -374,7 +387,8 @@ function BoardCard({ board, check, onCheck }: { board: Board; check: CheckResult
 
       <div className="flex flex-wrap gap-2">
         <button className="btn" disabled={act.busy} onClick={() => act.run(() => api.boards.identify(board.mac))}>Identify</button>
-        <button className="btn" disabled={fb.busy} onClick={() => void fb.go()}>{fb.busy ? 'Saving…' : 'Save fallback'}</button>
+        <button className="btn" disabled={fb.busy || locked} onClick={() => void fb.go()}>{fb.busy ? 'Saving…' : 'Save fallback'}</button>
+        {locked && <span className="self-center text-xs text-mute">Show mode is on</span>}
         <a className="btn" href={`http://${board.ip}`} target="_blank" rel="noreferrer">WLED UI</a>
         <button className="btn" disabled={act.busy} onClick={() => act.run(() => api.boards.refresh(board.mac))}>Refresh</button>
         {!renaming && (

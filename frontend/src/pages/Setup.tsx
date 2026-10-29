@@ -8,16 +8,27 @@ import { SetupStep, type StepStatus } from '../components/SetupStep'
 import { ago, useAction } from '../lib'
 
 const LOCK_HINT = 'A show is playing or setup is busy. Stop the show to change this.'
+const SHOW_LOCK_HINT = 'Show mode is on — turn it off in Settings or Show mode'
+
+function useLockHint() {
+  const { settings } = useLive()
+  return settings?.show_lock ? SHOW_LOCK_HINT : LOCK_HINT
+}
 
 /** Debounced async sender: latest value wins after `ms` of quiet. */
 function useDebounced<T>(fn: (v: T) => void, ms = 250) {
   const t = useRef<number | undefined>(undefined)
+  const pending = useRef<{ v: T } | null>(null)
   const f = useRef(fn)
   useEffect(() => { f.current = fn }, [fn])
-  useEffect(() => () => window.clearTimeout(t.current), [])
+  useEffect(() => () => {
+    window.clearTimeout(t.current)
+    if (pending.current) { const { v } = pending.current; pending.current = null; f.current(v) }
+  }, [])
   return useCallback((v: T) => {
     window.clearTimeout(t.current)
-    t.current = window.setTimeout(() => f.current(v), ms)
+    pending.current = { v }
+    t.current = window.setTimeout(() => { pending.current = null; f.current(v) }, ms)
   }, [ms])
 }
 
@@ -28,7 +39,7 @@ function Slider({ label, value, min, max, step, unit, disabled, onChange }: {
   return (
     <label className="block space-y-1 text-sm">
       <span className="flex justify-between gap-2">
-        <span>{label}</span>
+        <span className="min-w-0 truncate">{label}</span>
         <span className="font-mono text-mute">{value}{unit}</span>
       </span>
       <input type="range" className="w-full accent-pumpkin" min={min} max={max} step={step}
@@ -38,12 +49,17 @@ function Slider({ label, value, min, max, step, unit, disabled, onChange }: {
 }
 
 /** Local value, immediate UI, debounced send. */
-function LiveSlider(props: Omit<Parameters<typeof Slider>[0], 'onChange'> & { send: (v: number) => void }) {
+function LiveSlider(props: Omit<Parameters<typeof Slider>[0], 'onChange'> & { send: (v: number) => Promise<unknown> }) {
   const { send, value, ...rest } = props
   const [v, setV] = useState(value)
   const dragging = useRef(false)
+  const valueRef = useRef(value)
+  valueRef.current = value
   useEffect(() => { if (!dragging.current) setV(value) }, [value])
-  const deb = useDebounced((x: number) => { send(x); dragging.current = false })
+  const deb = useDebounced((x: number) => {
+    void send(x).then(() => undefined, () => setV(valueRef.current))
+      .finally(() => { dragging.current = false })
+  })
   return <Slider {...rest} value={v} onChange={(x) => { dragging.current = true; setV(x); deb(x) }} />
 }
 
@@ -51,6 +67,7 @@ function ProjectorStep({ locked }: { locked: boolean }) {
   const { settings, show } = useLive()
   const [outputs, setOutputs] = useState<DrmOutput[] | null>(null)
   const act = useAction()
+  const lockHint = useLockHint()
   const [conn, setConn] = useState('')
   const [mode, setMode] = useState('')
 
@@ -74,7 +91,7 @@ function ProjectorStep({ locked }: { locked: boolean }) {
   }
 
   return (
-    <SetupStep n={1} title="Projector output" status={status} hint={locked ? LOCK_HINT : null}>
+    <SetupStep n={1} title="Projector output" status={status} hint={locked ? lockHint : null}>
       <div className="grid gap-2 sm:grid-cols-2">
         <select className="input" value={conn} disabled={locked || !outputs}
           onChange={(e) => { setConn(e.target.value); setMode('') }}>
@@ -88,7 +105,7 @@ function ProjectorStep({ locked }: { locked: boolean }) {
       </div>
       <div className="flex flex-wrap gap-2">
         <button className="btn btn-primary" disabled={locked || act.busy || !dirty} onClick={apply}>Apply (restarts player)</button>
-        <button className="btn" disabled={locked} onClick={() => void act.run(() => api.show.testPattern(!show?.test_pattern))}>
+        <button className="btn" disabled={locked && !show?.test_pattern} onClick={() => void act.run(() => api.show.testPattern(!show?.test_pattern))}>
           {show?.test_pattern ? 'Hide test pattern' : 'Show test pattern on this output'}
         </button>
       </div>
@@ -102,6 +119,7 @@ function AudioStep({ locked }: { locked: boolean }) {
   const [devs, setDevs] = useState<AudioDevice[] | null>(null)
   const act = useAction()
   const sound = useAction()
+  const lockHint = useLockHint()
 
   const load = useCallback(() => {
     api.setup.audioDevices().then(setDevs).catch((e) => act.setError(e instanceof Error ? e.message : String(e)))
@@ -109,19 +127,22 @@ function AudioStep({ locked }: { locked: boolean }) {
   }, [])
   useEffect(load, [load])
 
-  const put = (p: Parameters<typeof api.settings.update>[0]) => void act.run(() => api.settings.update(p))
+  const put = (p: Parameters<typeof api.settings.update>[0]) => {
+    act.setError(null)
+    return api.settings.update(p).catch((e) => { act.setError(e instanceof Error ? e.message : String(e)); throw e })
+  }
   const status: StepStatus = !settings ? 'unknown' : settings.mpv_audio_device ? 'ok' : 'warn'
 
   return (
-    <SetupStep n={2} title="Audio output" status={status} hint={locked ? LOCK_HINT : null}>
+    <SetupStep n={2} title="Audio output" status={status} hint={locked ? lockHint : null}>
       <select className="input" value={settings?.mpv_audio_device ?? ''} disabled={locked || !devs}
-        onChange={(e) => put({ mpv_audio_device: e.target.value || null })}>
+        onChange={(e) => void put({ mpv_audio_device: e.target.value || null }).catch(() => undefined)}>
         <option value="">Default</option>
         {(devs ?? []).map((d) => <option key={d.name} value={d.name}>{d.description || d.name}</option>)}
       </select>
       {settings && (
         <>
-          <LiveSlider label="Volume" value={settings.master_volume} min={0} max={130} step={1} unit="%"
+          <LiveSlider label="Volume" value={settings.master_volume} min={0} max={settings.volume_cap || 130} step={1} unit="%"
             disabled={locked} send={(v) => put({ master_volume: v })} />
           <LiveSlider label="Audio delay" value={settings.audio_delay_s} min={-1} max={1} step={0.01} unit=" s"
             disabled={locked} send={(v) => put({ audio_delay_s: v })} />
@@ -144,6 +165,7 @@ function BoardsStep({ locked }: { locked: boolean }) {
   const [res, setRes] = useState<Findings | null>(null)
   const [busy, setBusy] = useState(false)
   const fix = useAction()
+  const lockHint = useLockHint()
 
   const check = async (boards: Board[]) => {
     setBusy(true)
@@ -166,7 +188,7 @@ function BoardsStep({ locked }: { locked: boolean }) {
     : online.length < adopted.length ? 'warn' : res ? (issues ? 'warn' : 'ok') : 'ok'
 
   return (
-    <SetupStep n={3} title="Boards" status={status} hint={locked ? LOCK_HINT : null}>
+    <SetupStep n={3} title="Boards" status={status} hint={locked ? lockHint : null}>
       <p className="text-sm">{online.length} online / {adopted.length} adopted</p>
       <div className="flex flex-wrap gap-2">
         <button className="btn" disabled={locked || busy || online.length === 0} onClick={() => void check(online)}>
@@ -227,7 +249,24 @@ function TriggerStep() {
   const origin = window.location.origin
   const tok = token ?? '<token>'
   const curl = `curl -X POST -H "X-Trigger-Token: ${tok}" ${origin}/api/trigger`
-  const esp = `http_request:\n  verify_ssl: false\n\n# in your trigger automation:\n- http_request.post:\n    url: ${origin}/api/trigger\n    headers:\n      X-Trigger-Token: ${tok}`
+  const esp = [
+    'http_request:',
+    '',
+    'binary_sensor:',
+    '  - platform: gpio',
+    '    pin: GPIO13',
+    '    name: "PIR"',
+    '    device_class: motion',
+    '    on_press:',
+    '      then:',
+    '        - http_request.post:',
+    `            url: ${origin}/api/trigger`,
+    ...(token ? ['            request_headers:', `              X-Trigger-Token: ${token}`] : []),
+  ].join('\n')
+  const sendTest = async () => {
+    const r = await fetch('/api/trigger', { method: 'POST', headers: token ? { 'X-Trigger-Token': token } : {} })
+    if (!r.ok) throw new Error(`${r.status} ${(await r.text().catch(() => '')).slice(0, 200)}`.trim())
+  }
 
   const gen = () => {
     const bytes = new Uint8Array(16)
@@ -252,7 +291,7 @@ function TriggerStep() {
         <span className="text-mute">
           {lt ? `Last trigger ${ago(lt.ts)} from ${lt.source}${lt.accepted ? '' : ' (rejected)'}` : 'waiting for trigger…'}
         </span>
-        <button className="btn ml-auto" disabled={test.busy} onClick={() => void test.run(() => api.show.trigger())}>Test trigger</button>
+        <button className="btn ml-auto" disabled={test.busy} onClick={() => void test.run(sendTest)}>Send test trigger</button>
       </div>
       <ErrorText error={act.error ?? test.error} />
     </SetupStep>
@@ -263,13 +302,18 @@ function CalibrationStep({ locked, playing }: { locked: boolean; playing: boolea
   const { show, settings } = useLive()
   const boards = useAdoptedBoards()
   const act = useAction()
+  const lockHint = useLockHint()
   const on = show?.calibrating ?? false
-  const put = (v: number) => void act.run(() => api.settings.update({ sync_offset_ms: v }))
-  const setOff = (mac: string, v: number) => void act.run(() => api.boards.setOffset(mac, v))
+  const track = <T,>(p: Promise<T>) => {
+    act.setError(null)
+    return p.catch((e) => { act.setError(e instanceof Error ? e.message : String(e)); throw e })
+  }
+  const put = (v: number) => track(api.settings.update({ sync_offset_ms: v }))
+  const setOff = (mac: string, v: number) => track(api.boards.setOffset(mac, v))
 
   return (
     <SetupStep n={5} title="Sync calibration" status={on ? 'warn' : 'unknown'}
-      hint={!on && locked ? LOCK_HINT : null}>
+      hint={!on && locked ? lockHint : null}>
       <p className="text-sm text-mute">Watch projector and LEDs. Move slider until flashes match.</p>
       <div className="flex flex-wrap gap-2">
         {on ? (
@@ -294,7 +338,9 @@ function CalibrationStep({ locked, playing }: { locked: boolean; playing: boolea
 export default function Setup() {
   const { show } = useLive()
   const playing = show?.phase === 'playing' || show?.phase === 'paused'
-  const locked = playing || (show?.setup_busy ?? false)
+  const { settings } = useLive()
+  const locked = playing || (show?.setup_busy ?? false) || !!show?.blackout || !!show?.test_pattern
+    || !!show?.audition || !!settings?.show_lock
 
   return (
     <div className="space-y-4">

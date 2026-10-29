@@ -150,18 +150,21 @@ function LevelSlider({ label, field, scale, max }: {
     dragging.current = false
   }
 
+  const top = Math.max(1, Math.round(max))
+  const shown = Math.min(val, top)
+
   return (
     <div className="card space-y-2">
       <div className="flex items-center justify-between">
         <span className="label mb-0">{label}</span>
-        <span className="text-sm font-semibold tabular-nums">{val} %</span>
+        <span className="text-sm font-semibold tabular-nums">{shown} %</span>
       </div>
       <input
         type="range"
         min={0}
-        max={Math.max(1, Math.round(max))}
+        max={top}
         step={1}
-        value={val}
+        value={shown}
         disabled={live == null}
         onChange={(e) => onInput(Number(e.target.value))}
         onPointerUp={end}
@@ -304,15 +307,18 @@ function History() {
   const key = last ? `${last.ts}|${last.message}` : ''
   const [rows, setRows] = useState<EventRow[]>([])
   const [stats, setStats] = useState<EventStats | null>(null)
-  const { error, run } = useAction()
+  const listAct = useAction()
+  const statsAct = useAction()
+  const runList = listAct.run
+  const runStats = statsAct.run
   const first = useRef(true)
 
   useEffect(() => {
     let cancelled = false
     const load = async () => {
       const [r, s] = await Promise.all([
-        run(() => api.events.list({ limit: 100 })),
-        run(() => api.events.stats(tonightStart())),
+        runList(() => api.events.list({ limit: 100 })),
+        runStats(() => api.events.stats(tonightStart())),
       ])
       if (cancelled) return
       if (r) setRows(r)
@@ -324,7 +330,7 @@ function History() {
       cancelled = true
       window.clearTimeout(t)
     }
-  }, [key, run])
+  }, [key, runList, runStats])
 
   const bars = stats?.by_hour ?? []
   const peak = Math.max(1, ...bars.map((b) => b.count))
@@ -348,7 +354,7 @@ function History() {
             ))}
           </div>
         )}
-        <ErrorText error={error} />
+        <ErrorText error={statsAct.error ?? listAct.error} />
       </div>
       <div className="card p-0">
         {rows.length === 0 ? (
