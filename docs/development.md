@@ -36,4 +36,11 @@ cd frontend && npx tsc -b && npm run lint
 | `test_queue.py` | Latest-wins queue |
 | `test_reconcile.py` | Reconnect + IP change by MAC |
 | `test_api.py`, `test_timeline_api.py`, `test_polish.py` | REST endpoints, M2/M3 features |
+| `test_audio_caps.py` | Volume/brightness caps, audio args, device revert, version in state |
+| `test_setup.py` | Output/audio discovery, test sound, setup activity, trigger tracking |
+| `test_preflight.py` | Each check, publish-on-change, test-all, mpv restart grace |
+| `test_calibration.py` | Calibration state machine, per-board offset in scheduler, clip |
+| `test_lock_events.py` | Lock matrix (codes), EventLog writer, history and stats |
+| `test_resilience.py` | Stall recovery, sd_notify, board fallback preset |
+| `test_clear_manual.py` | `DELETE /boards/{mac}/state` |
 | `test_e2e.py` | Real mpv (null out) + simulator; every cue within ±100 ms, prints error |

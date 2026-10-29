@@ -4,7 +4,7 @@ Five phases after M1–M3. Each phase ships deployable, tested, documented (see 
 
 | Phase | File | Theme | Status |
 |---|---|---|---|
-| 1 | [phase-1-show-night.md](phase-1-show-night.md) | Show-night reliability, device setup, sound/light helpers | not started |
+| 1 | [phase-1-show-night.md](phase-1-show-night.md) | Show-night reliability, device setup, sound/light helpers | built, hardware untested |
 | 2 | [phase-2-timeline-qol.md](phase-2-timeline-qol.md) | Timeline editing quality of life | not started |
 | 3 | [phase-3-video-setup.md](phase-3-video-setup.md) | Video setup page: geometry, keystone, display profiles, alignment patterns | not started |
 | 4 | [phase-4-scenes-audio-ambient.md](phase-4-scenes-audio-ambient.md) | Scenes/playlists, audio-only cues, ambient layer, moments page | not started |
