@@ -213,7 +213,11 @@ class BoardManager:
     def push(self, mac: str, critical: bool = False) -> None:
         """Deliver the current desired state for a board (no-op if nothing desired)."""
         b = self.boards.get(mac)
-        if not b or not b.adopted or b.queue is None or b.saving_fallback:
+        if not b or not b.adopted or b.queue is None:
+            return
+        # Blackout is the safety control: it must reach the board even mid fallback save
+        # (the save aborts at its next step and replays this afterwards).
+        if b.saving_fallback and not self.blackout:
             return
         state = self.desired(b)
         if state is None:
@@ -302,12 +306,18 @@ class BoardManager:
                                 await asyncio.sleep(0.02)
                     except TimeoutError:
                         return "board busy"
+                if self.blackout:
+                    return "blackout active"
                 await self.wled.set_state(b.ip, payload, FALLBACK_WRITE_TIMEOUT_S)
+                if self.blackout:
+                    return "blackout active"
                 await self.wled.set_state(
                     b.ip,
                     {"psave": FALLBACK_PRESET, "n": FALLBACK_NAME, "ib": True, "sb": True},
                     FALLBACK_WRITE_TIMEOUT_S,
                 )
+                if self.blackout:
+                    return "blackout active"
                 await self.wled.set_cfg(
                     b.ip, {"def": {"ps": FALLBACK_PRESET, "on": True}}, FALLBACK_WRITE_TIMEOUT_S
                 )

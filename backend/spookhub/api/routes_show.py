@@ -12,6 +12,7 @@ from spookhub.models import RuntimeSettings
 
 router = APIRouter(prefix="/api", tags=["show"])
 HubDep = Annotated[Hub, Depends(get_hub)]
+PLAYER_KEYS = ("mpv_vo", "mpv_gpu_context", "mpv_drm_connector", "mpv_drm_mode", "mpv_audio_device")
 
 
 class PlayIn(BaseModel):
@@ -108,11 +109,13 @@ async def blackout(body: FlagIn, hub: HubDep) -> dict[str, bool]:
 
 
 @router.post("/show_lock")
-def show_lock(body: LockIn, hub: HubDep) -> dict[str, bool]:
+async def show_lock(body: LockIn, hub: HubDep) -> dict[str, bool]:
     """Turning the lock on is always allowed; turning it off needs the PIN when one is set."""
     if not body.on and hub.auth.pin_enabled and not hub.auth.check_pin(body.pin or ""):
         raise HTTPException(401, "wrong PIN")
     hub.settings.update(show_lock=body.on)  # publishes "settings"
+    if body.on:
+        await hub.engine.end_setup_for_lock()
     return {"show_lock": body.on}
 
 
@@ -126,6 +129,12 @@ async def put_settings(body: dict[str, Any], hub: HubDep) -> RuntimeSettings:
     body.pop("active_profile_id", None)  # owned by the engine
     body.pop("show_lock", None)  # owned by the lock endpoints
     s = hub.settings.value
+    # These restart mpv: never under a running show or setup action.
+    changed = [k for k in PLAYER_KEYS if k in body and body[k] != getattr(s, k)]
+    if changed:
+        why = hub.engine.player_blocker()
+        if why:
+            raise HTTPException(409, f"cannot change {', '.join(changed)}: {why}")
 
     # Caps may change in the same request, so clamp against the effective new cap.
     def num(key: str, default: float) -> float:

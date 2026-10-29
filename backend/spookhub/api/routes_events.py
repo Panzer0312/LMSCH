@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
-from sqlmodel import col, select
+from sqlalchemy import Integer, cast
+from sqlmodel import col, func, select
 
 from spookhub import db
 from spookhub.api.deps import get_hub
@@ -28,33 +30,44 @@ async def list_events(
     if kind:
         q = q.where(EventLog.kind == kind)
     q = q.order_by(col(EventLog.ts).desc(), col(EventLog.id).desc()).limit(limit)
-    with db.session() as s:
-        return [
-            {
-                "id": e.id,
-                "ts": e.ts,
-                "level": e.level,
-                "kind": e.kind,
-                "message": e.message,
-                "data": e.data or {},
-            }  # fmt: skip
-            for e in s.exec(q)
-        ]
+
+    def query() -> list[dict[str, Any]]:
+        with db.session() as s:
+            return [
+                {
+                    "id": e.id,
+                    "ts": e.ts,
+                    "level": e.level,
+                    "kind": e.kind,
+                    "message": e.message,
+                    "data": e.data or {},
+                }  # fmt: skip
+                for e in s.exec(q)
+            ]
+
+    # SQLite I/O off the event loop: the scheduler fires cues from it.
+    return await asyncio.to_thread(query)
 
 
 @router.get("/stats")
 async def stats(hub: HubDep, since: float | None = None) -> dict[str, Any]:
     await hub.events.flush()
     t0 = since if since is not None else time.time() - 24 * HOUR
-    with db.session() as s:
-        stamps = s.exec(
-            select(EventLog.ts).where(EventLog.kind == "trigger", EventLog.ts >= t0)
-        ).all()
-    buckets: dict[int, int] = {}
-    for ts in stamps:
-        h = int(ts // HOUR) * HOUR
-        buckets[h] = buckets.get(h, 0) + 1
+    # Integer cast truncates; equal to floor for the positive epoch stamps stored here.
+    hour = (cast(col(EventLog.ts) / HOUR, Integer) * HOUR).label("hour")
+    q = (
+        select(hour, func.count())
+        .where(EventLog.kind == "trigger", EventLog.ts >= t0)
+        .group_by(hour)
+        .order_by(hour)
+    )
+
+    def query() -> list[tuple[float, int]]:
+        with db.session() as s:
+            return [(h, c) for h, c in s.exec(q)]
+
+    rows = await asyncio.to_thread(query)
     return {
-        "triggers": len(stamps),
-        "by_hour": [{"hour_ts": h, "count": c} for h, c in sorted(buckets.items())],
+        "triggers": sum(c for _, c in rows),
+        "by_hour": [{"hour_ts": int(h), "count": c} for h, c in rows],
     }

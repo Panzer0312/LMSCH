@@ -123,6 +123,7 @@ class Preflight:
             self._clock,
             self._mpv_restarts,
             self._trigger_recent,
+            self._setup_idle,
         ):
             try:
                 checks.append(await fn())
@@ -297,9 +298,25 @@ class Preflight:
         a = self.hub.engine.active
         if a is None or a.mode != PlaybackMode.idle_trigger:
             return _c("trigger_recent", label, "ok", "not needed")
-        lt = self.hub.engine.last_trigger
-        ref = max(lt["ts"], self._started) if lt else self._started
+        # Only accepted external triggers prove the sensor path; UI buttons and refusals do not.
+        seen = self.hub.engine.last_external_ts
+        ref = max(seen, self._started) if seen is not None else self._started
         age = self.now() - ref
         if age >= TRIGGER_STALE_S:
             return _c("trigger_recent", label, "warn", f"none in {age / 60:.0f} min", "/setup")
-        return _c("trigger_recent", label, "ok", "recent" if lt else "waiting")
+        return _c("trigger_recent", label, "ok", "recent" if seen is not None else "waiting")
+
+    async def _setup_idle(self) -> Check:
+        # A forgotten setup action refuses every trigger.
+        label = "No setup running"
+        snap = self.hub.engine.snapshot()
+        busy = []
+        if snap["calibrating"]:
+            busy.append("calibration")  # itself the setup task, so not "setup test" too
+        elif snap["setup_busy"]:
+            busy.append("setup test")
+        if snap["test_pattern"]:
+            busy.append("test pattern")
+        if busy:
+            return _c("setup_idle", label, "fail", "running: " + ", ".join(busy), "/setup")
+        return _c("setup_idle", label, "ok", "idle")

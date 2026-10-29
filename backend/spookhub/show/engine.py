@@ -162,6 +162,12 @@ class ShowEngine:
         self.cooldown_until = 0.0
         self.playing_main = False
         self.last_trigger: dict[str, Any] | None = None
+        # time.time() of the last accepted external trigger: the sensor-works signal.
+        self.last_external_ts: float | None = None
+        self._pattern_image: str | None = None
+        self._calib_clip: str | None = None
+        # One player recovery (stall or crash) per play; a second failure ends the show.
+        self._recovered = False
         self._setup_task: asyncio.Task[None] | None = None
         self._setup_cleanup: Callable[[], None] | None = None
         self.calibrating = False
@@ -198,9 +204,12 @@ class ShowEngine:
                 log.exception("could not restore active profile %s", pid)
 
     async def stop(self) -> None:
-        for t in (self._sched, self._pub):
-            if t:
-                t.cancel()
+        await self._cancel_setup()
+        tasks = [t for t in (self._stall_task, self._sched, self._pub) if t]
+        self._stall_task = self._sched = self._pub = None
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     # ----- state for UI -----
 
@@ -342,6 +351,8 @@ class ShowEngine:
                 "accepted": accepted,
                 "message": message,
             }
+            if accepted and source == "external":
+                self.last_external_ts = self.last_trigger["ts"]
             self.bus.publish("trigger_seen", self.last_trigger)
         return accepted, message
 
@@ -420,6 +431,7 @@ class ShowEngine:
             await self._go_idle()
             return False
         self.playing_main = True
+        self._recovered = False
         self.phase = Phase.playing
         assert self.timeline
         self._start_scheduler(a, self.timeline, self._player_clock)
@@ -462,15 +474,19 @@ class ShowEngine:
         self._sched = None
 
     def _on_player_change(self, prop: str) -> None:
+        if prop == "restart":
+            if self._stall_pending:
+                self._stall_restarted.set()  # our own stall restart
+            elif self.playing_main:
+                spawn(self._crash_resume())
+            else:
+                # A fresh mpv shows nothing: put back whatever the current phase wants.
+                spawn(self._reapply_phase())
+            return
         if not self.playing_main:
             return
         if prop == "eof-reached" and self.player.eof:
             spawn(self._finish("ended"))
-        elif prop == "restart" and self._stall_pending:
-            self._stall_restarted.set()  # our own stall restart, not a crash
-        elif prop == "restart":
-            # mpv crashed mid-show: return to a defined state rather than guess.
-            spawn(self._finish("interrupted (player restarted)"))
         elif prop == "pause":
             if not self.player.paused:
                 self._resumed_mono = time.monotonic()
@@ -483,6 +499,42 @@ class ShowEngine:
                 await self._end_show(reason)
         self._publish()
 
+    async def _crash_resume(self) -> None:
+        """mpv died mid-show and came back: resume once where it was, like a stall."""
+        a = self.active
+        if not self.playing_main or a is None:
+            return
+        if self._recovered:
+            self.bus.event("error", "video player restarted again, ending show", kind="player")
+            await self._finish("interrupted (player restarted)")
+            return
+        self._recovered = True
+        at = self._last_t or 0.0
+        self.bus.event("warn", "video player restarted, resuming", kind="player")
+        if not await self._resume(a, at):
+            await self._finish("interrupted (player did not recover)")
+
+    async def _reapply_phase(self) -> None:
+        """Player (re)started outside a show: restore the picture of the current phase."""
+        async with self._lock:
+            if self.playing_main:
+                return
+            if self.blackout:
+                await self._safe(self.player.black())
+            elif self.test_pattern and self._pattern_image:
+                await self._safe(self.player.load(self._pattern_image, loop=True))
+            elif self.calibrating and self._calib_clip:
+                if await self._safe(self.player.load(self._calib_clip, loop=True)):
+                    self._last_cue = {m: None for m in self._last_cue}
+                    self._last_t = None
+            elif self._setup_task is not None:
+                return  # short test (sound / test-all): its runner restores idle at the end
+            elif self.active and self.active.type == ProfileType.video:
+                await self._go_idle()
+            else:
+                await self._safe(self.player.black())
+        self._publish()
+
     # ----- stall watchdog -----
 
     def _stalled(self) -> bool:
@@ -492,8 +544,7 @@ class ShowEngine:
         return time.monotonic() - max(p.pos_mono, self._resumed_mono) >= self.stall_s
 
     async def _stall_watch(self, a: ActiveProfile) -> None:
-        """Restart a frozen mpv once and resume; a second freeze in the same play ends the show."""
-        recovered = False
+        """Restart a frozen mpv once and resume; a second failure in the same play ends the show."""
         seen: float | None = None
         while True:
             await asyncio.sleep(self.stall_poll_s)
@@ -503,11 +554,11 @@ class ShowEngine:
             if seen != self.player.time_pos:  # confirm on a second poll at the same position
                 seen = self.player.time_pos
                 continue
-            if recovered:
+            if self._recovered:
                 self.bus.event("error", "video stalled again, ending show", kind="player")
                 await self._finish("stalled")
                 return
-            recovered = True
+            self._recovered = True
             at = self.player.time_pos or 0.0
             self.bus.event("warn", "video stalled, restarting", kind="player")
             if not await self._restart_and_resume(a, at):
@@ -525,8 +576,12 @@ class ShowEngine:
             return False
         finally:
             self._stall_pending = False
+        return await self._resume(a, at)
+
+    async def _resume(self, a: ActiveProfile, at: float) -> bool:
+        """Reload the show video at `at` on a freshly started player."""
         async with self._lock:
-            if not self.playing_main:
+            if not self.playing_main or self.active is not a:
                 return True  # show ended meanwhile; nothing to resume
             assert a.media_path
             loop = a.mode == PlaybackMode.loop
@@ -671,6 +726,9 @@ class ShowEngine:
             async with self._lock:
                 if self._setup_task is not None:
                     raise SetupBusy("setup test running")
+                if self.blackout:
+                    raise SetupBusy("blackout active")
+                self._pattern_image = image
                 await self._stop_scheduler()
                 if self.playing_main:
                     self.playing_main = False
@@ -694,6 +752,31 @@ class ShowEngine:
         self._publish()
 
     # ----- setup activities (test sound now; test-all / calibration later) -----
+
+    def player_blocker(self) -> str | None:
+        """Why mpv output settings (restart the player) may not change now, or None."""
+        if self.playing_main:
+            return "a show is playing"
+        if self._setup_task is not None:
+            return "setup test running"
+        return None
+
+    async def end_setup_for_lock(self) -> None:
+        """Show lock on: a forgotten calibration / test / test pattern would refuse every
+        trigger all night, and the lock blocks the setup pages that could clear it."""
+        had_setup = self._setup_task is not None
+        await self._cancel_setup()  # outside the lock: a slow test must not delay this
+        async with self._lock:
+            had_setup = had_setup or self._setup_task is not None
+            await self._cancel_setup()
+            if had_setup:
+                # Cancel skips the runner's restore; calibration cleanup left boards unset.
+                if not (self.playing_main or self.audition is not None or self.blackout):
+                    self._apply_base(critical=False)
+                await self._restore_idle()
+        if self.test_pattern:
+            await self.set_test_pattern(False)
+        self._publish()
 
     def fallback_blocker(self) -> str | None:
         """Why board fallback may not be saved now (it rewrites live boards), or None."""
@@ -852,6 +935,7 @@ class ShowEngine:
             return
         assert clip
         self._calib_off = asyncio.Event()
+        self._calib_clip = clip
 
         async def start() -> bool:
             if not (
@@ -923,6 +1007,9 @@ class ShowEngine:
                 await self._stop_scheduler()
                 self.playing_main = False
                 self.audition = None
+                if self.test_pattern:
+                    self.test_pattern = False
+                    self.bus.event("info", "Test pattern off")
                 await self._safe(self.player.black())
             self.phase = Phase.blackout
             self.bus.event("warn", "BLACKOUT engaged")

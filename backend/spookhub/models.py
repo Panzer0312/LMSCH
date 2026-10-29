@@ -187,7 +187,7 @@ class ProfileOut(ProfileIn):
 class RuntimeSettings(BaseModel):
     """Settings editable from the UI, stored in the DB."""
 
-    sync_offset_ms: float = 0.0
+    sync_offset_ms: float = Field(default=0.0, ge=-2000, le=2000, allow_inf_nan=False)
     master_brightness: float = Field(default=1.0, ge=0, le=1)
     health_interval_s: float = Field(default=3.0, ge=0.5, le=60)
     default_transition_ms: int = Field(default=0, ge=0)

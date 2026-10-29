@@ -277,3 +277,19 @@ async def test_locked_settings_chunked_body(client):
     assert r.status_code == 200 and client.hub.settings.value.master_volume == 0.3
     r = await client.put("/api/settings", content=gen(b" " * 5000 + b"{}"), headers=J)
     assert r.status_code == 413
+
+
+async def test_stats_groups_by_hour(client):
+    base = (int(time.time()) // 3600 - 3) * 3600
+    with db.session() as s:
+        for ts in (base + 10, base + 3599, base + 3600, base + 7300.5):
+            s.add(EventLog(ts=ts, level="info", kind="trigger", message="t"))
+        s.add(EventLog(ts=base + 20, level="info", kind="info", message="x"))
+        s.commit()
+    r = (await client.get("/api/events/stats", params={"since": base})).json()
+    assert r["triggers"] == 4
+    assert r["by_hour"] == [
+        {"hour_ts": base, "count": 2},
+        {"hour_ts": base + 3600, "count": 1},
+        {"hour_ts": base + 7200, "count": 1},
+    ]

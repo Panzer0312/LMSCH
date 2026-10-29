@@ -31,18 +31,22 @@ or show mode is on.
 
 ## Preflight
 
-Ten checks, each ok, warn or fail, with a fix link: boards online, latency (< 100 ms), WiFi sleep,
+Eleven checks, each ok, warn or fail, with a fix link: boards online, latency (< 100 ms), WiFi sleep,
 mpv, audio device, active profile media, disk (> 2 GB), clock sync, mpv restarts last hour, recent
-trigger (warn only, `idle_trigger` profiles, 30 min). Re-run every 10 s, pushed on change. The
+trigger (warn only, `idle_trigger` profiles, 30 min, accepted external triggers only), no setup
+running (fail while calibration, a setup test or the test pattern is on). Re-run every 10 s, pushed on change. The
 Dashboard banner shows when any check fails.
 
 ## Show mode
 
 - **Lock** (`show_lock`, toggle on `/show` or Settings): editing endpoints return 423 and the UI
   shows "Show mode is on". Show controls stay open. Unlocking needs the PIN when one is set.
+  Turning the lock on stops calibration, test sound, test-all and the test pattern.
 - **`/show` page:** Trigger, Play/Stop, Next, Blackout, brightness and volume sliders (limited by
   the caps), current profile + progress, preflight dot, per-board Base / Off / White buttons.
-  "Base" clears the manual override so the profile look returns.
+  "Base" clears the manual override so the profile look returns. A red banner shows while
+  calibration, a setup test or the test pattern runs (triggers are refused); its "Stop" turns
+  calibration / test pattern off, also under the lock.
 - **Caps:** `brightness_cap` and `volume_cap` limit the master sliders everywhere.
 
 ## History
@@ -84,10 +88,12 @@ from the persistent log. Events survive restarts and are kept 7 days.
   ```bash
   curl -X POST http://spookhub.local:8080/api/trigger -H "X-Trigger-Token: <token>"
   ```
-- **Failure fallbacks:** frozen video is restarted and resumed once, then the show ends in idle.
+- **Failure fallbacks:** frozen or crashed video is restarted and resumed once, then the show ends
+  in idle.
   "Save fallback" writes the board's base look as WLED preset 250 and sets it as boot preset, so a
   power-cycled board boots into it without the hub. Manual, since it writes flash. Needs an active
   profile base or a manual state, and refuses during a show, blackout or setup action.
 - **Test pattern:** alignment grid on projector. Stops any show; off ⇒ back to active profile idle.
+  Blackout turns it off and it cannot be turned on during blackout.
 - **Backups:** zip of DB + config, no media. Restore stages DB and restarts. Restored config goes to
   `/var/lib/spookhub/config.restored.toml` (since `/etc` is read-only for the service), copy by hand.

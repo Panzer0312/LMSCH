@@ -43,7 +43,7 @@
 | `show/testpattern.py` | ffmpeg-rendered alignment grid PNG, cached in data dir |
 | `show/sounds.py` | ffmpeg-rendered test sound WAV, cached in data dir |
 | `show/calibration.py` | Sync calibration clip (20 s, 50 fps, white flash + 1 kHz beep every 2 s) and its flash cues |
-| `show/preflight.py` | `Preflight` service: 10 checks, re-run every 10 s, publishes WS `preflight` on change only |
+| `show/preflight.py` | `Preflight` service: 11 checks, re-run every 10 s, publishes WS `preflight` on change only |
 | `player/devices.py` | Pure parsing: DRM connectors/modes from sysfs, mpv `audio-device-list` |
 | `api/routes_setup.py` | `/api/setup/*` and `/api/preflight*` |
 | `api/routes_events.py` | `GET /api/events`, `/api/events/stats` |
@@ -63,7 +63,7 @@
 | `Setting` | key/value JSON. Key `runtime` holds `RuntimeSettings` |
 
 `LightState`: preset? or explicit on, bri, fx, pal, colors (≤3 RGB), sx, ix, transition_ms.
-`RuntimeSettings`: sync_offset_ms, master_brightness (0–1), health_interval_s,
+`RuntimeSettings`: sync_offset_ms (±2000), master_brightness (0–1), health_interval_s,
 default_transition_ms, log_level, mpv_vo, mpv_gpu_context, mpv_drm_connector, mpv_drm_mode,
 mpv_audio_device, master_volume (0–130), volume_cap, brightness_cap, audio_delay_s (±5),
 show_lock, active_profile_id. Values above a cap are clamped, and lowering a cap also lowers the
@@ -83,18 +83,26 @@ current master value.
   offset, resolve active cue, send only on change. Cue start/end, loop wrap, seek share one path.
 - **Presets** are expanded from cached `presets.json` into explicit state, because WLED applies `ps`
   async and would override brightness sent in the same request.
-- **mpv** is a supervised child; auto-restart with backoff. Death mid-show ⇒ boards to base, engine idle.
+- **mpv** is a supervised child; auto-restart with backoff. Death mid-show ⇒ resume at the last
+  position (counts as the play's one recovery, shared with the stall watch); a second failure ⇒
+  boards to base, engine idle. Restart outside a show re-applies the phase picture (idle clip,
+  test pattern, calibration clip or black).
 - **Stall watch.** During a main show, `time-pos` frozen ≥ 2 s (not paused, seeking, buffering or
-  loading) ⇒ restart mpv and resume at the last position. A second stall in the same play ⇒ idle.
+  loading) ⇒ restart mpv and resume at the last position. A second failure in the same play ⇒ idle.
 - **Setup activity.** Test sound, calibration and test-all run as one cancellable setup task.
   Triggers, plays, test pattern and audition get 409 while it runs. Blackout, activate and
   deactivate cancel it. On end the engine restores idle (profile base, idle clip or black).
+  Turning the show lock on cancels it too and turns the test pattern off. Blackout turns the test
+  pattern off; test pattern on during blackout ⇒ 409. `PUT /api/settings` changing an `mpv_*`
+  output/audio key ⇒ 409 while a show plays or a setup action runs (it restarts mpv).
 - **systemd watchdog.** Unit is `Type=notify`. The hub sends READY after start and WATCHDOG every
   15 s (half of `WatchdogSec=30`) from the event loop. A hung loop gets restarted.
 - **Show lock.** Middleware in front of the routes. Allowlist while locked: `POST /api/trigger`,
   `/api/blackout`, `/api/show_lock`, `/api/show/{trigger,play,stop,seek,pause,next,deactivate}`,
-  `/api/auth/login|logout`, `/api/preflight/*`, `/api/boards/{mac}/state|identify`, and
-  `PUT /api/settings` with only `master_brightness`/`master_volume` (body ≤ 4 KB).
+  `/api/auth/login|logout`, `/api/boards/{mac}/state|identify`,
+  `PUT /api/settings` with only `master_brightness`/`master_volume`, and the OFF-only calls
+  `POST /api/setup/calibration` / `POST /api/show/test_pattern` with `{"on": false}` (bodies ≤ 4 KB).
+  `POST /api/preflight/test_all` is locked; `GET /api/preflight` is a read.
   Everything else mutating ⇒ 423. Reads stay open.
 
 ## Cue rules

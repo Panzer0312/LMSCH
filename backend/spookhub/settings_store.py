@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
+
+from pydantic import ValidationError
 
 from spookhub import db
 from spookhub.models import RuntimeSettings, Setting
+
+log = logging.getLogger(__name__)
 
 KEY = "runtime"
 
@@ -19,7 +24,14 @@ class SettingsStore:
         with db.session() as s:
             row = s.get(Setting, KEY)
             if row and isinstance(row.value, dict):
-                self.value = RuntimeSettings.model_validate(row.value)
+                try:
+                    self.value = RuntimeSettings.model_validate(row.value)
+                except ValidationError as e:
+                    # A value stored before a limit existed must not stop the hub booting.
+                    bad = {err["loc"][0] for err in e.errors() if err["loc"]}
+                    log.warning("dropping invalid stored settings: %s", sorted(map(str, bad)))
+                    clean = {k: v for k, v in row.value.items() if k not in bad}
+                    self.value = RuntimeSettings.model_validate(clean)
         return self.value
 
     def update(self, **changes: object) -> RuntimeSettings:

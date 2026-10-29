@@ -173,15 +173,98 @@ async def test_advancing_loop_wrap_and_eof_are_not_stalls(stall):
     await eng._end_show("stopped")
 
 
-async def test_crash_restart_still_ends_show_as_interrupted(stall):
+@pytest.mark.parametrize("mode", [PlaybackMode.once, PlaybackMode.loop])
+async def test_crash_restart_resumes_once_then_ends(stall, mode):
+    from spookhub.show.resolve import Timeline
+
+    eng, p = stall
+    eng.active = _video_prof(mode)
+    eng.timeline = Timeline([], [])
+    await eng._play_main(0.0)
+    loop = mode == PlaybackMode.loop
+    _tick_pos(p, 7.0)
+    await wait_for(lambda: eng._last_t is not None and eng._last_t >= 7.0)
+    p.time_pos = None  # mpv died: position unknown
+    p._notify("restart")  # not requested by the stall watch
+    await wait_for(lambda: len(p.loads) == 2)
+    assert p.loads[1][0] == "/m.mp4" and p.loads[1][2] is loop
+    assert 7.0 <= p.loads[1][1] < 7.5  # resumed at the last position
+    assert eng.playing_main and eng.phase == Phase.playing and p.restarts == 0
+    msgs = [e["message"] for e in eng.bus.log if e["kind"] == "player"]
+    assert msgs == ["video player restarted, resuming"]
+
+    p._notify("restart")  # second failure in the same play
+    await wait_for(lambda: not eng.playing_main)
+    assert any("interrupted" in e["message"] for e in eng.bus.log) and eng.phase == Phase.idle
+
+
+async def test_stall_recovery_then_crash_ends_show(stall):
     from spookhub.show.resolve import Timeline
 
     eng, p = stall
     eng.timeline = Timeline([], [])
     await eng._play_main(0.0)
-    p._notify("restart")  # not requested by the stall watch
+    _tick_pos(p, 5.0)
+    await wait_for(lambda: len(p.loads) == 2)  # stall recovered once
+    p._notify("restart")
     await wait_for(lambda: not eng.playing_main)
-    assert any("interrupted" in e["message"] for e in eng.bus.log) and p.restarts == 0
+    assert len(p.loads) == 2
+
+
+async def test_new_play_gets_a_fresh_recovery(stall):
+    from spookhub.show.resolve import Timeline
+
+    eng, p = stall
+    eng.timeline = Timeline([], [])
+    await eng._play_main(0.0)
+    p._notify("restart")
+    await wait_for(lambda: len(p.loads) == 2)
+    await eng._end_show("stopped")
+    await eng._play_main(0.0)
+    n = len(p.loads)
+    p._notify("restart")
+    await wait_for(lambda: len(p.loads) == n + 1)
+    assert eng.playing_main
+    await eng._end_show("stopped")
+
+
+async def test_restart_while_idle_reloads_idle_loop(stall):
+    eng, p = stall
+    eng.active = _video_prof(PlaybackMode.idle_trigger)
+    eng.active.idle_path = "/idle.mp4"
+    await eng._go_idle()
+    p.loads.clear()
+    p._notify("restart")
+    await wait_for(lambda: p.loads == [("/idle.mp4", 0.0, True)])
+    assert eng.phase == Phase.idle and not eng.playing_main
+
+
+async def test_restart_reapplies_test_pattern_and_blackout(stall):
+    eng, p = stall
+    await eng.set_test_pattern(True, "/grid.png")
+    p.loads.clear()
+    p._notify("restart")
+    await wait_for(lambda: p.loads == [("/grid.png", 0.0, True)])
+    assert eng.test_pattern
+    await eng.set_blackout(True)
+    p.loads.clear()
+    p.calls.clear()
+    p._notify("restart")
+    await wait_for(lambda: p.calls == [("black",)])
+    assert p.loads == []
+
+
+async def test_restart_reapplies_calibration_clip(stall):
+    eng, p = stall
+    eng.active = None
+    await eng.set_calibration(True, "/calib.mp4")
+    assert eng.calibrating
+    p.loads.clear()
+    p._notify("restart")
+    await wait_for(lambda: p.loads == [("/calib.mp4", 0.0, True)])
+    assert eng.calibrating and eng.snapshot()["setup_busy"]
+    await eng.set_calibration(False)
+    await wait_for(lambda: not eng.snapshot()["setup_busy"])
 
 
 async def test_restart_timeout_ends_show_idle(stall):
@@ -427,3 +510,23 @@ async def test_fallback_blocked_midway_refuses_remaining_boards(client, farm):  
     assert res[1]["error"] == "refused: a show is playing"
     assert "250" in farm.boards[0].presets and "250" not in farm.boards[1].presets
     assert "def" not in farm.boards[1].cfg
+
+
+async def test_blackout_aborts_fallback_save_and_reaches_board(client, farm):  # noqa: F811
+    (mac,) = await _adopt(client, farm, 1)
+    sim = farm.boards[0]
+    boards = client.hub.boards
+    boards.set_manual(mac, LightState(on=True, bri=120))
+    await wait_for(lambda: sim.state["bri"] == 120)
+    sim.latency_ms = 300
+    save = asyncio.create_task(boards.save_fallback(mac, LightState(on=True, bri=200)))
+    await wait_for(lambda: boards.boards[mac].saving_fallback)
+    await asyncio.sleep(0.1)  # first fallback write in flight
+    boards.set_blackout(True)
+    assert boards.boards[mac].queue is not None and not boards.boards[mac].queue.idle
+    err = await save
+    sim.latency_ms = 0
+    assert err == "blackout active"
+    assert "def" not in sim.cfg and "250" not in sim.presets
+    await wait_for(lambda: sim.state["on"] is False)
+    boards.set_blackout(False)

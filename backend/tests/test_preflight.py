@@ -31,7 +31,7 @@ async def test_check_order_and_worst(client):  # noqa: F811
     ids = [c["id"] for c in res.json()["checks"]]
     assert ids == [
         "boards_online", "latency", "wifi_sleep", "mpv", "audio_device",
-        "media", "disk", "clock", "mpv_restarts", "trigger_recent",
+        "media", "disk", "clock", "mpv_restarts", "trigger_recent", "setup_idle",
     ]  # fmt: skip
     assert res.json()["worst"] == "warn"  # no boards adopted
     assert res.json() == (await client.get("/api/preflight")).json()
@@ -181,7 +181,10 @@ async def test_trigger_recent_check(client, tmp_path, fake):  # noqa: F811
     base = pf.now()
     pf.now = lambda: base + 31 * 60
     assert (await _check(hub, "trigger_recent"))["status"] == "warn"
+    # Refused or UI-button triggers prove nothing about the sensor.
     hub.engine.last_trigger = {"ts": base + 20 * 60, "source": "x", "accepted": True, "message": ""}
+    assert (await _check(hub, "trigger_recent"))["status"] == "warn"
+    hub.engine.last_external_ts = base + 20 * 60
     assert (await _check(hub, "trigger_recent"))["status"] == "ok"
     pf.now = lambda: base + 60 * 60
     assert (await _check(hub, "trigger_recent"))["status"] == "warn"
@@ -227,7 +230,7 @@ async def test_check_exception_becomes_warn(client, monkeypatch):  # noqa: F811
 
     monkeypatch.setattr(client.hub.preflight, "_latency", boom)
     res = await client.hub.preflight.run()
-    assert res["checks"][1]["status"] == "warn" and len(res["checks"]) == 10
+    assert res["checks"][1]["status"] == "warn" and len(res["checks"]) == 11
 
 
 async def test_supervisor_records_unexpected_exits_only(monkeypatch):
@@ -497,3 +500,46 @@ async def test_ready_clears_restart_began():
     from spookhub.player.process import MpvPlayer
 
     assert "self.restart_began = None" in inspect.getsource(MpvPlayer._run_once)
+
+
+async def test_only_accepted_external_triggers_count(client, monkeypatch):  # noqa: F811
+    eng = client.hub.engine
+    await eng.trigger("external")  # refused: no profile
+    assert eng.last_external_ts is None
+
+    async def ok(source):
+        return True, "triggered"
+
+    monkeypatch.setattr(eng, "_trigger", ok)
+    await eng.trigger("button")
+    assert eng.last_external_ts is None
+    await eng.trigger("external")
+    assert eng.last_external_ts == eng.last_trigger["ts"]
+
+
+async def test_setup_idle_check(client, fake):  # noqa: F811
+    eng = client.hub.engine
+    assert (await _check(client.hub, "setup_idle"))["status"] == "ok"
+    eng.test_pattern = True
+    c = await _check(client.hub, "setup_idle")
+    assert c["status"] == "fail" and "test pattern" in c["detail"] and c["fix"] == "/setup"
+    eng.test_pattern = False
+    eng.calibrating = True
+    c = await _check(client.hub, "setup_idle")
+    assert c["status"] == "fail" and c["detail"] == "running: calibration"
+    eng.calibrating = False
+    ev = asyncio.Event()
+
+    async def start():
+        return True
+
+    async def wait():
+        ev.set()
+        await asyncio.sleep(30)
+
+    await eng.begin_setup(start, wait)
+    await ev.wait()
+    c = await _check(client.hub, "setup_idle")
+    assert c["status"] == "fail" and c["detail"] == "running: setup test"
+    await eng._cancel_setup()
+    assert (await _check(client.hub, "setup_idle"))["status"] == "ok"

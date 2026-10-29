@@ -125,6 +125,39 @@ function Controls() {
   )
 }
 
+/** A forgotten setup action refuses every trigger; make it loud and clearable from here. */
+function SetupBanner() {
+  const show = useLive().show
+  const { busy, error, run } = useAction()
+  if (!show || !(show.setup_busy || show.calibrating || show.test_pattern)) return null
+  const what = [
+    show.calibrating ? 'Sync calibration' : show.setup_busy ? 'Setup test' : null,
+    show.test_pattern ? 'Test pattern' : null,
+  ].filter(Boolean).join(' + ')
+  // Test sound / test-all have no stop endpoint; they end within seconds.
+  const stoppable = show.calibrating || show.test_pattern
+  const stop = async () => {
+    if (show.calibrating) await api.setup.calibration(false)
+    if (show.test_pattern) await api.show.testPattern(false)
+  }
+  return (
+    <div className="card space-y-2 border-blood bg-blood/15">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="font-semibold text-blood">{what} running</div>
+          <div className="text-sm text-mute">Triggers are refused until it stops.</div>
+        </div>
+        {stoppable && (
+          <button type="button" className="btn h-11 shrink-0 px-4" disabled={busy} onClick={() => void run(stop)}>
+            Stop
+          </button>
+        )}
+      </div>
+      <ErrorText error={error} />
+    </div>
+  )
+}
+
 function LevelSlider({ label, field, scale, max, unit }: {
   label: string
   field: 'master_brightness' | 'master_volume'
@@ -242,6 +275,7 @@ export default function ShowMode() {
   return (
     <div className="mx-auto flex min-h-[calc(100dvh-6rem)] max-w-xl flex-col gap-4">
       <Header />
+      <SetupBanner />
       <Controls />
       <LevelSlider label="Brightness" field="master_brightness" scale={100} max={settings?.brightness_cap ?? 1} unit="%" />
       <LevelSlider label="Volume" field="master_volume" scale={1} max={settings?.volume_cap ?? 100} unit="%" />

@@ -352,3 +352,121 @@ async def test_blackout_cancels_setup_and_wins(client, fake, monkeypatch):  # no
     await asyncio.sleep(0.1)
     assert eng.phase.value == "blackout"
     assert fake.calls[-1] == ("black",)
+
+
+# ----- final review fixes -----
+
+
+async def test_lock_on_ends_calibration_and_restores(client, fake):  # noqa: F811
+    eng = client.hub.engine
+    pid = await _mk_profile(client)
+    await eng.activate(pid)
+    await eng.set_calibration(True, "/calib.mp4")
+    assert eng.calibrating and eng.snapshot()["setup_busy"]
+    assert (await client.post("/api/show_lock", json={"on": True})).status_code == 200
+    snap = eng.snapshot()
+    assert not snap["calibrating"] and not snap["setup_busy"]
+    assert eng.phase.value == "lights" and fake.calls[-1] == ("black",)
+    assert (await eng._trigger("button"))[1] != "setup test running"
+
+
+async def test_lock_on_ends_test_sound_and_test_pattern(client, fake):  # noqa: F811
+    eng = await _start_setup(client, fake, None)
+    await client.post("/api/show_lock", json={"on": True})
+    assert not eng.snapshot()["setup_busy"]
+    await client.post("/api/show_lock", json={"on": False})
+    await eng.set_test_pattern(True, "/grid.png")
+    await client.post("/api/show_lock", json={"on": True})
+    assert not eng.test_pattern and eng.phase.value == "none"
+
+
+async def test_lock_allows_turning_setup_off_only(client, fake):  # noqa: F811
+    eng = client.hub.engine
+    await eng.set_test_pattern(True, "/grid.png")
+    await eng.set_calibration(False)
+    client.hub.settings.update(show_lock=True)  # bypass the lock-on cleanup
+    r = await client.post("/api/show/test_pattern", json={"on": False})
+    assert r.status_code == 200 and not eng.test_pattern
+    assert (await client.post("/api/show/test_pattern", json={"on": True})).status_code == 423
+    assert (await client.post("/api/show/test_pattern", json={"on": 0})).status_code == 423
+    r = await client.post("/api/setup/calibration", json={"on": False})
+    assert r.status_code == 200
+    assert (await client.post("/api/setup/calibration", json={"on": True})).status_code == 423
+    r = await client.post("/api/setup/calibration", content=b"{bad", headers={"x": "y"})
+    assert r.status_code == 423
+    assert (await client.post("/api/preflight/test_all")).status_code == 423
+    assert (await client.get("/api/preflight")).status_code == 200
+
+
+async def test_player_settings_refused_while_playing(client):  # noqa: F811
+    eng = client.hub.engine
+    eng.playing_main = True
+    for key in ("mpv_drm_connector", "mpv_drm_mode", "mpv_vo", "mpv_gpu_context",
+                "mpv_audio_device"):  # fmt: skip
+        r = await client.put("/api/settings", json={key: "x"})
+        assert r.status_code == 409 and "a show is playing" in r.json()["detail"], key
+    # Unchanged values and unrelated keys still pass.
+    r = await client.put("/api/settings", json={"mpv_vo": None, "sync_offset_ms": 10})
+    assert r.status_code == 200
+    eng.playing_main = False
+    r = await client.put("/api/settings", json={"mpv_drm_connector": "HDMI-A-1"})
+    assert r.status_code == 200 and r.json()["mpv_drm_connector"] == "HDMI-A-1"
+
+
+async def test_player_settings_refused_during_setup(client, fake):  # noqa: F811
+    eng = await _start_setup(client, fake, None)
+    r = await client.put("/api/settings", json={"mpv_drm_mode": "1280x720"})
+    assert r.status_code == 409
+    await eng._cancel_setup()
+
+
+async def test_sync_offset_bounds(client):  # noqa: F811
+    for bad in (2001, -2001):
+        assert (await client.put("/api/settings", json={"sync_offset_ms": bad})).status_code == 422
+    for raw in (b'{"sync_offset_ms": Infinity}', b'{"sync_offset_ms": NaN}'):
+        r = await client.put(
+            "/api/settings", content=raw, headers={"content-type": "application/json"}
+        )
+        assert r.status_code == 422
+    r = await client.put("/api/settings", json={"sync_offset_ms": -2000})
+    assert r.status_code == 200 and r.json()["sync_offset_ms"] == -2000
+
+
+def test_stored_out_of_range_setting_is_dropped_on_load(client):  # noqa: F811
+    from spookhub import db
+    from spookhub.models import Setting
+    from spookhub.settings_store import KEY, SettingsStore
+
+    with db.session() as s:
+        row = s.get(Setting, KEY) or Setting(key=KEY, value={})
+        row.value = {**(row.value or {}), "sync_offset_ms": 99999, "master_volume": 42}
+        s.add(row)
+        s.commit()
+    v = SettingsStore().load()
+    assert v.sync_offset_ms == 0.0 and v.master_volume == 42
+
+
+async def test_blackout_clears_test_pattern_and_refuses_it(client, fake):  # noqa: F811
+    eng = client.hub.engine
+    await eng.set_test_pattern(True, "/grid.png")
+    await eng.set_blackout(True)
+    assert not eng.test_pattern and eng.phase.value == "blackout"
+    assert (await client.post("/api/show/test_pattern", json={"on": True})).status_code == 409
+    with pytest.raises(SetupBusy):
+        await eng.set_test_pattern(True, "/grid.png")
+    await eng.set_blackout(False)
+    assert not eng.test_pattern and eng.phase.value == "none"
+
+
+async def test_engine_stop_cancels_and_awaits_tasks(client, fake):  # noqa: F811
+    eng = client.hub.engine
+    await _start_setup(client, fake, None)
+    setup = eng._setup_task
+    stall = asyncio.create_task(asyncio.sleep(30))
+    sched = asyncio.create_task(asyncio.sleep(30))
+    eng._stall_task, eng._sched = stall, sched
+    pub = eng._pub
+    await eng.stop()
+    assert all(t.done() for t in (setup, stall, sched, pub))
+    assert eng._setup_task is None and eng._sched is None and eng._pub is None
+    assert eng._stall_task is None

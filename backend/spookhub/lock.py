@@ -14,13 +14,14 @@ from starlette.responses import Response
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 ALLOWED_EXACT = {"/api/trigger", "/api/blackout", "/api/show_lock"}
-ALLOWED_PREFIX = ("/api/preflight/",)
 ALLOWED_SHOW = {
     f"/api/show/{n}" for n in ("trigger", "play", "stop", "seek", "pause", "next", "deactivate")
 } | {"/api/auth/login", "/api/auth/logout"}
 MAX_BODY = 4096
 ALLOWED_BOARD = re.compile(r"^/api/boards/[^/]+/(state|identify)$")
 LIVE_SETTINGS = {"master_brightness", "master_volume"}
+# Turning these OFF stays possible so a forgotten setup action can be cleared from Show mode.
+OFF_ONLY = {"/api/setup/calibration", "/api/show/test_pattern"}
 
 
 class LockMiddleware(BaseHTTPMiddleware):
@@ -39,31 +40,41 @@ class LockMiddleware(BaseHTTPMiddleware):
     async def _refusal(self, request: Request, path: str) -> Response | None:
         """None when the request may pass the lock."""
         locked = JSONResponse({"detail": "Show mode is on"}, status_code=423)
-        if path in ALLOWED_EXACT or path in ALLOWED_SHOW or path.startswith(ALLOWED_PREFIX):
-            return None
-        if ALLOWED_BOARD.match(path):
+        if path in ALLOWED_EXACT or path in ALLOWED_SHOW or ALLOWED_BOARD.match(path):
             return None
         if path == "/api/settings" and request.method == "PUT":
-            too_big = JSONResponse({"detail": "Body too large"}, status_code=413)
-            try:
-                declared = int(request.headers.get("content-length") or 0)
-            except ValueError:
-                return locked
-            if declared > MAX_BODY:
-                return too_big
-            chunks: list[bytes] = []
-            size = 0
-            async for chunk in request.stream():  # bounded: never buffer more than MAX_BODY
-                size += len(chunk)
-                if size > MAX_BODY:
-                    return too_big
-                chunks.append(chunk)
-            raw = b"".join(chunks)
-            request._body = raw  # let the route (via the cached request) read it again
-            try:
-                body = json.loads(raw)
-            except ValueError:
-                return locked
+            body = await self._json(request)
+            if isinstance(body, Response):
+                return body
             if isinstance(body, dict) and set(body) <= LIVE_SETTINGS:
                 return None
+        elif path in OFF_ONLY and request.method == "POST":
+            body = await self._json(request)
+            if isinstance(body, Response):
+                return body
+            if isinstance(body, dict) and body.get("on") is False:
+                return None
         return locked
+
+    async def _json(self, request: Request) -> Any:
+        """Parsed body, None when unparsable, or a 413 response. Bounded read."""
+        too_big = JSONResponse({"detail": "Body too large"}, status_code=413)
+        try:
+            declared = int(request.headers.get("content-length") or 0)
+        except ValueError:
+            return None
+        if declared > MAX_BODY:
+            return too_big
+        chunks: list[bytes] = []
+        size = 0
+        async for chunk in request.stream():  # bounded: never buffer more than MAX_BODY
+            size += len(chunk)
+            if size > MAX_BODY:
+                return too_big
+            chunks.append(chunk)
+        raw = b"".join(chunks)
+        request._body = raw  # let the route (via the cached request) read it again
+        try:
+            return json.loads(raw)
+        except ValueError:
+            return None

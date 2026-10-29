@@ -94,6 +94,7 @@ export default function Settings() {
     const health = Number(draft.health_interval_s)
     const trans = Number(draft.default_transition_ms)
     if (draft.sync_offset_ms.trim() === '' || !Number.isFinite(sync)) return save.setError('Sync offset must be a number.')
+    if (Math.abs(sync) > 2000) return save.setError('Sync offset must be between -2000 and 2000 ms.')
     if (!Number.isFinite(health) || health < 0.5 || health > 60) return save.setError('Health interval must be 0.5–60 s.')
     if (draft.default_transition_ms.trim() === '' || !Number.isFinite(trans) || trans < 0)
       return save.setError('Default transition must be a non-negative number.')
