@@ -57,6 +57,8 @@ class MpvPlayer:
         self._restart_requested: bool = False
         # Wall-clock times of unexpected mpv exits (preflight flags a crash loop).
         self.restart_times: list[float] = []
+        # Monotonic start of the latest (requested or crash) restart; preflight grace window.
+        self.restart_began: float | None = None
 
     # ---- lifecycle ---------------------------------------------------------------------------
 
@@ -143,6 +145,7 @@ class MpvPlayer:
             return
         # Supervisor sees the exit and respawns with current args (picks up vo overrides).
         self._restart_requested = True
+        self.restart_began = time.monotonic()
         proc = self._proc
         if proc is not None and proc.returncode is None:
             with contextlib.suppress(ProcessLookupError):
@@ -163,6 +166,7 @@ class MpvPlayer:
             self.bus.event("error", f"mpv exited (code {rc}), restarting")
             self.restart_times = [t for t in self.restart_times if time.time() - t < 86400]
             self.restart_times.append(time.time())
+            self.restart_began = time.monotonic()
             if time.monotonic() - started >= QUICK_CRASH_S:
                 delay = self.cfg.restart_delay_s
             await asyncio.sleep(delay)

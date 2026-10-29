@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import shutil
 import time
@@ -28,6 +29,7 @@ MIN_FREE_BYTES = 2 * 1024**3
 TRIGGER_STALE_S = 30 * 60
 GOOD_CODECS = {"h264", "hevc"}
 MAX_HEIGHT = 1080
+RESTART_GRACE_S = 5.0
 
 
 class Check(BaseModel):
@@ -50,10 +52,20 @@ async def ntp_synchronized() -> bool | None:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )  # fmt: skip
+    except OSError:
+        return None
+    try:
         async with asyncio.timeout(3):
             out, _ = await proc.communicate()
-    except (OSError, TimeoutError):
-        return None
+    except BaseException as e:
+        # Timeout or cancel: never leave a hung child behind.
+        if proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            await asyncio.shield(proc.wait())
+        if isinstance(e, TimeoutError):
+            return None
+        raise
     if proc.returncode != 0:
         return None
     return out.decode().strip() == "yes"
@@ -64,6 +76,8 @@ class Preflight:
         self.hub = hub
         self.last: dict[str, Any] | None = None
         self._task: asyncio.Task[None] | None = None
+        self._run_lock = asyncio.Lock()
+        self._last_sig: tuple[Any, ...] | None = None
         self._started = time.time()
         # Seams for tests.
         self.free_bytes: Callable[[Path], int] = lambda p: shutil.disk_usage(p).free
@@ -77,8 +91,10 @@ class Preflight:
         self._task = asyncio.create_task(self._loop(), name="preflight")
 
     async def stop(self) -> None:
-        if self._task:
-            self._task.cancel()
+        t, self._task = self._task, None
+        if t:
+            t.cancel()
+            await asyncio.gather(t, return_exceptions=True)
 
     async def _loop(self) -> None:
         while True:
@@ -89,6 +105,10 @@ class Preflight:
             await asyncio.sleep(INTERVAL_S)
 
     async def run(self) -> dict[str, Any]:
+        async with self._run_lock:
+            return await self._run()
+
+    async def _run(self) -> dict[str, Any]:
         checks: list[Check] = []
         for fn in (
             self._boards_online,
@@ -117,8 +137,11 @@ class Preflight:
         order = {"ok": 0, "warn": 1, "fail": 2}
         worst = max((c.status for c in checks), key=order.__getitem__, default="ok")
         result = {"checks": [c.model_dump() for c in checks], "worst": worst}
-        if result != self.last:
-            self.last = result
+        # Detail text carries live numbers (latency, minutes); only state changes are news.
+        sig = (tuple((c.id, c.status, c.fix) for c in checks), worst)
+        self.last = result
+        if sig != self._last_sig:
+            self._last_sig = sig
             self.hub.bus.publish("preflight", result)
         return result
 
@@ -151,9 +174,15 @@ class Preflight:
         return _c("latency", label, "ok", f"all under {LATENCY_WARN_MS:.0f} ms")
 
     async def _wifi_sleep(self) -> Check:
-        # Board configs are fetched on demand only (boards page), never cached, so this stays
-        # unknown rather than hitting every board every 10 s.
-        return _c("wifi_sleep", "WiFi sleep off", "ok", "not checked", "/boards")
+        # Only the cached reading from the board recommendations check; never poll boards here.
+        label = "WiFi sleep off"
+        known = [b for b in self.hub.boards.adopted() if b.wifi_sleep is not None]
+        if not known:
+            return _c("wifi_sleep", label, "ok", "not checked", "/boards")
+        bad = [b.name or b.mac for b in known if b.wifi_sleep]
+        if bad:
+            return _c("wifi_sleep", label, "warn", "sleep on: " + ", ".join(bad), "/boards")
+        return _c("wifi_sleep", label, "ok", f"off on {len(known)} boards")
 
     async def _mpv(self) -> Check:
         label = "Video player"
@@ -161,6 +190,9 @@ class Preflight:
         if not player.cfg.enabled:
             return _c("mpv", label, "ok", "disabled")
         if not player.ready.is_set():
+            began = player.restart_began
+            if began is not None and time.monotonic() - began < RESTART_GRACE_S:
+                return _c("mpv", label, "warn", "restarting", "/setup")
             return _c("mpv", label, "fail", "mpv is not running", "/setup")
         return _c("mpv", label, "ok", "running")
 
@@ -176,40 +208,44 @@ class Preflight:
             return _c("audio_device", label, "warn", f"{dev} not found", "/setup")
         return _c("audio_device", label, "ok", dev)
 
-    def _active_media(self) -> tuple[Profile | None, Media | None, Media | None]:
+    def _active_media(self) -> tuple[bool, list[tuple[str, Media | None]]]:
+        """(video profile active, [(role, row or None)]) for the media it references."""
         a = self.hub.engine.active
         if a is None or a.type != ProfileType.video:
-            return None, None, None
+            return False, []
         with db.session() as s:
             p = s.get(Profile, a.id)
             if p is None:
-                return None, None, None
-            main = s.get(Media, p.media_id) if p.media_id else None
-            idle = s.get(Media, p.idle_media_id) if p.idle_media_id else None
-            return p, main, idle
+                return False, []
+            out: list[tuple[str, Media | None]] = []
+            for role, mid in (("media", p.media_id), ("idle media", p.idle_media_id)):
+                if mid is not None:
+                    out.append((role, s.get(Media, mid)))
+            return True, out
 
     async def _media(self) -> Check:
         label = "Media files"
-        p, main, idle = self._active_media()
-        if p is None:
+        video, rows = self._active_media()
+        if not video:
             return _c("media", label, "ok", "no video profile active")
-        missing = [m.filename for m in (main, idle) if m and not Path(m.path).exists()]
-        if missing:
-            return _c("media", label, "fail", "missing: " + ", ".join(missing), "/profiles")
-        if main:
-            if main.codec and main.codec.lower() not in GOOD_CODECS:
-                return _c(
-                    "media", label, "warn", f"{main.filename}: codec {main.codec}", "/profiles"
-                )
-            if main.height > MAX_HEIGHT:
-                return _c("media", label, "warn", f"{main.filename}: {main.height}p", "/profiles")
+        gone = [f"{role} record" for role, m in rows if m is None]
+        gone += [m.filename for _, m in rows if m and not Path(m.path).exists()]
+        if gone:
+            return _c("media", label, "fail", "missing: " + ", ".join(gone), "/profiles")
+        for _, m in rows:
+            if m is None:
+                continue
+            if m.codec and m.codec.lower() not in GOOD_CODECS:
+                return _c("media", label, "warn", f"{m.filename}: codec {m.codec}", "/profiles")
+            if m.height > MAX_HEIGHT:
+                return _c("media", label, "warn", f"{m.filename}: {m.height}p", "/profiles")
         return _c("media", label, "ok", "files present")
 
     async def _disk(self) -> Check:
         label = "Disk space"
         d = self.hub.cfg.paths.data_dir
         try:
-            free = self.free_bytes(d)
+            free = await asyncio.to_thread(self.free_bytes, d)
         except OSError:
             return _c("disk", label, "ok", "unknown")
         gb = free / 1024**3

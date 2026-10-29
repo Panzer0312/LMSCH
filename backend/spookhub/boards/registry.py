@@ -65,6 +65,10 @@ class BoardRuntime:
     show_state: LightState | None = None
     manual: LightState | None = None
     identify_until: float = 0.0
+    # Held by the preflight test-all; separate from identify so neither ends the other.
+    hold_white: bool = False
+    # Last WiFi-sleep reading from the recommendations check; None = never checked.
+    wifi_sleep: bool | None = None
     queue: LatestWinsQueue | None = None
     _persisted_seen: float = 0.0
 
@@ -178,7 +182,7 @@ class BoardManager:
     def desired(self, b: BoardRuntime) -> LightState | None:
         if self.blackout:
             return OFF_STATE
-        if b.identify_until > time.monotonic():
+        if b.hold_white or b.identify_until > time.monotonic():
             return IDENTIFY_STATE
         if b.show_state is None:
             return b.manual
@@ -238,14 +242,14 @@ class BoardManager:
         self.push_all()
 
     def hold_identify(self) -> None:
-        """White on every adopted board until release_identify (same layer as identify)."""
+        """White on every adopted board until release_identify (same look as identify)."""
         for b in self.adopted():
-            b.identify_until = float("inf")
+            b.hold_white = True
         self.push_all()
 
     def release_identify(self) -> None:
-        for b in self.adopted():
-            b.identify_until = 0.0
+        for b in self.boards.values():
+            b.hold_white = False
         self.push_all()
 
     async def identify(self, mac: str, seconds: float = 2.0) -> None:
