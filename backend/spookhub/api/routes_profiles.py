@@ -61,6 +61,13 @@ def to_out(s: Session, p: Profile) -> ProfileOut:
     )
 
 
+def _marker_rows(markers: list[Marker]) -> list[dict[str, Any]]:
+    ids = [m.id for m in markers]
+    if len(set(ids)) != len(ids):
+        raise HTTPException(422, "duplicate marker id")
+    return [m.model_dump() for m in sorted(markers, key=lambda m: m.t)]
+
+
 def _apply(p: Profile, body: ProfileIn, s: Session) -> None:
     for mid in (body.media_id, body.idle_media_id):
         if mid is not None and s.get(Media, mid) is None:
@@ -77,7 +84,7 @@ def _apply(p: Profile, body: ProfileIn, s: Session) -> None:
     p.playback_mode = body.playback_mode
     p.cooldown_s = body.cooldown_s
     if body.markers is not None:
-        p.markers = [m.model_dump() for m in body.markers]
+        p.markers = _marker_rows(body.markers)
 
 
 def _get(s: Session, pid: int) -> Profile:
@@ -207,12 +214,10 @@ async def replace_cues(pid: int, cues: list[CueIn], hub: HubDep) -> ProfileOut:
 
 @router.put("/{pid}/markers")
 def replace_markers(pid: int, markers: list[Marker], hub: HubDep) -> ProfileOut:
-    ids = [m.id for m in markers]
-    if len(set(ids)) != len(ids):
-        raise HTTPException(422, "duplicate marker id")
+    rows = _marker_rows(markers)
     with db.session() as s:
         p = _get(s, pid)
-        p.markers = [m.model_dump() for m in sorted(markers, key=lambda m: m.t)]
+        p.markers = rows
         s.add(p)
         s.commit()
         out = to_out(s, p)
