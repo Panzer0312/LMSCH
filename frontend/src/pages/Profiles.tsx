@@ -6,18 +6,20 @@ import { LightStateEditor } from '../components/LightStateEditor'
 import { ErrorText, Section, Toggle } from '../components/ui'
 import { fmtTime, useAction } from '../lib'
 import { useAdoptedBoards, useLive } from '../live'
-import type { LightState, Media, PlaybackMode, Profile, ProfileExport, ProfileIn } from '../types'
+import type { DisplayProfile, LightState, Media, PlaybackMode, Profile, ProfileExport, ProfileIn } from '../types'
 
 const modeLabel: Record<PlaybackMode, string> = { once: 'Play once', loop: 'Loop', idle_trigger: 'Idle + trigger' }
 
 const emptyDraft = (): ProfileIn => ({
   name: '', type: 'light', selection: { all: true, macs: [] }, base_state: { on: true, bri: 255 },
-  overrides: {}, media_id: null, idle_media_id: null, playback_mode: 'once', cooldown_s: 0,
+  overrides: {}, media_id: null, idle_media_id: null, playback_mode: 'once', cooldown_s: 0, display_profile_id: null,
 })
 
 const toDraft = (p: Profile): ProfileIn => ({
   name: p.name, type: p.type, selection: p.selection, base_state: p.base_state, overrides: p.overrides,
   media_id: p.media_id, idle_media_id: p.idle_media_id, playback_mode: p.playback_mode, cooldown_s: p.cooldown_s,
+  // PUT without it clears the per-show display profile.
+  display_profile_id: p.display_profile_id ?? null,
 })
 
 export default function Profiles() {
@@ -140,6 +142,7 @@ function ProfileEditor({ id }: { id: string }) {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [draft, setDraft] = useState<ProfileIn | null>(isNew ? emptyDraft() : null)
   const [media, setMedia] = useState<Media[]>([])
+  const [displays, setDisplays] = useState<DisplayProfile[]>([])
   const [saved, setSaved] = useState(false)
   const load = useAction()
   const save = useAction()
@@ -155,6 +158,7 @@ function ProfileEditor({ id }: { id: string }) {
   }, [id, isNew, loadRun])
 
   useEffect(() => { api.media.list().then(setMedia).catch(() => setMedia([])) }, [live.mediaRev])
+  useEffect(() => { api.display.profiles().then(setDisplays).catch(() => setDisplays([])) }, [])
 
   const back = <Link to="/profiles" className="text-sm text-ghost hover:underline">← Back to profiles</Link>
 
@@ -280,6 +284,13 @@ function ProfileEditor({ id }: { id: string }) {
                 <select className="input" value={draft.idle_media_id ?? ''} onChange={(e) => set({ idle_media_id: e.target.value === '' ? null : Number(e.target.value) })}>
                   <option value="">None (black)</option>
                   {media.map((m) => <option key={m.id} value={m.id}>{mediaLabel(m)}</option>)}
+                </select>
+              </div>
+              <div>
+                <span className="label">Display profile</span>
+                <select className="input" value={draft.display_profile_id ?? ''} onChange={(e) => set({ display_profile_id: e.target.value === '' ? null : Number(e.target.value) })}>
+                  <option value="">Default (video or global)</option>
+                  {displays.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
                 </select>
               </div>
               <div>
