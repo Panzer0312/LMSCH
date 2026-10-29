@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import enum
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import JSON, Column
@@ -113,6 +113,8 @@ class Media(SQLModel, table=True):
     height: int = 0
     codec: str = ""
     created_at: datetime = SQLField(default_factory=utcnow)
+    # Per-video framing override; plain id (no FK), cleared when the display profile goes.
+    display_profile_id: int | None = None
 
 
 class Profile(SQLModel, table=True):
@@ -131,6 +133,15 @@ class Profile(SQLModel, table=True):
     cooldown_s: float = 0.0
     markers: list[dict[str, Any]] = SQLField(
         default_factory=list, sa_column=Column(JSON, nullable=False, server_default="[]")
+    )
+    display_profile_id: int | None = None
+
+
+class DisplayProfile(SQLModel, table=True):
+    id: int | None = SQLField(default=None, primary_key=True)
+    name: str = SQLField(sa_column_kwargs={"unique": True})
+    geometry: dict[str, Any] = SQLField(
+        default_factory=dict, sa_column=Column(JSON, nullable=False, server_default="{}")
     )
 
 
@@ -173,6 +184,83 @@ class EventLog(SQLModel, table=True):
     data: Any = SQLField(default=None, sa_column=Column(JSON))
 
 
+# ---------- Display geometry ----------
+
+Unit = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+Half = Annotated[float, Field(ge=0, le=0.5, allow_inf_nan=False)]
+Offset = Annotated[float, Field(ge=-0.5, le=0.5, allow_inf_nan=False)]
+ImageAdj = Annotated[int, Field(ge=-100, le=100)]
+
+
+class CropRect(BaseModel):
+    """Fractions of the source as displayed (after rotation)."""
+
+    x: Unit = 0.0
+    y: Unit = 0.0
+    w: Unit = 1.0
+    h: Unit = 1.0
+
+    @model_validator(mode="after")
+    def _inside(self) -> CropRect:
+        if self.w <= 0 or self.h <= 0:
+            raise ValueError("crop must have a size")
+        if self.x + self.w > 1 + 1e-6 or self.y + self.h > 1 + 1e-6:
+            raise ValueError("crop must lie inside the frame")
+        return self
+
+
+class MaskRect(BaseModel):
+    top: Half = 0.0
+    right: Half = 0.0
+    bottom: Half = 0.0
+    left: Half = 0.0
+    feather: Half = 0.0
+
+
+Corner = tuple[Offset, Offset]
+ZERO_CORNERS: list[Corner] = [(0.0, 0.0)] * 4
+
+
+class DisplayGeometry(BaseModel):
+    """How everything mpv plays is framed on the projector. Default = untouched picture."""
+
+    zoom: float = Field(default=0.0, ge=-2, le=2, allow_inf_nan=False)
+    pan_x: float = Field(default=0.0, ge=-1, le=1, allow_inf_nan=False)
+    pan_y: float = Field(default=0.0, ge=-1, le=1, allow_inf_nan=False)
+    scale_x: float = Field(default=1.0, ge=0.25, le=4, allow_inf_nan=False)
+    scale_y: float = Field(default=1.0, ge=0.25, le=4, allow_inf_nan=False)
+    align_x: float = Field(default=0.0, ge=-1, le=1, allow_inf_nan=False)
+    align_y: float = Field(default=0.0, ge=-1, le=1, allow_inf_nan=False)
+    rotate: Literal[0, 90, 180, 270] = 0
+    aspect: float | None = Field(default=None, ge=0.2, le=10, allow_inf_nan=False)
+    crop: CropRect = CropRect()
+    brightness: ImageAdj = 0
+    contrast: ImageAdj = 0
+    gamma: ImageAdj = 0
+    saturation: ImageAdj = 0
+    # TL, TR, BR, BL offsets as fractions of the output size.
+    corners: list[Corner] = Field(
+        default_factory=lambda: list(ZERO_CORNERS), min_length=4, max_length=4
+    )
+    mask: MaskRect = MaskRect()
+    flip_h: bool = False
+    flip_v: bool = False
+
+
+class DisplayProfileIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    geometry: DisplayGeometry = DisplayGeometry()
+
+
+class DisplayProfilePatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    geometry: DisplayGeometry | None = None
+
+
+class DisplayProfileOut(DisplayProfileIn):
+    id: int
+
+
 # ---------- API schemas ----------
 
 
@@ -198,6 +286,7 @@ class ProfileIn(BaseModel):
     cooldown_s: float = Field(default=0.0, ge=0)
     # None = leave stored markers untouched (they have their own endpoint).
     markers: list[Marker] | None = None
+    display_profile_id: int | None = None
 
     @model_validator(mode="after")
     def _video_needs_media(self) -> ProfileIn:
@@ -264,3 +353,5 @@ class RuntimeSettings(BaseModel):
     audio_delay_s: float = Field(default=0.0, ge=-5, le=5)
     show_lock: bool = False
     active_profile_id: int | None = None
+    # Global default display profile ("Projector setup"); None = identity geometry.
+    display_profile_id: int | None = None

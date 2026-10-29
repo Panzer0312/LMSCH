@@ -14,8 +14,11 @@ from typing import Any
 
 from spookhub.config import MpvCfg
 from spookhub.events import EventBus
+from spookhub.models import DisplayGeometry
 from spookhub.player.devices import parse_audio_devices
+from spookhub.player.geometry import DEFAULT_PROPS, DEFAULT_SHADER_OPTS, WARP_SHADER, to_mpv
 from spookhub.player.ipc import MpvError, MpvIpc
+from spookhub.tasks import spawn
 
 MAX_EXTRAPOLATE_S = 0.5
 
@@ -34,6 +37,10 @@ READY_TIMEOUT_S = 5.0
 QUICK_CRASH_S = 5.0
 MAX_RESTART_DELAY_S = 10.0
 STOP_GRACE_S = 3.0
+GEOMETRY_COALESCE_S = 0.03
+
+# Hook the engine sets: geometry + source size (w, h; None = unknown) for a path about to load.
+GeometryFor = Callable[[str], tuple[DisplayGeometry, tuple[int, int] | None]]
 
 
 class MpvPlayer:
@@ -69,6 +76,14 @@ class MpvPlayer:
         self.restart_times: list[float] = []
         # Monotonic start of the latest (requested or crash) restart; preflight grace window.
         self.restart_began: float | None = None
+        # Display geometry: target (what should show) vs. what this mpv instance has.
+        self.geometry_for: GeometryFor | None = None
+        self.geometry: DisplayGeometry = DisplayGeometry()
+        self._geom_size: tuple[int, int] | None = None
+        self._sent_props: dict[str, Any] = dict(DEFAULT_PROPS)
+        self._sent_shader: dict[str, str] = dict(DEFAULT_SHADER_OPTS)
+        self._geom_flush: asyncio.TimerHandle | None = None
+        self._geom_lock = asyncio.Lock()
 
     # ---- lifecycle ---------------------------------------------------------------------------
 
@@ -117,6 +132,9 @@ class MpvPlayer:
             out.append(f"--audio-delay={self._audio_delay_s:g}")
         out.append(f"--input-ipc-server={self.socket_path}")
         out.append("--hr-seek=yes")
+        # Always loaded so keystone/mask/flip are a runtime parameter change, never a restart.
+        # Only vo=gpu-next understands //!PARAM; vo=gpu logs an error and plays unwarped.
+        out.append(f"--glsl-shaders={WARP_SHADER}")
         out.extend(cfg.extra_args)
         return out
 
@@ -216,6 +234,10 @@ class MpvPlayer:
                 for name in OBSERVED:
                     await ipc.observe(name)
                 await self._sync_audio_after_launch(ipc)
+                # A fresh mpv starts at defaults: re-send whatever geometry differs from them.
+                self._sent_props = dict(DEFAULT_PROPS)
+                self._sent_shader = dict(DEFAULT_SHADER_OPTS)
+                await self._send_geometry(ipc)
             except MpvError as exc:
                 log.warning("mpv ipc setup failed: %s", exc)
             else:
@@ -361,9 +383,13 @@ class MpvPlayer:
         return ipc
 
     async def load(self, path: str, start: float = 0.0, loop: bool = False) -> None:
+        # Hook first, even with mpv disabled: the engine tracks what is shown through it.
+        self._run_geometry_hook(path)
         if not self.cfg.enabled:
             return
         ipc = await self._ready_ipc()
+        # Before loadfile so the first frame already has the right framing.
+        await self._send_geometry(ipc)
         # Per-file options (mpv >= 0.38 signature: url, flags, index, options) reset after the
         # file, so a loop restarts at 0 rather than at a global --start.
         # Re-assert audio before the file starts so its first samples use the right level.
@@ -445,3 +471,62 @@ class MpvPlayer:
             return
         ipc = await self._ready_ipc()
         await ipc.set_property("pause", p)
+
+    # ---- display geometry --------------------------------------------------------------------
+
+    def _run_geometry_hook(self, path: str) -> None:
+        if self.geometry_for is None:
+            return
+        try:
+            g, size = self.geometry_for(path)
+        except Exception:
+            log.exception("geometry hook failed for %s", path)
+            return
+        self.geometry, self._geom_size = g, size
+
+    def apply_geometry(self, g: DisplayGeometry, size: tuple[int, int] | None = None) -> None:
+        """Set the target geometry; changes reach mpv coalesced (slider drags flood otherwise).
+
+        `size` (source w, h) is needed for crop; None keeps the size of the loaded file."""
+        self.geometry = g
+        if size is not None:
+            self._geom_size = size
+        if not self.cfg.enabled or self._geom_flush is not None:
+            return
+        loop = asyncio.get_running_loop()
+        self._geom_flush = loop.call_later(GEOMETRY_COALESCE_S, self._flush_soon)
+
+    def _flush_soon(self) -> None:
+        self._geom_flush = None
+        spawn(self.flush_geometry())
+
+    async def flush_geometry(self) -> None:
+        """Send pending geometry now (no-op when mpv is not up; restart re-sends it)."""
+        if self._geom_flush is not None:
+            self._geom_flush.cancel()
+            self._geom_flush = None
+        ipc = self._ipc
+        if not self.cfg.enabled or not self.ready.is_set() or ipc is None:
+            return
+        await self._send_geometry(ipc)
+
+    async def _send_geometry(self, ipc: MpvIpc) -> None:
+        w, h = self._geom_size or (0, 0)
+        props, shader = to_mpv(self.geometry, w, h)
+        # Serialised: two overlapping flushes would each diff against a stale "sent" state.
+        async with self._geom_lock:
+            for name, value in props.items():
+                if self._sent_props.get(name) == value:
+                    continue
+                try:
+                    await ipc.set_property(name, value)
+                    self._sent_props[name] = value
+                except MpvError as exc:
+                    log.warning("mpv rejected %s=%r: %s", name, value, exc)
+            if shader != self._sent_shader:
+                try:
+                    # Whole map in one go: one IPC round trip instead of one per parameter.
+                    await ipc.set_property("glsl-shader-opts", shader)
+                    self._sent_shader = dict(shader)
+                except MpvError as exc:
+                    log.warning("mpv rejected glsl-shader-opts: %s", exc)

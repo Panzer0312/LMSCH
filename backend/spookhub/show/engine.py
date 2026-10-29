@@ -20,14 +20,17 @@ from spookhub.models import (
     BoardSelection,
     Cue,
     CueTarget,
+    DisplayGeometry,
     LightState,
     Media,
     PlaybackMode,
     Profile,
     ProfileType,
+    RuntimeSettings,
 )
 from spookhub.player.process import MpvPlayer
 from spookhub.settings_store import SettingsStore
+from spookhub.show import display
 from spookhub.show.calibration import CLIP_S, calibration_cues
 from spookhub.show.resolve import CueSpec, Timeline
 from spookhub.tasks import spawn
@@ -86,6 +89,7 @@ class ActiveProfile:
     media_duration: float | None
     idle_path: str | None
     cues: list[CueSpec] = field(default_factory=list)
+    display_profile_id: int | None = None
 
     def macs(self, adopted: list[str]) -> list[str]:
         # "All boards" is resolved at use time so boards adopted later join automatically.
@@ -136,6 +140,7 @@ def load_active(profile_id: int) -> ActiveProfile | None:
             media_duration=media.duration_s if media else None,
             idle_path=idle.path if idle and Path(idle.path).exists() else None,
             cues=specs,
+            display_profile_id=p.display_profile_id,
         )
 
 
@@ -197,7 +202,24 @@ class ShowEngine:
         self.stall_restart_timeout_s = STALL_RESTART_TIMEOUT_S
         self._pub: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
+        # Video setup mode (/video): rides on the test-pattern state so every rule that keeps
+        # shows away from a test pattern (trigger refusal, lock, blackout) applies unchanged.
+        self.display_setup = False
+        self.setup_source: dict[str, Any] | None = None
+        self.live: DisplayGeometry | None = None
+        self._setup_media_dp: int | None = None
+        self._setup_size: tuple[int, int] | None = None
+        # What mpv shows outside setup, as resolved by the per-load hook.
+        self._display_path: str | None = None
+        self._shown = DisplayGeometry()
+        self._shown_id: int | None = None
+        self._shown_size: tuple[int, int] | None = None
+        # Source sizes of files that are not Media rows (generated patterns).
+        self.known_sizes: dict[str, tuple[int, int]] = {}
+        self._last_display: dict[str, Any] | None = None
         player.on_change = self._on_player_change
+        player.geometry_for = self._geometry_for
+        settings.listeners.append(self._on_settings)
 
     # ----- lifecycle -----
 
@@ -243,6 +265,7 @@ class ShowEngine:
 
     def _publish(self) -> None:
         self.bus.publish("show", self.snapshot())
+        self._publish_display()
 
     async def _publish_loop(self) -> None:
         while True:
@@ -262,6 +285,7 @@ class ShowEngine:
             await self._stop_scheduler()
             self.audition = None
             self.test_pattern = False
+            self._clear_display_setup()
             self.active = prof
             self.timeline = Timeline(prof.cues, self.boards.adopted_macs())
             if self.settings.value.active_profile_id != profile_id:
@@ -295,6 +319,7 @@ class ShowEngine:
         self._last_cue.clear()  # forces re-apply on next tick
         if not self.playing_main and self.audition is None:
             self._apply_base(critical=False)
+        self.refresh_display()
         self._publish()
 
     async def deactivate(self) -> None:
@@ -528,8 +553,11 @@ class ShowEngine:
                 return
             if self.blackout:
                 await self._safe(self.player.black())
-            elif self.test_pattern and self._pattern_image:
-                await self._safe(self.player.load(self._pattern_image, loop=True))
+            elif self.test_pattern:
+                if self._pattern_image:
+                    await self._safe(self.player.load(self._pattern_image, loop=True))
+                else:  # video setup with an idle source that has no idle video
+                    await self._safe(self.player.black())
             elif self.calibrating and self._calib_clip:
                 if await self._safe(self.player.load(self._calib_clip, loop=True)):
                     self._last_cue = {m: None for m in self._last_cue}
@@ -763,11 +791,14 @@ class ShowEngine:
                 self.audition = None
                 self.test_pattern = True
                 self.phase = Phase.test_pattern
+                self._clear_display_setup()
                 await self._safe(self.player.load(image, loop=True))
             self.bus.event("info", "Test pattern on")
         elif self.test_pattern:
             self.test_pattern = False
-            self.bus.event("info", "Test pattern off")
+            was_setup = self.display_setup
+            self._clear_display_setup()
+            self.bus.event("info", "Video setup off" if was_setup else "Test pattern off")
             if self.blackout:
                 self.phase = Phase.blackout
                 await self._safe(self.player.black())
@@ -777,6 +808,151 @@ class ShowEngine:
                 self.phase = Phase.none
                 await self._safe(self.player.black())
         self._publish()
+
+    # ----- display geometry & video setup -----
+
+    def _on_settings(self, old: RuntimeSettings, new: RuntimeSettings) -> None:
+        if old.display_profile_id != new.display_profile_id:
+            self.refresh_display()
+
+    def _resolve_for(self, media: display.MediaInfo | None) -> tuple[int | None, DisplayGeometry]:
+        return display.resolve(
+            self.active.display_profile_id if self.active else None,
+            media.display_profile_id if media else None,
+            self.settings.value.display_profile_id,
+        )
+
+    def _setup_resolved(self) -> tuple[int | None, DisplayGeometry]:
+        return display.resolve(
+            self.active.display_profile_id if self.active else None,
+            self._setup_media_dp,
+            self.settings.value.display_profile_id,
+        )
+
+    def _geometry_for(self, path: str) -> tuple[DisplayGeometry, tuple[int, int] | None]:
+        """Per-load hook of the player: geometry for whatever is about to play."""
+        self._display_path = path
+        if self.display_setup:
+            _, g = self._setup_resolved()
+            return self.live or g, self._setup_size
+        media = display.media_by_path(path)
+        self._shown_id, self._shown = self._resolve_for(media)
+        self._shown_size = media.size if media else self.known_sizes.get(path)
+        self._publish_display()
+        return self._shown, self._shown_size
+
+    def refresh_display(self) -> None:
+        """Display profiles or their assignment changed: re-resolve what is on screen now."""
+        try:
+            if self.display_setup:
+                _, g = self._setup_resolved()
+                self.player.apply_geometry(self.live or g, self._setup_size)
+            else:
+                media = display.media_by_path(self._display_path)
+                self._shown_id, self._shown = self._resolve_for(media)
+                self.player.apply_geometry(self._shown, self._shown_size)
+        except Exception:  # noqa: BLE001
+            log.exception("display refresh failed")
+        self._publish_display()
+
+    def display_state(self) -> dict[str, Any]:
+        """WS `display` payload; `geometry` is what mpv shows (live edits included)."""
+        if self.display_setup:
+            rid, g = self._setup_resolved()
+            return {
+                "setup": True,
+                "source": self.setup_source,
+                "live": self.live.model_dump() if self.live else None,
+                "resolved_profile_id": rid,
+                "geometry": (self.live or g).model_dump(),
+            }
+        return {
+            "setup": False,
+            "source": None,
+            "live": None,
+            "resolved_profile_id": self._shown_id,
+            "geometry": self._shown.model_dump(),
+        }
+
+    def _publish_display(self) -> None:
+        try:
+            st = self.display_state()
+        except Exception:  # noqa: BLE001
+            log.exception("display state failed")
+            return
+        if st != self._last_display:
+            self._last_display = st
+            self.bus.publish("display", st)
+
+    def _clear_display_setup(self) -> None:
+        """Leave setup mode (caller restores the picture). Unsaved live edits are dropped."""
+        if not self.display_setup:
+            return
+        self.display_setup = False
+        self.setup_source = None
+        self.live = None
+        self._setup_media_dp = None
+        self._setup_size = None
+        self.refresh_display()
+
+    async def enter_display_setup(
+        self,
+        source: dict[str, Any],
+        path: str | None,
+        media_dp: int | None = None,
+        size: tuple[int, int] | None = None,
+    ) -> None:
+        """Enter video setup or switch its source. Stops any show, like the test pattern.
+
+        `path` None shows black (idle source without an idle video)."""
+        async with self._lock:
+            if self._setup_task is not None:
+                raise SetupBusy("setup test running")
+            if self.blackout:
+                raise SetupBusy("blackout active")
+            entering = not self.display_setup
+            await self._stop_scheduler()
+            if self.playing_main:
+                self.playing_main = False
+                self._apply_base(critical=False)
+            self.audition = None
+            self.test_pattern = True
+            self.phase = Phase.test_pattern
+            self.display_setup = True
+            self.setup_source = source
+            self._setup_media_dp = media_dp
+            self._setup_size = size
+            self._pattern_image = path
+            if path:
+                await self._safe(self.player.load(path, loop=True))
+            else:
+                await self._safe(self.player.black())
+            # Also covers players that skip the load hook.
+            _, g = self._setup_resolved()
+            self.player.apply_geometry(self.live or g, size)
+        if entering:
+            self.bus.event("info", "Video setup on")
+        self._publish()
+
+    async def exit_display_setup(self) -> None:
+        if self.display_setup:
+            await self.set_test_pattern(False)
+
+    def set_live(self, g: DisplayGeometry) -> None:
+        """Unsaved geometry straight to the projector (the player coalesces slider bursts)."""
+        if not self.display_setup:
+            raise SetupBusy("video setup is not active")
+        self.live = g
+        self.player.apply_geometry(g, self._setup_size)
+        self._publish_display()
+
+    async def setup_seek(self, t: float) -> None:
+        src = self.setup_source
+        if not self.display_setup or src is None or src.get("kind") not in ("media", "idle"):
+            raise SetupBusy("no video source to scrub")
+        if not self._pattern_image:
+            raise SetupBusy("no video source to scrub")
+        await self._safe(self.player.seek(t))
 
     # ----- setup activities (test sound now; test-all / calibration later) -----
 
@@ -1036,6 +1212,7 @@ class ShowEngine:
                 self.audition = None
                 if self.test_pattern:
                     self.test_pattern = False
+                    self._clear_display_setup()
                     self.bus.event("info", "Test pattern off")
                 await self._safe(self.player.black())
             self.phase = Phase.blackout

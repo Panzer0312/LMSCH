@@ -18,6 +18,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends \
   mpv ffmpeg python3 python3-venv python3-pip avahi-daemon libnss-mdns alsa-utils \
+  vainfo mesa-va-drivers libgl1-mesa-dri libegl1 fonts-dejavu-core \
   nodejs npm git ca-certificates rsync curl >/dev/null
 # Intel VA-API: iHD for Broadwell+ (non-free), i965 for older chips. Install whatever exists.
 if grep -qi intel /proc/cpuinfo; then
@@ -25,7 +26,6 @@ if grep -qi intel /proc/cpuinfo; then
     || apt-get install -y -qq intel-media-va-driver-non-free >/dev/null 2>&1 || true
   apt-get install -y -qq i965-va-driver >/dev/null 2>&1 || true
 fi
-apt-get install -y -qq vainfo >/dev/null 2>&1 || true
 
 log "Creating user and directories"
 id -u "$USER_NAME" >/dev/null 2>&1 || useradd --system --home-dir "$DATA" --shell /usr/sbin/nologin "$USER_NAME"
