@@ -36,6 +36,7 @@ from spookhub.show import display
 from spookhub.show.calibration import CLIP_S, calibration_cues
 from spookhub.show.resolve import CueSpec, Timeline
 from spookhub.show.scene import IDLE_STATE, SceneRunner
+from spookhub.show.sound_lane import FxPlayer, SoundCue, SoundLane, load_sound_cues
 from spookhub.tasks import spawn
 
 log = logging.getLogger(__name__)
@@ -95,6 +96,7 @@ class ActiveProfile:
     idle_path: str | None
     cues: list[CueSpec] = field(default_factory=list)
     display_profile_id: int | None = None
+    sounds: list[SoundCue] = field(default_factory=list)
     scene: SceneSpec | None = None
 
     def macs(self, adopted: list[str]) -> list[str]:
@@ -119,6 +121,8 @@ def load_active(profile_id: int) -> ActiveProfile | None:
         cues = s.exec(select(Cue).where(Cue.profile_id == profile_id)).all()
         specs = []
         for c in cues:
+            if c.kind == "sound":
+                continue  # fx lane, see sounds below
             tgt = CueTarget.model_validate(c.target or {})
             specs.append(
                 CueSpec(
@@ -149,6 +153,7 @@ def load_active(profile_id: int) -> ActiveProfile | None:
             idle_path=idle.path if idle and Path(idle.path).exists() else None,
             cues=specs,
             display_profile_id=p.display_profile_id,
+            sounds=load_sound_cues(s, list(cues)),
         )
 
 
@@ -262,6 +267,9 @@ class ShowEngine:
         self._scene_home: ActiveProfile | None = None
         self._scene_hold: asyncio.Task[None] | None = None
         self.scene_rng: random.Random | None = None  # injectable for tests
+        # Audio-only effects player for sound cues (set by the hub; None = sound cues off).
+        self.fx: FxPlayer | None = None
+        self._sound = SoundLane()
         player.on_change = self._on_player_change
         player.geometry_for = self._geometry_for
         settings.listeners.append(self._on_settings)
@@ -386,6 +394,7 @@ class ShowEngine:
             self.phase = Phase.blackout if self.blackout else Phase.none
             self.settings.update(active_profile_id=None)
             await self._safe(self.player.black())
+            await self._stop_fx()
             self._publish()
 
     def boards_changed(self) -> None:
@@ -493,6 +502,7 @@ class ShowEngine:
         async with self._lock:
             if self.playing_main:
                 await self._end_show("stopped")
+        await self._stop_fx()
         self._publish()
 
     async def seek(self, t: float) -> None:
@@ -504,6 +514,8 @@ class ShowEngine:
     async def pause(self, paused: bool) -> None:
         if self.playing_main:
             await self._safe(self.player.set_pause(paused))
+            if self.fx is not None and self._sound.playing is not None:
+                await self._safe(self.fx.set_pause(paused))
 
     async def _play_main(self, from_s: float) -> bool:
         a = self.active
@@ -566,6 +578,13 @@ class ShowEngine:
             except asyncio.CancelledError:
                 pass
         self._sched = None
+        self._sound.stop(self.fx)
+
+    async def _stop_fx(self) -> None:
+        """Stop / blackout / deactivate: silence every effects sound, soundboard included."""
+        self._sound.stop(None)
+        if self.fx is not None:
+            await self._safe(self.fx.stop())
 
     def _on_player_change(self, prop: str) -> None:
         if prop == "restart":
@@ -729,6 +748,7 @@ class ShowEngine:
             self._last_t = t
             if seek:
                 self._last_cue.clear()
+                self._sound.resync()
             if paused and not seek:
                 continue
             self._tick(t)
@@ -737,6 +757,14 @@ class ShowEngine:
         a = self._sched_prof
         tl = self._sched_tl
         assert a and tl
+        if (
+            self.playing_main
+            and self.audition is None
+            and not self.calibrating
+            and not self.player.paused  # a seek while paused re-syncs on resume
+        ):
+            # Main audio-delay shifts the soundtrack against time-pos; sounds follow it.
+            self._sound.tick(self.fx, a.sounds, t - self.settings.value.audio_delay_s)
         offset = self.settings.value.sync_offset_ms
         for mac in a.macs(self.boards.adopted_macs()):
             lead = (self.boards.latency_comp_ms(mac) + offset) / 1000.0
@@ -1463,6 +1491,7 @@ class ShowEngine:
         self.blackout = on
         self.boards.set_blackout(on)
         if on:
+            await self._stop_fx()
             # Safety control: never waits for a setup test.
             await self._cancel_setup()
             async with self._lock:

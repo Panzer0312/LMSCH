@@ -19,6 +19,7 @@ from spookhub.config import Config
 from spookhub.events import EventBus, EventWriter
 from spookhub.media import probe
 from spookhub.models import RuntimeSettings
+from spookhub.player.effects import EffectsPlayer
 from spookhub.player.process import MpvPlayer
 from spookhub.settings_store import SettingsStore
 from spookhub.show.engine import ShowEngine
@@ -61,9 +62,13 @@ class Hub:
             health_interval=lambda: self.settings.value.health_interval_s,
         )
         self.player = MpvPlayer(cfg.mpv, self.bus)
+        # Audio-only players: sound cues + soundboard, and the ambient loop.
+        self.fx = EffectsPlayer(cfg.mpv, self.bus, "fx")
+        self.ambient = EffectsPlayer(cfg.mpv, self.bus, "ambient")
         self.engine = ShowEngine(
             self.boards, self.player, self.bus, self.settings, tick_s=cfg.timing.scheduler_tick_s
         )
+        self.engine.fx = self.fx
         self.preflight = Preflight(self)
         self.auth = AuthStore()
         self.version = load_version()
@@ -91,9 +96,14 @@ class Hub:
         self.player.drm_mode_override = s.mpv_drm_mode
         self.player.audio_device_override = s.mpv_audio_device
         await self.player.apply_audio(min(s.master_volume, s.volume_cap), s.audio_delay_s)
+        for fx in self.effects:
+            fx.audio_device_override = s.mpv_audio_device
+            await fx.apply_audio(min(s.master_volume, s.volume_cap), cap=s.volume_cap)
         self.boards.load_from_db()
         await self.boards.start()
         await self.player.start()
+        for fx in self.effects:
+            await fx.start()
         if self.cfg.mdns_enabled:
             try:
                 self.mdns = MdnsDiscovery(self.boards)
@@ -128,9 +138,15 @@ class Hub:
                 await self.mdns.stop()
             await self.boards.stop()
             await self.player.stop()
+            for fx in self.effects:
+                await fx.shutdown()
             await self.http.aclose()
         finally:
             await self.events.stop()
+
+    @property
+    def effects(self) -> tuple[EffectsPlayer, ...]:
+        return (self.fx, self.ambient)
 
     def scan(self) -> bool:
         if self._scan and not self._scan.done():
@@ -157,10 +173,17 @@ class Hub:
             restart = True
         if restart:
             spawn(self.player.restart())
+            for fx in self.effects:
+                spawn(fx.restart())
         if old.mpv_audio_device != new.mpv_audio_device:
             spawn(self.player.set_audio_device(new.mpv_audio_device))
+            for fx in self.effects:
+                spawn(fx.set_audio_device(new.mpv_audio_device))
         audio_old = (min(old.master_volume, old.volume_cap), old.audio_delay_s)
         audio_new = (min(new.master_volume, new.volume_cap), new.audio_delay_s)
         if audio_old != audio_new:
             spawn(self.player.apply_audio(*audio_new))
+        if audio_old[0] != audio_new[0] or old.volume_cap != new.volume_cap:
+            for fx in self.effects:
+                spawn(fx.apply_audio(audio_new[0], cap=new.volume_cap))
         self.bus.publish("settings", new.model_dump())

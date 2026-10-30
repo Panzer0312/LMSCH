@@ -116,6 +116,8 @@ class Media(SQLModel, table=True):
     # Container rotation, clockwise (width/height are the coded frame). None = not probed yet
     # (rows from before the column existed); backfilled at startup.
     rotation: int | None = None
+    # 'video' | 'audio'; audio rows have no picture (no thumbs, transcode or black check).
+    kind: str = SQLField(default="video", sa_column_kwargs={"server_default": "video"})
     created_at: datetime = SQLField(default_factory=utcnow)
     # Per-video framing override; plain id (no FK), cleared when the display profile goes.
     display_profile_id: int | None = None
@@ -163,6 +165,9 @@ class Cue(SQLModel, table=True):
     transition_ms: int | None = None
     label: str | None = None
     color: str | None = None
+    # 'light' | 'sound'. Sound cues ignore target/state; `sound` holds a SoundSpec.
+    kind: str = SQLField(default="light", sa_column_kwargs={"server_default": "light"})
+    sound: dict[str, Any] | None = SQLField(default=None, sa_column=Column(JSON, nullable=True))
 
 
 class CueTemplate(SQLModel, table=True):
@@ -313,14 +318,39 @@ class ProfileIn(BaseModel):
         return self
 
 
+class SoundSpec(BaseModel):
+    media_id: int
+    volume: float = Field(default=1.0, ge=0, le=1.3, allow_inf_nan=False)
+    fade_in_ms: int = Field(default=0, ge=0, le=60000)
+    fade_out_ms: int = Field(default=0, ge=0, le=60000)
+    loop: bool = False
+
+
+CueKind = Literal["light", "sound"]
+
+
 class CueIn(BaseModel):
     start_s: float = Field(ge=0, allow_inf_nan=False)
     duration_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     target: CueTarget = CueTarget()
-    state: LightState
+    # Required for light cues (validator); sound cues ignore it.
+    state: LightState = LightState()
     transition_ms: int | None = Field(default=None, ge=0)
     label: str | None = Field(default=None, max_length=200)
     color: str | None = Field(default=None, pattern=HEX_COLOR)
+    kind: CueKind = "light"
+    sound: SoundSpec | None = None
+
+    @model_validator(mode="after")
+    def _kind_fields(self) -> CueIn:
+        if self.kind == "sound":
+            if self.sound is None:
+                raise ValueError("sound cue needs a sound")
+        else:
+            if "state" not in self.model_fields_set:
+                raise ValueError("light cue needs a state")
+            self.sound = None
+        return self
 
 
 class TemplateCue(BaseModel):

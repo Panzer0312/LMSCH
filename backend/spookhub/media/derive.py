@@ -146,12 +146,14 @@ def _prune(mid: int) -> None:
     _locks.get(asyncio.get_running_loop(), {}).pop(mid, None)
 
 
-async def ensure(media_dir: Path, mid: int, src: Path, duration: float) -> None:
-    """Generate any missing derived assets (idempotent, serialised per media item)."""
+async def ensure(media_dir: Path, mid: int, src: Path, duration: float, video: bool = True) -> None:
+    """Generate any missing derived assets (idempotent, serialised per media item).
+
+    Audio-only media (video=False) gets waveform and onsets, no thumbnails."""
     async with _lock(mid):
         p = paths(media_dir, mid)
         try:
-            if not (p["sprite"].exists() and _valid(p["thumbs"])):
+            if video and not (p["sprite"].exists() and _valid(p["thumbs"])):
                 await make_thumbs(src, duration, p["sprite"], p["thumbs"])
         except Exception as e:  # noqa: BLE001
             log.warning("thumbnails for media %s failed: %s", mid, e)

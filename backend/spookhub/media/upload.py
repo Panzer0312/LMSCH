@@ -1,4 +1,4 @@
-"""Video upload: stream to disk (never buffer GBs in RAM), validate, probe, register."""
+"""Video/audio upload: stream to disk (never buffer GBs in RAM), validate, probe, register."""
 
 from __future__ import annotations
 
@@ -12,7 +12,9 @@ from spookhub import db
 from spookhub.media.probe import ProbeError, probe
 from spookhub.models import Media
 
-ALLOWED_EXT = {".mp4", ".m4v", ".mkv", ".mov", ".webm", ".avi"}
+VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".mov", ".webm", ".avi"}
+AUDIO_EXT = {".mp3", ".wav", ".ogg", ".flac", ".m4a", ".opus"}
+ALLOWED_EXT = VIDEO_EXT | AUDIO_EXT
 MAX_BYTES = 8 * 1024**3
 CHUNK = 1024 * 1024
 
@@ -44,7 +46,7 @@ async def save_upload(file: UploadFile, media_dir: Path) -> Media:
         try:
             info = await probe(tmp)
         except ProbeError as e:
-            raise UploadError(f"not a playable video: {e}") from e
+            raise UploadError(f"not a playable media file: {e}") from e
         tmp.rename(dest)
     finally:
         tmp.unlink(missing_ok=True)
@@ -57,6 +59,7 @@ async def save_upload(file: UploadFile, media_dir: Path) -> Media:
         height=info.height,
         codec=info.codec,
         rotation=info.rotation,
+        kind=info.kind,
     )
     with db.session() as s:
         s.add(m)

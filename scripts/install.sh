@@ -73,6 +73,38 @@ else
   echo "keeping existing $ETC/config.toml"
 fi
 
+log "ALSA mixing"
+# Main video, sound effects and ambience are three mpv processes on one card: plain hw devices
+# allow a single opener, dmix lets them share it. A user-written file is never touched.
+# Card/device default to 0,0; override with SPOOKHUB_ALSA_CARD / SPOOKHUB_ALSA_DEVICE.
+if [[ ! -e /etc/asound.conf ]]; then
+  ALSA_CARD="${SPOOKHUB_ALSA_CARD:-0}"
+  ALSA_DEVICE="${SPOOKHUB_ALSA_DEVICE:-0}"
+  cat >/etc/asound.conf <<CONF
+# Written by Spookhub install.sh (dmix default so several players share the card).
+pcm.!default {
+  type plug
+  slave.pcm "spookmix"
+}
+pcm.spookmix {
+  type dmix
+  ipc_key 5150
+  ipc_perm 0666
+  slave {
+    pcm "hw:${ALSA_CARD},${ALSA_DEVICE}"
+    rate 48000
+  }
+}
+ctl.!default {
+  type hw
+  card ${ALSA_CARD}
+}
+CONF
+  echo "wrote /etc/asound.conf (dmix on hw:${ALSA_CARD},${ALSA_DEVICE})"
+else
+  echo "keeping existing /etc/asound.conf"
+fi
+
 log "Keeping the hub awake"
 # Console blanking would turn the projector picture off when mpv is idle.
 if [[ -f /etc/default/grub ]] && ! grep -q 'consoleblank=0' /etc/default/grub; then

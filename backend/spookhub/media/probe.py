@@ -22,6 +22,7 @@ class ProbeResult:
     codec: str
     # Clockwise degrees the player turns the coded frame (0/90/180/270); width/height stay coded.
     rotation: int = 0
+    kind: str = "video"  # 'audio' when there is no real picture stream
 
 
 def rotation_of(stream: dict[str, Any]) -> int:
@@ -50,9 +51,26 @@ async def probe(path: Path) -> ProbeResult:
     if proc.returncode != 0:
         raise ProbeError(err.decode(errors="replace").strip() or "ffprobe failed")
     data = json.loads(out)
-    video = next((s for s in data.get("streams", []) if s.get("codec_type") == "video"), None)
+    streams = data.get("streams", [])
+    # Cover art in mp3/m4a shows up as a one-frame "video" stream; it is not a picture to play.
+    video = next(
+        (
+            s
+            for s in streams
+            if s.get("codec_type") == "video"
+            and not (s.get("disposition") or {}).get("attached_pic")
+        ),
+        None,
+    )
     if video is None:
-        raise ProbeError("no video stream")
+        audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+        if audio is None:
+            raise ProbeError("no video or audio stream")
+        dur = float(data.get("format", {}).get("duration") or audio.get("duration") or 0.0)
+        return ProbeResult(
+            duration_s=dur, width=0, height=0, codec=str(audio.get("codec_name") or ""),
+            kind="audio",
+        )  # fmt: skip
     dur = float(data.get("format", {}).get("duration") or video.get("duration") or 0.0)
     return ProbeResult(
         duration_s=dur,

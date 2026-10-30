@@ -16,7 +16,7 @@ from spookhub.media import analyze, blackcheck, derive
 from spookhub.media.probe import probe
 from spookhub.media.transcode import needs_transcode, transcode
 from spookhub.media.upload import UploadError, save_upload
-from spookhub.models import Media, Profile
+from spookhub.models import Cue, Media, Profile
 from spookhub.tasks import spawn
 
 router = APIRouter(prefix="/api/media", tags=["media"])
@@ -37,6 +37,11 @@ class MediaOut(BaseModel):
     aspect: float | None = None
     needs_transcode: bool = False
     transcode: dict[str, Any] | None = None
+    kind: str = "video"
+
+
+def _is_audio(m: Media) -> bool:
+    return m.kind == "audio"
 
 
 def _out(m: Media, used_by: list[str], hub: Hub | None = None) -> MediaOut:
@@ -51,8 +56,9 @@ def _out(m: Media, used_by: list[str], hub: Hub | None = None) -> MediaOut:
         rotation=m.rotation or 0,
         used_by=used_by,
         aspect=display_aspect(m),
-        needs_transcode=needs_transcode(m),
+        needs_transcode=not _is_audio(m) and needs_transcode(m),
         transcode=hub.transcodes.get(m.id or 0) if hub else None,
+        kind=m.kind or "video",
     )
 
 
@@ -69,7 +75,18 @@ def _users(mid: int) -> list[str]:
         q = select(Profile).where(
             or_(col(Profile.media_id) == mid, col(Profile.idle_media_id) == mid)
         )
-        return [p.name for p in s.exec(q).all()]
+        names = [p.name for p in s.exec(q).all()]
+        # Sound cues reference media inside JSON; few rows, so filter in Python.
+        cue_pids = {
+            c.profile_id
+            for c in s.exec(select(Cue).where(col(Cue.kind) == "sound")).all()
+            if (c.sound or {}).get("media_id") == mid
+        }
+        for pid in sorted(cue_pids):
+            p = s.get(Profile, pid)
+            if p is not None and p.name not in names:
+                names.append(p.name)
+        return names
 
 
 @router.get("")
@@ -85,6 +102,8 @@ async def start_transcode(mid: int, hub: HubDep) -> dict[str, bool]:
         m = s.get(Media, mid)
     if m is None or not Path(m.path).exists():
         raise HTTPException(404, "media not found")
+    if _is_audio(m):
+        raise HTTPException(422, "audio files are not transcoded")
     if hub.transcodes.get(mid, {}).get("state") == "running":
         raise HTTPException(409, "already transcoding")
     hub.transcodes[mid] = {"state": "running", "progress": 0.0, "error": None}
@@ -144,22 +163,28 @@ async def upload(file: UploadFile, hub: HubDep) -> MediaOut:
         raise HTTPException(422, str(e)) from e
     hub.bus.event("info", f"Uploaded {m.filename}")
     hub.bus.publish("media_changed")
-    spawn(derive.ensure(hub.cfg.paths.media_dir, m.id or 0, Path(m.path), m.duration_s))
+    spawn(
+        derive.ensure(
+            hub.cfg.paths.media_dir, m.id or 0, Path(m.path), m.duration_s, not _is_audio(m)
+        )
+    )
     return _out(m, [])
 
 
-async def _derived(hub: Hub, mid: int) -> dict[str, Path]:
+async def _derived(hub: Hub, mid: int, need_video: bool = False) -> dict[str, Path]:
     with db.session() as s:
         m = s.get(Media, mid)
     if m is None or not Path(m.path).exists():
         raise HTTPException(404, "media not found")
-    await derive.ensure(hub.cfg.paths.media_dir, mid, Path(m.path), m.duration_s)
+    if need_video and _is_audio(m):
+        raise HTTPException(404, "thumbnails unavailable")
+    await derive.ensure(hub.cfg.paths.media_dir, mid, Path(m.path), m.duration_s, not _is_audio(m))
     return derive.paths(hub.cfg.paths.media_dir, mid)
 
 
 @router.get("/{mid}/thumbs")
 async def thumbs_meta(mid: int, hub: HubDep) -> dict[str, Any]:
-    p = await _derived(hub, mid)
+    p = await _derived(hub, mid, need_video=True)
     if not p["thumbs"].exists():
         raise HTTPException(404, "thumbnails unavailable")
     return json.loads(p["thumbs"].read_text())
@@ -167,7 +192,7 @@ async def thumbs_meta(mid: int, hub: HubDep) -> dict[str, Any]:
 
 @router.get("/{mid}/thumbs.jpg")
 async def thumbs_sprite(mid: int, hub: HubDep) -> FileResponse:
-    p = await _derived(hub, mid)
+    p = await _derived(hub, mid, need_video=True)
     if not p["sprite"].exists():
         raise HTTPException(404, "thumbnails unavailable")
     return FileResponse(p["sprite"], media_type="image/jpeg")
@@ -195,6 +220,8 @@ async def black_check(mid: int, hub: HubDep) -> dict[str, Any]:
         m = s.get(Media, mid)
     if m is None or not Path(m.path).exists():
         raise HTTPException(404, "media not found")
+    if _is_audio(m):
+        raise HTTPException(422, "audio has no picture to check")
     try:
         return await blackcheck.check(hub.cfg.paths.media_dir, mid, Path(m.path), m.duration_s)
     except TimeoutError as e:  # before OSError, which it subclasses

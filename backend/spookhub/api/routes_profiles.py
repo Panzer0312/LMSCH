@@ -26,6 +26,7 @@ from spookhub.models import (
     ProfileType,
     SceneItem,
     SceneSpec,
+    SoundSpec,
 )
 
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
@@ -61,6 +62,8 @@ def to_out(s: Session, p: Profile) -> ProfileOut:
                 transition_ms=c.transition_ms,
                 label=c.label,
                 color=c.color,
+                kind="sound" if c.kind == "sound" else "light",
+                sound=SoundSpec.model_validate(c.sound) if c.kind == "sound" and c.sound else None,
             )
             for c in cues
         ],
@@ -97,8 +100,13 @@ def _check_scene(body: ProfileIn, s: Session, pid: int | None) -> None:
 def _apply(p: Profile, body: ProfileIn, s: Session) -> None:
     _check_scene(body, s, p.id)
     for mid in (body.media_id, body.idle_media_id):
-        if mid is not None and s.get(Media, mid) is None:
+        if mid is None:
+            continue
+        m = s.get(Media, mid)
+        if m is None:
             raise HTTPException(422, f"media {mid} not found")
+        if m.kind == "audio" and body.type == ProfileType.video:
+            raise HTTPException(422, f"media {mid} is audio; a video profile needs a video")
     if body.type == ProfileType.video and body.media_id is None:
         raise HTTPException(422, "video profile needs a video")
     # Omitted = untouched: clients that predate display profiles must not clear the override.
@@ -244,6 +252,8 @@ def _cue_row(pid: int, c: CueIn) -> Cue:
         transition_ms=c.transition_ms,
         label=c.label,
         color=c.color,
+        kind=c.kind,
+        sound=c.sound.model_dump() if c.sound else None,
     )
 
 
@@ -254,6 +264,9 @@ async def replace_cues(pid: int, cues: list[CueIn], hub: HubDep) -> ProfileOut:
         p = _get(s, pid)
         if p.type != ProfileType.video:
             raise HTTPException(422, "only video profiles have cues")
+        for c in cues:
+            if c.sound is not None and s.get(Media, c.sound.media_id) is None:
+                raise HTTPException(422, f"sound media {c.sound.media_id} not found")
         for c in s.exec(select(Cue).where(Cue.profile_id == pid)).all():
             s.delete(c)
         for c in cues:

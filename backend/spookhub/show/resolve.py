@@ -37,6 +37,8 @@ class CueSpec:
     transition_ms: int | None = None
     # mac -> segment ids. A mac listed here is hit on those segments only, never as a whole.
     segs: dict[str, frozenset[int]] | None = None
+    # 'sound' cues live on their own lane (engine fx player) and never drive lights.
+    kind: str = "light"
 
     @property
     def end(self) -> float | None:
@@ -97,7 +99,7 @@ class Timeline:
     """Per-board index of cues, sorted by (start, id) for O(log n) lookups at 100 Hz."""
 
     def __init__(self, cues: Iterable[CueSpec], macs: Iterable[str]) -> None:
-        ordered = sorted(cues, key=lambda c: (c.start, c.id))
+        ordered = sorted((c for c in cues if c.kind != "sound"), key=lambda c: (c.start, c.id))
         macs = list(macs)
         self.by_board: dict[str, list[CueSpec]] = {
             m: [c for c in ordered if c.hits(m)] for m in macs

@@ -19,6 +19,8 @@ ALLOWED_EXACT = {
     "/api/show_lock",
     "/api/scene/skip",
     "/api/scene/pin",
+    "/api/sounds/play",
+    "/api/sounds/stop",
 }
 ALLOWED_SHOW = {
     f"/api/show/{n}" for n in ("trigger", "play", "stop", "seek", "pause", "next", "deactivate")
