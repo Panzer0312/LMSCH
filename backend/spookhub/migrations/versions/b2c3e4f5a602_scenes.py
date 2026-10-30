@@ -28,5 +28,21 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Downgrade schema."""
+    # Old profiletype enum has no 'scene'; loading such a row would fail validation.
+    # Enum stores member names, which equal the lowercase values.
+    op.execute(
+        sa.text(
+            "UPDATE setting SET value = json_set(value, '$.active_profile_id', NULL) "
+            "WHERE key = 'runtime' AND json_extract(value, '$.active_profile_id') IN "
+            "(SELECT id FROM profile WHERE type = 'scene')"
+        )
+    )
+    # Cue.profile_id is an FK; drop dependents first so no orphans remain.
+    op.execute(
+        sa.text(
+            "DELETE FROM cue WHERE profile_id IN (SELECT id FROM profile WHERE type = 'scene')"
+        )
+    )
+    op.execute(sa.text("DELETE FROM profile WHERE type = 'scene'"))
     with op.batch_alter_table("profile") as b:
         b.drop_column("scene")

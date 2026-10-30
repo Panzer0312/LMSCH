@@ -75,13 +75,36 @@ fi
 
 log "ALSA mixing"
 # Main video, sound effects and ambience are three mpv processes on one card: plain hw devices
-# allow a single opener, dmix lets them share it. A user-written file is never touched.
-# Card/device default to 0,0; override with SPOOKHUB_ALSA_CARD / SPOOKHUB_ALSA_DEVICE.
-if [[ ! -e /etc/asound.conf ]]; then
-  ALSA_CARD="${SPOOKHUB_ALSA_CARD:-0}"
-  ALSA_DEVICE="${SPOOKHUB_ALSA_DEVICE:-0}"
+# allow a single opener, dmix lets them share it. A user-written file is never touched; a file
+# carrying the spookhub-managed marker is rewritten so improved detection reaches old installs.
+# Card/device: SPOOKHUB_ALSA_CARD / SPOOKHUB_ALSA_DEVICE, else first HDMI playback device, else 0,0.
+# The "Written by" header also counts: files from earlier installs had no marker but ipc_perm 0666.
+if [[ ! -e /etc/asound.conf ]] \
+  || grep -qE '^# (spookhub-managed|Written by Spookhub install\.sh)' /etc/asound.conf; then
+  if [[ -n "${SPOOKHUB_ALSA_CARD:-}" ]]; then
+    ALSA_CARD="$SPOOKHUB_ALSA_CARD"
+    ALSA_DEVICE="${SPOOKHUB_ALSA_DEVICE:-0}"
+  else
+    # LC_ALL=C: aplay localizes "card"/"device". A connected display shows its own name (ELD) in
+    # the trailing brackets, an empty port shows "[HDMI N]", so prefer the first connected port.
+    APLAY="$(LC_ALL=C aplay -l 2>/dev/null || true)"
+    pick_hdmi() { sed -nE "/^card [0-9]+:.*device [0-9]+:.*HDMI/{$1s/^card ([0-9]+):.*device ([0-9]+):.*/\\1 \\2/p;q}" <<<"$APLAY"; }
+    HDMI="$(pick_hdmi '/\[HDMI [0-9]+\]$/b;' || true)"
+    [[ -n "$HDMI" ]] || HDMI="$(pick_hdmi '' || true)"
+    if [[ -n "$HDMI" ]]; then
+      read -r ALSA_CARD ALSA_DEVICE <<<"$HDMI"
+      ALSA_DEVICE="${SPOOKHUB_ALSA_DEVICE:-$ALSA_DEVICE}"
+      echo "detected HDMI playback device hw:${ALSA_CARD},${ALSA_DEVICE}"
+    else
+      ALSA_CARD=0
+      ALSA_DEVICE="${SPOOKHUB_ALSA_DEVICE:-0}"
+      echo "WARNING: no HDMI playback device found (aplay missing or no HDMI card); using hw:0,${ALSA_DEVICE}" >&2
+    fi
+  fi
   cat >/etc/asound.conf <<CONF
+# spookhub-managed
 # Written by Spookhub install.sh (dmix default so several players share the card).
+# Remove the marker line above to keep install.sh from rewriting this file.
 pcm.!default {
   type plug
   slave.pcm "spookmix"
@@ -89,7 +112,8 @@ pcm.!default {
 pcm.spookmix {
   type dmix
   ipc_key 5150
-  ipc_perm 0666
+  ipc_gid audio
+  ipc_perm 0660
   slave {
     pcm "hw:${ALSA_CARD},${ALSA_DEVICE}"
     rate 48000
@@ -102,8 +126,10 @@ ctl.!default {
 CONF
   echo "wrote /etc/asound.conf (dmix on hw:${ALSA_CARD},${ALSA_DEVICE})"
 else
-  echo "keeping existing /etc/asound.conf"
+  echo "keeping existing /etc/asound.conf (not spookhub-managed): make sure it defines a dmix default"
 fi
+echo "note: mpv audio device must be 'auto' or 'alsa/default' so all players share dmix;"
+echo "      raw 'alsa/hdmi:...' or 'alsa/hw:...' devices grab the card and block the effects players."
 
 log "Keeping the hub awake"
 # Console blanking would turn the projector picture off when mpv is idle.

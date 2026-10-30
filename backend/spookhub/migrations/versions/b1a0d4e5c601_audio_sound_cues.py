@@ -31,6 +31,22 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Downgrade schema."""
+    # Old schema treats every cue as light and every media row as video; sound cues and
+    # audio files would surface as broken light cues / unplayable videos.
+    op.execute(sa.text("DELETE FROM cue WHERE kind = 'sound'"))
+    op.execute(
+        sa.text(
+            "UPDATE profile SET media_id = NULL "
+            "WHERE media_id IN (SELECT id FROM media WHERE kind = 'audio')"
+        )
+    )
+    op.execute(
+        sa.text(
+            "UPDATE profile SET idle_media_id = NULL "
+            "WHERE idle_media_id IN (SELECT id FROM media WHERE kind = 'audio')"
+        )
+    )
+    op.execute(sa.text("DELETE FROM media WHERE kind = 'audio'"))
     with op.batch_alter_table("cue") as b:
         b.drop_column("sound")
         b.drop_column("kind")
