@@ -441,3 +441,59 @@ async def test_effects_player_real_mpv(tmp_path):
         assert p.current is None
     finally:
         await p.shutdown()
+
+
+async def test_export_import_remaps_sound_cues_by_filename(client, tmp_path):  # noqa: F811
+    pid, aud, _ = await _video_profile_with_sound(client, tmp_path)
+    data = (await client.get(f"/api/profiles/{pid}/export")).json()
+    snd = next(c for c in data["cues"] if c["kind"] == "sound")["sound"]
+    assert snd["media_filename"] == "boo.wav"
+    # Another hub: same file under another id.
+    sub = tmp_path / "other"
+    sub.mkdir()
+    other = _media(sub, "boo.wav")
+    assert other != aud
+    r = await client.post("/api/profiles/import", json={"data": data})
+    assert r.status_code == 201, r.text
+    sounds = [c["sound"] for c in r.json()["cues"] if c["kind"] == "sound"]
+    assert [s["media_id"] for s in sounds] == [other] and sounds[0]["volume"] == 0.8
+
+    # Unknown file: that cue is dropped (never the raw id), the rest imports, a warning logs.
+    q = client.hub.bus.subscribe()
+    snd["media_filename"] = "missing.wav"
+    r = await client.post("/api/profiles/import", json={"data": data})
+    assert r.status_code == 201, r.text
+    assert [c["kind"] for c in r.json()["cues"]] == ["light"]
+    warns = []
+    while not q.empty():
+        m = q.get_nowait()
+        if m["type"] == "event" and m["data"]["level"] == "warn":
+            warns.append(m["data"]["message"])
+    client.hub.bus.unsubscribe(q)
+    assert any("missing.wav" in w for w in warns)
+    # Legacy export without a filename: same rule.
+    del snd["media_filename"]
+    r = await client.post("/api/profiles/import", json={"data": data})
+    assert [c["kind"] for c in r.json()["cues"]] == ["light"]
+
+
+async def test_blackout_blacks_picture_before_audio(client, tmp_path):  # noqa: F811
+    eng = client.hub.engine
+    order = []
+
+    class Fx(FakeFx):
+        async def stop(self, fade_out_ms=0, owner=None):
+            order.append("fx")
+            await super().stop(fade_out_ms, owner)
+
+    eng.fx = Fx()
+    orig = eng.player.black
+
+    async def black():
+        order.append("black")
+        await orig()
+
+    eng.player.black = black
+    await eng.set_blackout(True)
+    assert order[0] == "black" and "fx" in order
+    await eng.set_blackout(False)

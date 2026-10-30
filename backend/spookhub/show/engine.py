@@ -392,7 +392,8 @@ class ShowEngine:
 
     # ----- profile activation -----
 
-    async def activate(self, profile_id: int, autostart: bool = True) -> None:
+    async def activate(self, profile_id: int, autostart: bool = True, chain: bool = True) -> None:
+        """`chain=False`: a chain scene waits for the next trigger (blackout release)."""
         await self._cancel_setup()
         async with self._lock:
             await self._cancel_setup()  # a setup may have started between the two
@@ -423,7 +424,7 @@ class ShowEngine:
             else:
                 await self._play_main(0.0)
             await self._sync_ambient()
-            if self.scene is not None and self.scene.spec.chain and autostart:
+            if self.scene is not None and self.scene.spec.chain and autostart and chain:
                 spawn(self._scene_chain())
             self._publish()
 
@@ -714,11 +715,16 @@ class ShowEngine:
             self._publish()
 
     async def _finish(self, reason: str) -> None:
+        ended = False
         async with self._lock:
             if self.playing_main:
+                # A moment's video ending hands back to the moment, not to the chain.
+                ended = not self.moments.owns_main()
                 await self._end_show(reason)
         self._publish()
-        if reason == "ended" and self.scene is not None and self.scene.spec.chain:
+        # Only the call that ended the show chains: a stop_show that won the lock first
+        # already ended it, and a manual stop pauses the chain.
+        if ended and reason == "ended" and self.scene is not None and self.scene.spec.chain:
             spawn(self._scene_chain())
 
     async def _crash_resume(self) -> None:
@@ -1162,6 +1168,36 @@ class ShowEngine:
         if not ok:
             # No retry loop: a broken item would spin. The next trigger restarts the chain.
             self.bus.event("warn", f"Scene chain paused: {msg}")
+        self._publish()
+
+    async def profile_deleted(self, profile_id: int) -> None:
+        """A profile row is gone. The activated one deactivates; a playing scene item or
+        moment part only stops, back to the scene idle / moment snapshot."""
+        if self.home_id() == profile_id:
+            await self.deactivate()
+            return
+        if self.active is None or self.active.id != profile_id:
+            return
+        if self.moments.running:
+            await self.moments.stop()
+            return
+        if self._scene_home is not None:
+            await self._scene_stop_item()
+
+    async def _scene_stop_item(self) -> None:
+        """Stop the playing item like a manual stop: scene idle, chain paused."""
+        async with self._lock:
+            if self._scene_home is None or self.active is self._scene_home:
+                return
+            if self.playing_main:
+                await self._end_show("stopped (item deleted)")
+            elif self._scene_hold is not None:
+                self._scene_cancel_hold()
+                self._scene_restore()
+                if not self.blackout and not self.test_pattern:
+                    self.phase = Phase.idle
+                    await self._start_idle_track()
+        await self._stop_fx()
         self._publish()
 
     async def scene_skip(self) -> dict[str, Any]:
@@ -1747,8 +1783,9 @@ class ShowEngine:
         self.blackout = on
         self.boards.set_blackout(on)
         if on:
-            await self._stop_fx()
-            await self._sync_ambient()
+            # Picture first: audio stops alongside, never ahead of the black frame.
+            await self._safe(self.player.black())
+            audio = [spawn(self._stop_fx()), spawn(self._sync_ambient())]
             # Safety control: never waits for a setup test.
             await self._cancel_setup()
             async with self._lock:
@@ -1762,13 +1799,16 @@ class ShowEngine:
                     self.test_pattern = False
                     self._clear_display_setup()
                     self.bus.event("info", "Test pattern off")
+                # Again: a show start that held the lock may have loaded over the first black.
                 await self._safe(self.player.black())
             self.phase = Phase.blackout
             self.bus.event("warn", "BLACKOUT engaged")
+            await asyncio.wait(audio)
         else:
             self.bus.event("info", "Blackout released")
             if self.active:
-                await self.activate(self.home_id() or self.active.id)
+                # Like a manual stop, a chain scene waits for the next trigger.
+                await self.activate(self.home_id() or self.active.id, chain=False)
             else:
                 self.phase = Phase.none
         self._publish()

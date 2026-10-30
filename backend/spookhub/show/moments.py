@@ -35,6 +35,9 @@ AMBIENT_FADE_MS = 400
 LIGHT_ONLY_S = 5.0
 PROGRESS_S = 0.25
 HISTORY = 20
+# mpv may never report the moment video's end (eof lost, player wedged): give up this long
+# after the longest known part.
+WATCHDOG_S = 5.0
 
 
 class MomentRefused(RuntimeError):
@@ -69,6 +72,7 @@ class Run:
     used_player: bool = False  # main picture changed: reload the idle clip on restore
     used_sched: bool = False  # idle track stopped: restart it on restore
     sound_s: float = 0.0
+    video_s: float = 0.0
     light_s: float = LIGHT_ONLY_S
     video_done: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Task[None] | None = None
@@ -287,8 +291,8 @@ class MomentRunner:
         if vp is not None and not r.owns_main and lp is None and sound is None:
             await self._restore(r)
             raise MomentRefused("video could not start (see event log)")
-        video_s = (vp.media_duration or 0.0) if r.owns_main and vp else 0.0
-        r.total = max(video_s, r.sound_s) or r.light_s
+        r.video_s = (vp.media_duration or 0.0) if r.owns_main and vp else 0.0
+        r.total = max(r.video_s, r.sound_s) or r.light_s
         if sound is not None and v.sound is not None:
             await _quiet(
                 self._fx_play(
@@ -303,7 +307,7 @@ class MomentRunner:
     async def _wait(self, r: Run) -> None:
         waits: list[Awaitable[Any]] = []
         if r.owns_main:
-            waits.append(r.video_done.wait())
+            waits.append(self._video_end(r))
         if r.sound_s > 0:
             waits.append(asyncio.sleep(r.sound_s))
         if not waits:
@@ -324,6 +328,19 @@ class MomentRunner:
         self.e._publish()
         self.publish(force=True)
         self.kick()
+
+    async def _video_end(self, r: Run) -> None:
+        known = max(r.video_s, r.sound_s)
+        if known <= 0:
+            await r.video_done.wait()  # no duration to judge by
+            return
+        try:
+            await asyncio.wait_for(r.video_done.wait(), known + WATCHDOG_S)
+        except TimeoutError:
+            log.warning("moment %s: video end never reported, ending it", r.moment_id)
+            self.e.bus.event(
+                "warn", "Moment video did not report its end; moment ended", kind="moment"
+            )
 
     def main_ended(self) -> None:
         """Engine `_end_show` while the moment's video was the main play (eof, stall, error).
@@ -508,6 +525,8 @@ def _load(moment_id: int) -> MomentIn:
         row = s.get(Moment, moment_id)
         if row is None:
             raise KeyError(moment_id)
+        if not row.variants:  # every variant lost its parts to deletions
+            raise MomentRefused("moment has no variants left")
         return MomentIn.model_validate(row.model_dump())
 
 

@@ -261,3 +261,103 @@ def test_scene_migration_up_and_down(tmp_path):
     con = sqlite3.connect(db_file)
     assert "scene" not in {r[1] for r in con.execute("PRAGMA table_info(profile)")}
     con.close()
+
+
+async def test_type_change_blocked_when_referenced(client, tmp_path):
+    c = client
+    a = await _profile(c, name="A")
+    b = await _profile(c, name="B")
+    await _profile(c, name="S", type="scene", scene=_scene([a], idle_profile_id=b))
+    for pid in (a, b):
+        body = (await c.get(f"/api/profiles/{pid}")).json()
+        r = await c.put(f"/api/profiles/{pid}", json={**body, "type": "scene", "scene": _scene([])})
+        assert r.status_code == 422 and "scene 'S'" in r.json()["detail"]
+        assert (await c.get(f"/api/profiles/{pid}")).json()["type"] == "light"
+    # Moments pin the part type too.
+    vid = _media(tmp_path)
+    vp = await _profile(c, name="V", type="video", media_id=vid)
+    r = await c.post(
+        "/api/moments",
+        json={"name": "M", "variants": [{"video_profile_id": vp, "light_profile_id": a}]},
+    )
+    assert r.status_code == 201, r.text
+    body = (await c.get(f"/api/profiles/{vp}")).json()
+    r = await c.put(f"/api/profiles/{vp}", json={**body, "type": "light"})
+    assert r.status_code == 422 and "moment 'M'" in r.json()["detail"]
+    body = (await c.get(f"/api/profiles/{a}")).json()
+    r = await c.put(f"/api/profiles/{a}", json={**body, "type": "video", "media_id": vid})
+    assert r.status_code == 422
+    # Unreferenced profiles and same-type saves are fine.
+    free = await _profile(c, name="Free")
+    body = (await c.get(f"/api/profiles/{free}")).json()
+    r = await c.put(f"/api/profiles/{free}", json={**body, "type": "scene", "scene": _scene([a])})
+    assert r.status_code == 200, r.text
+    body = (await c.get(f"/api/profiles/{a}")).json()
+    assert (await c.put(f"/api/profiles/{a}", json={**body, "name": "A2"})).status_code == 200
+
+
+async def test_delete_playing_item_returns_to_scene_idle(client):
+    c = client
+    eng = c.hub.engine
+    idle = await _profile(c, name="Idle", base_state={"bri": 5})
+    a = await _profile(c, name="A", base_state={"bri": 100})
+    b = await _profile(c, name="B")
+    sid = await _profile(
+        c,
+        name="S",
+        type="scene",
+        scene=_scene([a, b], order="sequential", idle_profile_id=idle, light_hold_s=30),
+    )
+    await c.post(f"/api/profiles/{sid}/activate")
+    assert (await c.post("/api/show/trigger")).json()["ok"]
+    assert eng.active.id == a and eng._scene_hold is not None
+    assert (await c.delete(f"/api/profiles/{a}")).status_code == 200
+    assert eng.home_id() == sid and eng.active.id == sid  # scene still active
+    assert eng.phase.value == "idle" and eng._scene_hold is None
+    assert eng.active.base.bri == 5
+    assert set(eng.scene_state()["upcoming"]) == {b}
+
+
+async def _chain_scene(c, tmp_path):
+    mid = _media(tmp_path)
+    v1 = await _profile(c, name="V1", type="video", media_id=mid)
+    v2 = await _profile(c, name="V2", type="video", media_id=mid)
+    return await _profile(
+        c, name="S", type="scene", scene=_scene([v1, v2], order="sequential", chain=True)
+    )
+
+
+async def _settle():
+    import asyncio
+
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+
+async def test_chain_stays_paused_after_stop_race(client, tmp_path):
+    c = client
+    eng = c.hub.engine
+    sid = await _chain_scene(c, tmp_path)
+    await c.post(f"/api/profiles/{sid}/activate")
+    await wait_for(lambda: eng.playing_main, timeout=2)
+    # Stop wins the lock; the eof handler that lost the race must not chain.
+    await eng.stop_show()
+    await eng._finish("ended")
+    await _settle()
+    assert not eng.playing_main and eng.active.id == sid
+
+
+async def test_chain_stays_paused_after_blackout_release(client, tmp_path):
+    c = client
+    eng = c.hub.engine
+    sid = await _chain_scene(c, tmp_path)
+    await c.post(f"/api/profiles/{sid}/activate")
+    await wait_for(lambda: eng.playing_main, timeout=2)
+    await eng.set_blackout(True)
+    await eng.set_blackout(False)
+    await _settle()
+    assert not eng.playing_main and eng.active.id == sid and eng.phase.value == "idle"
+    # The next trigger restarts the chain.
+    assert (await c.post("/api/show/trigger")).json()["ok"]
+    await eng._finish("ended")
+    await wait_for(lambda: eng.playing_main, timeout=2)

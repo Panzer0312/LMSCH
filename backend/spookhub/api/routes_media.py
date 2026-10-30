@@ -16,7 +16,7 @@ from spookhub.media import analyze, blackcheck, derive
 from spookhub.media.probe import probe
 from spookhub.media.transcode import needs_transcode, transcode
 from spookhub.media.upload import UploadError, save_upload
-from spookhub.models import Cue, Media, Profile
+from spookhub.models import Cue, Media, Moment, Profile
 from spookhub.tasks import spawn
 
 router = APIRouter(prefix="/api/media", tags=["media"])
@@ -91,6 +91,13 @@ def _users(mid: int) -> list[str]:
             p = s.get(Profile, pid)
             if p is not None and p.name not in names:
                 names.append(p.name)
+        # Moment sounds / ambience replacements block a delete like sound cues do.
+        for m in s.exec(select(Moment).order_by(col(Moment.id))).all():
+            if any(
+                (v.get("sound") or {}).get("media_id") == mid or v.get("ambience_media_id") == mid
+                for v in m.variants or []
+            ):
+                names.append(f"moment '{m.name}'")
         return names
 
 

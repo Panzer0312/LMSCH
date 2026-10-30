@@ -481,3 +481,83 @@ async def test_setup_and_video_setup_refuse(env):
     assert eng.setup_blocker() == "a moment is playing"
     await c.post("/api/moments/stop")
     assert eng.setup_blocker() is None
+
+
+async def test_watchdog_ends_moment_without_video_end(env, monkeypatch):
+    from spookhub.show import moments
+
+    monkeypatch.setattr(moments, "WATCHDOG_S", 0.1)
+    c, eng = env.c, env.eng
+    home = await _video_home(env)
+    drac = env.media("drac.mp4", "video", 0.2)
+    vp = await env.profile(name="Dracula", type="video", media_id=drac)
+    mid = await env.moment([_variant(video_profile_id=vp)])
+    await c.post(f"/api/profiles/{home}/activate")
+    q = c.hub.bus.subscribe()
+    assert (await c.post(f"/api/moments/{mid}/play")).status_code == 200
+    assert eng.moments.owns_main()
+    # mpv never reports eof: the watchdog ends it after 0.2 + 0.1 s.
+    await wait_for(lambda: not eng.moments.running, timeout=2)
+    assert eng.active.id == home and eng.phase.value == "idle" and not eng.playing_main
+    msgs = []
+    while not q.empty():
+        m = q.get_nowait()
+        if m["type"] == "event":
+            msgs.append(m["data"]["message"])
+    c.hub.bus.unsubscribe(q)
+    assert any("did not report its end" in m for m in msgs)
+
+
+async def test_profile_delete_strips_moment_parts(env):
+    c = env.c
+    vid = env.media("v.mp4", "video")
+    vp = await env.profile(name="Dracula", type="video", media_id=vid)
+    lp = await env.profile(name="Flicker")
+    mid = await env.moment(
+        [_variant(video_profile_id=vp, light_profile_id=lp), _variant(light_profile_id=lp)]
+    )
+    q = c.hub.bus.subscribe()
+    assert (await c.delete(f"/api/profiles/{lp}")).status_code == 200
+    vs = (await c.get("/api/moments")).json()[0]["variants"]
+    assert len(vs) == 1 and vs[0]["video_profile_id"] == vp and vs[0]["light_profile_id"] is None
+    types = []
+    while not q.empty():
+        types.append(q.get_nowait()["type"])
+    c.hub.bus.unsubscribe(q)
+    assert "moments_changed" in types
+    # Last part gone: the moment stays, with nothing to play.
+    assert (await c.delete(f"/api/profiles/{vp}")).status_code == 200
+    ms = (await c.get("/api/moments")).json()
+    assert [m["id"] for m in ms] == [mid] and ms[0]["variants"] == []
+    r = await c.post(f"/api/moments/{mid}/play")
+    assert r.status_code == 409 and "no variants" in r.json()["detail"]
+
+
+async def test_media_delete_refused_when_moment_uses_it(env):
+    c = env.c
+    lp = await env.profile(name="Flicker")
+    organ = env.media("organ.ogg")
+    rain = env.media("rain.ogg")
+    await env.moment(
+        [
+            _variant(sound={"media_id": organ}),
+            _variant(light_profile_id=lp, ambience="replace", ambience_media_id=rain),
+        ]
+    )
+    for m in (organ, rain):
+        r = await c.delete(f"/api/media/{m}")
+        assert r.status_code == 409 and "moment 'Doorbell'" in r.json()["detail"]
+    media = {m["id"]: m for m in (await c.get("/api/media")).json()}
+    assert media[organ]["used_by"] == ["moment 'Doorbell'"]
+
+
+async def test_deleting_playing_moment_profile_restores(env):
+    c, eng = env.c, env.eng
+    home = await _video_home(env)
+    lp = await env.profile(name="Flicker", base_state={"bri": 50}, idle_length_s=30)
+    mid = await env.moment([_variant(light_profile_id=lp)])
+    await c.post(f"/api/profiles/{home}/activate")
+    assert (await c.post(f"/api/moments/{mid}/play")).status_code == 200
+    assert eng.active.id == lp
+    assert (await c.delete(f"/api/profiles/{lp}")).status_code == 200
+    assert not eng.moments.running and eng.active.id == home  # home kept, not deactivated

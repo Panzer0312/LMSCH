@@ -21,6 +21,7 @@ from spookhub.models import (
     LightState,
     Marker,
     Media,
+    Moment,
     Profile,
     ProfileIn,
     ProfileOut,
@@ -102,8 +103,25 @@ def _check_scene(body: ProfileIn, s: Session, pid: int | None) -> None:
             raise HTTPException(422, "scenes cannot contain scenes")
 
 
+def _check_refs(s: Session, pid: int, new_type: ProfileType) -> None:
+    """A type change must not break scenes or moments that use this profile."""
+    if new_type == ProfileType.scene:
+        for sc in s.exec(select(Profile).where(Profile.type == ProfileType.scene)).all():
+            spec = SceneSpec.model_validate(sc.scene or {})
+            if spec.idle_profile_id == pid or any(i.profile_id == pid for i in spec.items):
+                raise HTTPException(422, f"used by scene '{sc.name}'; scenes cannot contain scenes")
+    for m in s.exec(select(Moment)).all():
+        for v in m.variants or []:
+            if v.get("video_profile_id") == pid and new_type != ProfileType.video:
+                raise HTTPException(422, f"used as video by moment '{m.name}'")
+            if v.get("light_profile_id") == pid and new_type != ProfileType.light:
+                raise HTTPException(422, f"used as light by moment '{m.name}'")
+
+
 def _apply(p: Profile, body: ProfileIn, s: Session) -> None:
     _check_scene(body, s, p.id)
+    if p.id is not None and body.type != p.type:
+        _check_refs(s, p.id, body.type)
     for mid in (body.media_id, body.idle_media_id):
         if mid is None:
             continue
@@ -200,14 +218,36 @@ async def delete(pid: int, hub: HubDep) -> dict[str, bool]:
             s.delete(c)
         s.delete(p)
         touched = _drop_from_scenes(s, pid)
+        moments = _drop_from_moments(s, pid)
         s.commit()
     engine = hub.engine
-    if engine.home_id() == pid or (engine.active and engine.active.id == pid):
-        await engine.deactivate()
+    await engine.profile_deleted(pid)
     for sid in touched:
         await engine.reload_if_active(sid)
     _changed(hub)
+    if moments:
+        hub.bus.publish("moments_changed")
     return {"ok": True}
+
+
+def _drop_from_moments(s: Session, pid: int) -> bool:
+    """Strip a deleted profile from moment variants; a variant left without parts goes, the
+    moment stays (possibly with no variants until edited)."""
+    changed = False
+    for m in s.exec(select(Moment)).all():
+        variants = []
+        for v in m.variants or []:
+            v = dict(v)
+            for key in ("video_profile_id", "light_profile_id"):
+                if v.get(key) == pid:
+                    v[key] = None
+            if v.get("video_profile_id") or v.get("light_profile_id") or v.get("sound"):
+                variants.append(v)
+        if variants != (m.variants or []):
+            m.variants = variants
+            s.add(m)
+            changed = True
+    return changed
 
 
 def _drop_from_scenes(s: Session, pid: int) -> list[int]:
@@ -320,6 +360,14 @@ def export_profile(pid: int) -> JSONResponse:
         dp = s.get(DisplayProfile, p.display_profile_id) if p.display_profile_id else None
         scene = _scene_export(s, p.scene) if p.scene else None
         amb = s.get(Media, p.ambient.media_id) if p.ambient else None
+        cues = []
+        for c in p.cues:
+            row = c.model_dump(exclude={"id"})
+            if c.sound is not None:
+                # Media ids differ between hubs: the filename is the identity, like videos.
+                snd = s.get(Media, c.sound.media_id)
+                row["sound"]["media_filename"] = snd.filename if snd else None
+            cues.append(row)
     data = {
         "format": EXPORT_FORMAT,
         "version": 1,
@@ -335,7 +383,7 @@ def export_profile(pid: int) -> JSONResponse:
                 "ambient",
             }
         ),
-        "cues": [c.model_dump(exclude={"id"}) for c in p.cues],
+        "cues": cues,
         "media_filename": media.filename if media else None,
         "idle_media_filename": idle.filename if idle else None,
         # Ids differ between hubs; the name is the identity, geometry recreates it if missing.
@@ -421,7 +469,8 @@ def import_profile(body: ImportIn, hub: HubDep) -> ProfileOut:
         raise HTTPException(422, "not a Spookhub profile export")
     try:
         prof = ProfileIn.model_validate(d.get("profile", {}))
-        cues = [CueIn.model_validate(c) for c in d.get("cues", [])]
+        raw_cues = [c for c in d.get("cues", []) if isinstance(c, dict)]
+        cues = [CueIn.model_validate(c) for c in raw_cues]
         dp_data = d.get("display_profile")
         dp_name: str | None = None
         dp_geom: DisplayGeometry | None = None
@@ -431,6 +480,7 @@ def import_profile(body: ImportIn, hub: HubDep) -> ProfileOut:
     except ValidationError as e:
         raise HTTPException(422, f"invalid profile data: {e.errors()[0]['msg']}") from e
     created_dp = False
+    warnings: list[str] = []
     with db.session() as s:
         if prof.type == ProfileType.scene:
             try:
@@ -448,6 +498,9 @@ def import_profile(body: ImportIn, hub: HubDep) -> ProfileOut:
                 )
         prof.display_profile_id = None  # a foreign hub's id means nothing here
         prof.ambient = _ambient_import(s, d.get("ambient"))
+        amb_name = (d.get("ambient") or {}).get("media_filename")
+        if prof.ambient is None and amb_name:
+            warnings.append(f"ambient sound '{amb_name}' not found, ambient dropped")
         if dp_name is not None and dp_geom is not None:
             # Same name = same physical setup on this hub: reuse it, never overwrite it.
             row = s.exec(select(DisplayProfile).where(DisplayProfile.name == dp_name)).first()
@@ -467,7 +520,18 @@ def import_profile(body: ImportIn, hub: HubDep) -> ProfileOut:
         s.add(p)
         s.commit()
         s.refresh(p)
-        for c in cues:
+        for raw, c in zip(raw_cues, cues, strict=True):
+            if c.sound is not None:
+                fname = (raw.get("sound") or {}).get("media_filename")
+                mid = _media_by_name(s, fname)
+                if mid is None:
+                    # Never fall back to the raw id: on another hub it is some other file.
+                    warnings.append(
+                        f"sound '{fname or c.sound.media_id}' not found, "
+                        f"sound cue at {c.start_s:g} s dropped"
+                    )
+                    continue
+                c.sound.media_id = mid
             if not c.target.all:
                 c.target.macs = [m for m in c.target.macs if m in known]
                 if not c.target.macs:
@@ -477,5 +541,8 @@ def import_profile(body: ImportIn, hub: HubDep) -> ProfileOut:
         out = to_out(s, p)
     if created_dp:
         hub.bus.publish("display_profiles_changed")
+    # The import response is the profile itself; dropped parts go to the event log.
+    for w in warnings:
+        hub.bus.event("warn", f"Import '{out.name}': {w}", kind="import")
     _changed(hub)
     return out

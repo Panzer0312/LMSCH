@@ -486,3 +486,5 @@ class MomentIn(BaseModel):
 class MomentOut(MomentIn):
     id: int
     sort: int
+    # Deleting a profile strips its parts; a moment can end up with no variants until edited.
+    variants: list[MomentVariant] = Field(max_length=50)
