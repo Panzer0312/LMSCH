@@ -32,7 +32,7 @@
 | `models.py` | SQLModel tables + Pydantic I/O models |
 | `db.py`, `migrations/` | SQLite session, Alembic revisions shipped in package |
 | `auth.py` | Optional PIN → year-long session cookie; trigger token |
-| `backup.py` | Zip of DB + config; restore staged, swapped at startup |
+| `backup.py` | Zip of DB + config (jukebox tokens, token hashes, admin stripped, then VACUUM); restore staged, swapped at startup |
 | `boards/client.py` | WLED HTTP client (`/json/si`, `/json/state`, `/json/cfg`, presets) |
 | `boards/registry.py` | `BoardManager`: health loop, status, desired state layers, reconcile |
 | `boards/queue.py` | Per-board latest-wins mailbox, cue vs normal retry policy |
@@ -60,7 +60,10 @@
 | `api/routes_events.py` | `GET /api/events`, `/api/events/stats` |
 | `api/routes_display.py`, `api/routes_patterns.py` | `/api/display/*`, `PATCH /api/media/{id}` (display assignment) |
 | `api/routes_scene.py`, `api/routes_sounds.py`, `api/routes_moments.py` | `/api/scene/*`, `/api/sounds/*`, `/api/moments/*` (see [`api.md`](api.md)) |
-| `lock.py` | Show-lock middleware: mutating `/api` calls get 423 unless allowlisted |
+| `lock.py` | Show-lock middleware: mutating `/api` calls get 423 unless allowlisted (`/api/jukebox/*` always passes) |
+| `jukebox/service.py` | `JukeboxService` (`Hub.jukebox`): guests (token as sha256), admin role, add rules, skip votes, own queue, player loop, show pause. One `Setting` row `jukebox` |
+| `jukebox/spotify.py` | `SpotifyClient`: PKCE login, refresh 60 s early, 401 ⇒ refresh + retry once, 429 ⇒ `Retry-After` (≤ 10 s), else `SpotifyError` |
+| `jukebox/fairqueue.py` | Pure play order: bumped first (latest bump first), then round-robin by guest |
 | `sdnotify.py` | `sd_notify` over `NOTIFY_SOCKET`: READY, WATCHDOG, STOPPING. No-op outside systemd |
 | `media/*` | Upload (video `.mp4 .m4v .mkv .mov .webm .avi`, audio `.mp3 .wav .ogg .flac .m4a .opus`), probe (no picture stream ⇒ `kind=audio`; cover art ignored), derive (`<id>.thumbs.jpg/.json` video only, `<id>.wave.json`, `<id>.onsets.json`), transcode (video only) |
 | `media/analyze.py` | Pure-Python onsets + BPM: 100 Hz RMS envelope, log-energy flux, median + 3·MAD peaks (≥ 80 ms apart), autocorrelation BPM. Output `{rate, onsets: [{t, strength}], bpm}` |
@@ -78,7 +81,7 @@
 | `Moment` | id, name (1–100), icon (≤32), color, sort, cooldown_s (0–3600), busy `ignore`/`interrupt`/`queue`, order `shuffle`/`weighted`, variants JSON (1–50) |
 | `CueTemplate` | id, name, cues JSON `[{offset_s, duration_s?, lane all/first/same, state, transition_ms?, label?, color?}]` (1–500), created_at |
 | `EventLog` | id, ts, level, kind (`trigger`, `board`, `player`, …), message, data JSON. Kept 7 days |
-| `Setting` | key/value JSON. Key `runtime` holds `RuntimeSettings` |
+| `Setting` | key/value JSON. Key `runtime` holds `RuntimeSettings`; `auth` the PIN; `jukebox` client_id, Spotify tokens, device_name, guests `{id, name, token_hash, banned, last_seen}`, admin_id, settings, queue, current, history (≤ 20), seq. No migration |
 
 `CueTarget.segs` `{mac: [seg ids]}`: on that board the cue drives only those WLED segments,
 never the whole board. Absent = whole boards only.
@@ -204,6 +207,14 @@ displayed, rotated frame), brightness/contrast/gamma/saturation (±100), corners
   from the board state.
 - Audition `muted` MACs are held at the profile base.
 - Light resolution skips `kind: sound` cues. Main and idle tracks resolve separately.
+
+- **Jukebox loop.** Never raises: errors land in `state.spotify.error`, back off 5 s → 60 s.
+  Polls `GET /me/player` every 3 s (15 s when idle); < 4 s left ⇒ sleeps until 300 ms before the
+  end, then plays the next entry (`PUT play {uris:[uri]}`, transfer once per device). Ignores the
+  player state for 6 s after a play (Spotify lags). Fallback or foreign tracks are never cut
+  mid-song. Show or moment running ⇒ pause (`paused: show`), resume after. A track Spotify refuses
+  3× (400/403) is dropped. Another device of the account playing ⇒ wait. Skips carry a target
+  track (no double skip). Publishes `jukebox` only when state minus progress changed.
 
 ## API and WebSocket
 

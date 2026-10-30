@@ -13,7 +13,8 @@
 | `/moments` | Moments | Button board for one-shot moments, see below. Phone and tablet |
 | `/media` | Media | Video and audio upload with progress, All/Video/Audio filter, probe info, transcode, used-by, delete (blocked if used), aspect badge, black check, per-video display profile |
 | `/video` | Video setup | Setup mode, source on projector, display profile editor (frame, keystone, mask, image), A/B compare. Works on a phone |
-| `/settings` | Settings | Sync offset, health interval, default transition, log level, mpv output, brightness and volume caps, show mode toggle, test pattern, PIN, trigger token, backup/restore. Footer shows deployed commit and install time |
+| `/music` | Jukebox (guests, no PIN) | Join with a name, search Spotify, shared queue, vote skip. Host tab for the first device that joins. `/jukebox` redirects here. See below |
+| `/settings` | Settings | Sync offset, health interval, default transition, log level, mpv output, brightness and volume caps, show mode toggle, test pattern, PIN, trigger token, backup/restore. Jukebox: "Reset jukebox admin" (next device joining `/music` becomes host). Footer shows deployed commit and install time |
 
 Blackout button is in the header on every page. Stops video, blacks projector, boards off, held until released.
 
@@ -132,6 +133,44 @@ Dashboard banner shows when any check fails.
 
 Dashboard "History": triggers tonight (since local noon), triggers per hour bars, last 100 events
 from the persistent log. Events survive restarts and are kept 7 days.
+
+## Jukebox (`/music`)
+
+Outside the PIN gate and the main UI; the nav link "Jukebox" opens it with a full page load.
+Mobile-first, works on a desktop for the host. Live over `/ws/jukebox`, reconnects with backoff.
+
+**Guest**
+
+- **Join:** name (1–24 chars) → "Join the party". Name and token stay in localStorage. A lost token
+  (401) goes back to the join screen with the name filled in.
+- **Now playing:** art, title, artist, "added by X" (or "Spookhub radio" for the fallback
+  playlist), progress bar that runs client-side between updates.
+- **Skip:** "Vote skip · votes/needed", disabled after voting. The requester sees "Skip my song",
+  the host "Skip"; both skip at once.
+- **Search:** debounced 350 ms; pasting a Spotify track link works. "Add" shows a toast; server
+  errors (limit, duplicate, closed, banned, too long) show as red toasts. Buttons read "Queued ✓",
+  "Playing", "Explicit off" or "Too long" when adding can't work. Spotify not connected ⇒ search
+  is disabled with a hint.
+- **My songs:** `n / limit` (host: ∞). **Up next:** play order, position, requester, own songs
+  marked "yours" with remove. **Recently played:** collapsible, last 20.
+- **Banners:** "Paused for the show 👻", paused by the host, requests closed, DJ booth not set up.
+- **Become host:** shown when nobody is host (after a reset).
+
+**Host** (tab "👑 Host", two columns on desktop)
+
+- **Spotify wizard:** 1. create app, redirect URI with Copy, Client ID field. 2. "Connect Spotify".
+  On the hub itself it redirects; elsewhere it opens the login in a new tab and asks to paste the
+  failed `127.0.0.1…` address ("Finish"). `?spotify=ok|error` shows a toast and is removed from the
+  URL. 3. Speaker status, rename, device list, one-time hint (pick the speaker once in a Spotify app
+  on the same WiFi). Disconnect.
+- **Invite guests:** QR + big join URL (`http://<host>/music` when port 80 is proxied, else the
+  current origin). Warns on `localhost`. "Show big" fills the screen for a TV or print.
+- **Controls:** pause/resume, skip, volume slider (sent on release). Pause is off while the show
+  holds the speaker.
+- **Queue:** ⤒ plays an entry next, ✕ removes, "Clear queue" (confirm).
+- **Rules:** guests can add, explicit allowed (switch, instant), songs per guest, max length,
+  skip vote %, fallback playlist (Save rules).
+- **Guests:** live list, pending count, last seen, Ban/Unban (drops their songs), Make host (you lose host).
 
 ## Profiles and playback
 

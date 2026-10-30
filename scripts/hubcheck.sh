@@ -46,6 +46,18 @@ else
   echo "systemctl missing"
 fi
 
+section "jukebox"
+if have systemctl; then
+  printf 'raspotify: %s\n' "$(systemctl is-active raspotify 2>/dev/null || true)"
+  printf 'spookhub-http.socket: %s\n' "$(systemctl is-active spookhub-http.socket 2>/dev/null || true)"
+fi
+if have ss; then
+  l80="$(ss -ltnH 'sport = :80' 2>/dev/null | awk '{print $4}' | paste -sd ' ' -)"
+  printf ':80 listener: %s\n' "${l80:-none}"
+else
+  echo "ss missing"
+fi
+
 section "version"
 if [ -r /opt/spookhub/version.json ]; then cat /opt/spookhub/version.json; echo; else echo "/opt/spookhub/version.json not found"; fi
 

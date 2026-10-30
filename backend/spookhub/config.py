@@ -63,6 +63,19 @@ class TimingCfg(BaseModel):
     scan_timeout_s: float = 0.8
 
 
+class JukeboxCfg(BaseModel):
+    enabled: bool = True
+    # Spotify Connect name of the librespot speaker on the hub (raspotify LIBRESPOT_NAME).
+    device_name: str = "Spookhub"
+    # None: http://127.0.0.1:<server.port>/api/jukebox/spotify/callback (Spotify allows plain
+    # http only on loopback).
+    redirect_uri: str | None = None
+    poll_active_s: float = 3.0
+    poll_idle_s: float = 15.0
+    accounts_url: str = "https://accounts.spotify.com"
+    api_url: str = "https://api.spotify.com/v1"
+
+
 class Config(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SPOOKHUB_", env_nested_delimiter="__")
 
@@ -70,6 +83,7 @@ class Config(BaseSettings):
     paths: PathsCfg = PathsCfg()
     mpv: MpvCfg = MpvCfg()
     timing: TimingCfg = TimingCfg()
+    jukebox: JukeboxCfg = JukeboxCfg()
     # Disable discovery for tests / sandboxed dev.
     mdns_enabled: bool = True
 

@@ -1,7 +1,8 @@
 """Optional UI PIN (session cookie) and optional trigger token.
 
 No auth by default. When a PIN is set, every /api route and /ws need a valid session cookie,
-except login/status and /api/trigger (which has its own optional token, for PIR sensors etc.).
+except login/status, /api/trigger (which has its own optional token, for PIR sensors etc.) and
+/api/jukebox/* (guest tokens).
 """
 
 from __future__ import annotations
@@ -22,6 +23,9 @@ from spookhub.models import Setting
 KEY = "auth"
 COOKIE = "spookhub_session"
 OPEN_PATHS = {"/api/auth/login", "/api/auth/status", "/api/auth/logout", "/api/trigger"}
+# Party guests use the jukebox without the PIN; it has its own guest tokens and host role.
+# /api/jukebox_reset is outside this prefix on purpose.
+OPEN_PREFIX = "/api/jukebox/"
 
 
 def _hash(pin: str, salt: str) -> str:
@@ -97,7 +101,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         path = request.url.path.rstrip("/") or "/"
-        guarded = path.startswith("/api/") and path not in OPEN_PATHS
+        guarded = (
+            path.startswith("/api/") and path not in OPEN_PATHS and not path.startswith(OPEN_PREFIX)
+        )
         if guarded and not self.store.valid_session(request.cookies.get(COOKIE)):
             return JSONResponse({"detail": "PIN required"}, status_code=401)
         return await call_next(request)

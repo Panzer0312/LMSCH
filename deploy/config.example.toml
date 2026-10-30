@@ -21,6 +21,13 @@ ao = "alsa"                # PipeWire needs a user session; ALSA works from a sy
 extra_args = []            # e.g. ["--audio-device=alsa/hdmi:CARD=PCH,DEV=0", "--drm-connector=HDMI-A-1"]
 socket_path = "/run/spookhub/mpv.sock"
 
+[jukebox]
+enabled = true
+device_name = "Spookhub"   # Spotify Connect speaker name; install.sh writes it into /etc/raspotify/conf
+# OAuth redirect registered in the Spotify app. Default: http://127.0.0.1:<server.port>/api/jukebox/spotify/callback
+# (Spotify allows plain http only on loopback.)
+# redirect_uri = "http://127.0.0.1:8080/api/jukebox/spotify/callback"
+
 [timing]
 health_interval_s = 3.0
 health_timeout_s = 1.5

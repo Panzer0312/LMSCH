@@ -29,6 +29,8 @@ const post = <T = { ok: boolean }>(p: string, b: unknown = {}) => req<T>('POST',
 
 export const api = {
   state: () => req<AppState>('GET', '/api/state'),
+  /** Clears the jukebox host so the next device joining /music becomes host. */
+  jukeboxReset: () => post('/api/jukebox_reset'),
   showLock: (on: boolean, pin?: string) => post<{ show_lock: boolean }>('/api/show_lock', { on, pin: pin ?? null }),
   setup: {
     outputs: () => req<DrmOutput[]>('GET', '/api/setup/outputs'),

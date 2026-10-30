@@ -43,6 +43,8 @@ export default function App() {
               {label}
             </NavLink>
           ))}
+          {/* Full page load: /music lives outside the router and the PIN gate. */}
+          <a href="/music" className="whitespace-nowrap rounded-lg px-3 py-1.5 text-mute hover:text-ink">Jukebox</a>
         </nav>
       </header>
       <main className="flex-1 px-4 py-4">

@@ -17,12 +17,13 @@ from spookhub.boards.discovery import MdnsDiscovery, scan_subnet
 from spookhub.boards.registry import BoardManager
 from spookhub.config import Config
 from spookhub.events import EventBus, EventWriter
+from spookhub.jukebox.service import JukeboxService
 from spookhub.media import probe
 from spookhub.models import RuntimeSettings
 from spookhub.player.effects import EffectsPlayer
 from spookhub.player.process import MpvPlayer
 from spookhub.settings_store import SettingsStore
-from spookhub.show.engine import ShowEngine
+from spookhub.show.engine import Phase, ShowEngine
 from spookhub.show.preflight import Preflight
 from spookhub.tasks import spawn
 
@@ -74,6 +75,13 @@ class Hub:
         # re-issues its sound on the next tick by itself.
         self.ambient.on_change = self._on_ambient_change
         self.preflight = Preflight(self)
+        # The show owns the speaker: Spotify pauses while a show or moment plays.
+        self.jukebox = JukeboxService(
+            cfg,
+            self.bus,
+            self.http,
+            show_busy=lambda: self.engine.phase == Phase.playing or self.engine.moments.running,
+        )
         self.auth = AuthStore()
         self.version = load_version()
         # media id -> {state: running|failed, progress, error}
@@ -116,6 +124,10 @@ class Hub:
                 log.exception("mDNS discovery unavailable; use scan/manual add")
         await self.engine.start()
         await self.preflight.start()
+        try:
+            await self.jukebox.start()
+        except Exception:  # noqa: BLE001
+            log.exception("jukebox failed to start; the show runs without it")
         # Off the startup path: ffprobe per old row, the picture is corrected once it is known.
         spawn(probe.backfill_rotation(self._media_rotation_changed))
         self.bus.event("info", "Spookhub started")
@@ -148,6 +160,7 @@ class Hub:
             await self.player.stop()
             for fx in self.effects:
                 await fx.shutdown()
+            await self.jukebox.stop()
             await self.http.aclose()
         finally:
             await self.events.stop()

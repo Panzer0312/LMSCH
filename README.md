@@ -59,6 +59,8 @@ they apply.
 | `git` | `git pull` deploy, version stamp | yes |
 | `ca-certificates`, `curl` | HTTPS for npm and pip | yes |
 | `rsync` | Copies the checkout to `/opt/spookhub` | yes |
+| `raspotify` | Jukebox: librespot Spotify Connect speaker on the dmix default. From the repo `https://dtcooper.github.io/raspotify` (added by `install.sh`; failure only warns; skip with `SPOOKHUB_SPOTIFY=0`) | yes |
+| `systemd` (`systemd-socket-proxyd`), `iproute2` (`ss`) | Jukebox: port 80 → app forward for `http://<ip>/music` (skip with `SPOOKHUB_PORT80=0`) | preinstalled |
 
 ## Debian desktop for development
 

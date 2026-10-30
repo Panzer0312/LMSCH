@@ -68,3 +68,13 @@ Choices made where the spec was open. Append new rows; mark replaced rows "super
 | Moment interrupting a show | A moment with `busy=interrupt` ends a running show without setting the show profile's cooldown. |
 | Replacement ambience volume | The profile ambient's `volume` when the profile has an ambient, else 1.0. Not ducked. |
 | Profile type change to light | Main-track cues are deleted (info event with the count); idle cues stay. |
+| Jukebox queue | Own queue on the hub, one track per `PUT play {uris}`. Spotify's queue API can't remove or reorder. |
+| Jukebox speaker | librespot (`raspotify`) on the hub as Spotify Connect device, ALSA `default` (dmix with mpv). Driven via the Web API with the host's Premium account. |
+| Jukebox login | Authorization Code + PKCE, no client secret. Default redirect `http://127.0.0.1:<port>/…/callback` (Spotify allows http only on loopback); other browsers paste the address bar URL. |
+| Jukebox admin | First guest to join is admin, so the host opens `/music` first. Hand-over via make_admin. `POST /api/jukebox_reset` frees it; it is protected only by the UI PIN, so set a PIN to stop guests resetting the host. |
+| Jukebox fairness | Round-robin by guest (round = earlier pending songs of that guest). Bumps play first, latest bump first. |
+| Jukebox vs show | Show playing or moment running ⇒ Spotify paused, resumed after. Skips refused meanwhile. |
+| Jukebox other speakers | While another device of the account plays, the queue waits (`spotify.error` says where). A paused or idle account is taken over by the hub. Fallback or foreign tracks paused mid-song are not cut either. |
+| Jukebox guest list | Sent on `/ws/jukebox` to the admin token only. |
+| Jukebox skips | Vote and host skips name their target track; a skip whose track already changed is a no-op. Host skip without a target is debounced 1.5 s. |
+| Backups vs jukebox | Backups drop Spotify tokens, guest token hashes and the admin. A restore keeps settings and queue; host and guests join or log in again. |

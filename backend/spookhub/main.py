@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -18,6 +19,7 @@ from spookhub.api import (
     routes_boards,
     routes_display,
     routes_events,
+    routes_jukebox,
     routes_media,
     routes_moments,
     routes_patterns,
@@ -32,7 +34,23 @@ from spookhub.api import (
 from spookhub.auth import AuthMiddleware
 from spookhub.config import Config, get_config
 from spookhub.hub import Hub
+from spookhub.jukebox.service import JukeboxError
 from spookhub.lock import LockMiddleware
+
+
+class _RedactTokens(logging.Filter):
+    """Keep jukebox secrets out of journald: guest ?token= on the WebSocket, OAuth code/state."""
+
+    _re = re.compile(r"((?:token|code|state)=)[^&\s\"']+")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                self._re.sub(r"\1***", a) if isinstance(a, str) else a for a in record.args
+            )
+        if isinstance(record.msg, str):
+            record.msg = self._re.sub(r"\1***", record.msg)
+        return True
 
 
 def setup_logging(level: str) -> None:
@@ -43,6 +61,8 @@ def setup_logging(level: str) -> None:
     )
     # Per-request lines from httpx would flood journald at 3 s health intervals.
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    for name in ("uvicorn.access", "uvicorn.error"):
+        logging.getLogger(name).addFilter(_RedactTokens())
 
 
 def create_app(cfg: Config | None = None) -> FastAPI:
@@ -67,6 +87,10 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         errors = [{k: v for k, v in e.items() if k not in ("input", "ctx")} for e in exc.errors()]
         return JSONResponse({"detail": errors}, status_code=422)
 
+    @app.exception_handler(JukeboxError)
+    async def jukebox_error(_: Request, exc: JukeboxError) -> JSONResponse:
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status)
+
     # Last added runs first: auth must answer 401 before the lock answers 423.
     app.add_middleware(LockMiddleware, is_locked=lambda: hub.settings.value.show_lock)
     app.add_middleware(AuthMiddleware, store=hub.auth)
@@ -85,11 +109,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         routes_templates,
         routes_scene,
         routes_moments,
+        routes_jukebox,
         ws,
     ):
         app.include_router(r.router)
     app.include_router(routes_setup.preflight_router)
     app.include_router(routes_display.media_router)
+    app.include_router(routes_jukebox.extra_router)
 
     dist = cfg.server.frontend_dir
     if dist.is_dir():

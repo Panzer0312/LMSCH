@@ -34,6 +34,7 @@ async def ws(websocket: WebSocket) -> None:
                     "preflight": hub.preflight.last,
                     "scene": hub.engine.scene_state(),
                     "moment": hub.engine.moment_state(),
+                    "jukebox": hub.jukebox.state(),
                 },
             }
         )

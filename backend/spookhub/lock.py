@@ -26,6 +26,8 @@ ALLOWED_EXACT = {
 ALLOWED_SHOW = {
     f"/api/show/{n}" for n in ("trigger", "play", "stop", "seek", "pause", "next", "deactivate")
 } | {"/api/auth/login", "/api/auth/logout"}
+# The party keeps going in Show mode; /api/jukebox_reset is not under this prefix.
+ALLOWED_PREFIX = "/api/jukebox/"
 MAX_BODY = 4096
 ALLOWED_BOARD = re.compile(r"^/api/boards/[^/]+/(state|identify)$")
 # Pressing a moment is show-time; editing / reordering moments is not.
@@ -56,6 +58,7 @@ class LockMiddleware(BaseHTTPMiddleware):
             or path in ALLOWED_SHOW
             or ALLOWED_BOARD.match(path)
             or ALLOWED_MOMENT.match(path)
+            or path.startswith(ALLOWED_PREFIX)
         ):
             return None
         if path == "/api/settings" and request.method == "PUT":

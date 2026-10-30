@@ -10,8 +10,11 @@ cd ~/spookhub && git pull && sudo scripts/install.sh
 
 `scripts/install.sh` is idempotent: apt packages (list: README "Debian 13 hub: required packages"),
 `spookhub` user (groups video, render, audio), frontend build if inputs changed, copies the repo to `/opt/spookhub`, venv,
-`/etc/spookhub/config.toml` (kept if present), ALSA dmix (`/etc/asound.conf`, see below), systemd unit, console blanking off, sleep targets
-masked, restarts the service, prints the URL. Reboot once after the first run so `consoleblank=0` applies.
+`/etc/spookhub/config.toml` (kept if present), ALSA dmix (`/etc/asound.conf`, see below), jukebox
+speaker (raspotify) and port-80 forward (see Jukebox), systemd unit, console blanking off, sleep targets
+masked, restarts the service, prints the admin URL and the guest URL `http://<ip>/music`. Reboot once
+after the first run so `consoleblank=0` applies. The jukebox steps are optional: a failure prints a
+`WARNING:` and the install continues.
 
 The installer installs `nodejs npm git` and rebuilds `frontend/dist` whenever a hash of the frontend
 inputs (`scripts/frontend-hash.sh`) differs from `frontend/dist/.build-hash`. npm and git run as the
@@ -48,10 +51,47 @@ device allows one opener; `dmix` lets them share it.
   A raw `alsa/hdmi:…` or `alsa/hw:…` device grabs the card and blocks the effects players.
 - Dev desktop (PipeWire) needs nothing.
 
+## Jukebox (Spotify)
+
+Guests open `http://<hub-ip>/music`, search Spotify and queue songs. The hub plays them through
+librespot (package `raspotify`), a Spotify Connect speaker on the same dmix as mpv.
+
+**What `install.sh` does** (idempotent):
+
+| Step | Detail | Opt-out |
+|---|---|---|
+| raspotify | Adds apt repo `https://dtcooper.github.io/raspotify` (key `/usr/share/keyrings/raspotify_key.asc`), installs `raspotify`. | `SPOOKHUB_SPOTIFY=0` |
+| `/etc/raspotify/conf` | Written when absent or marked `# spookhub-managed` (else kept). Name = `[jukebox] device_name` (default `Spookhub`), ALSA `default` (dmix), 320 kbit/s, initial volume 70, normalisation on, audio cache off, credential cache on. | delete the marker line |
+| Unit drop-in | `raspotify.service.d/spookhub.conf`: `SupplementaryGroups=audio` (dmix `ipc_gid audio`), `CacheDirectory=raspotify` (cached login). Enables raspotify; restarts it only when conf or drop-in changed or it is not running, so a re-deploy mid-party keeps the music. Network steps time out (curl 60 s, apt 300 s). | |
+| Port 80 | `spookhub-http.socket` (`ListenStream=80`) + `spookhub-http.service` (`systemd-socket-proxyd 127.0.0.1:<port>`, `DynamicUser=yes`). Port = `SPOOKHUB_SERVER__PORT` from the spookhub unit or a drop-in, else `[server] port`, else 8080. Proxy restarts only when its unit changed. Skipped with a warning when another program listens on :80; guests then use `http://<ip>:<port>/music`. | `SPOOKHUB_PORT80=0` (also disables an existing forward) |
+
+Example: `sudo SPOOKHUB_SPOTIFY=0 SPOOKHUB_PORT80=0 scripts/install.sh`.
+
+**One-time host setup:**
+
+1. Spotify Premium account (Web API playback control needs it).
+2. Open `/music` on the host's PC first: the first device to join becomes admin. Lost admin:
+   Settings → "Reset jukebox admin".
+3. Create an app at [developer.spotify.com](https://developer.spotify.com/dashboard) (Web API).
+   Add the redirect URI shown on the **Host** tab (default
+   `http://127.0.0.1:<port>/api/jukebox/spotify/callback`; override `[jukebox] redirect_uri`).
+4. Paste the app's Client ID on the Host tab, press **Connect**, log in. If the browser is not on
+   the hub, the loopback redirect fails to load: paste that address bar URL into the Host tab.
+5. On the same WiFi, open a Spotify app, pick the device **Spookhub** once. librespot caches the
+   login; only then does it appear in the Web API device list.
+6. Print or show the QR code from the Host tab.
+
+Dev-mode Spotify apps only accept accounts listed under the app's **User Management**: add the host
+account there.
+
+Proxied guests reach the app from `127.0.0.1`. Diagnostics: `scripts/hubcheck.sh` (section
+jukebox) shows raspotify state, the socket state and the :80 listener.
+
 ## Diagnostics and watchdog
 
 - `scripts/hubcheck.sh` is read-only, needs no root. It prints mpv version, `vainfo` summary, DRM
-  connectors and status, `aplay -l`, free disk and time sync. Paste it into bug reports.
+  connectors and status, `aplay -l`, free disk, time sync, service state, raspotify and port-80
+  forward state. Paste it into bug reports.
 - The unit is `Type=notify` with `NotifyAccess=main`, `WatchdogSec=30` and `TimeoutStartSec=60`.
   The hub pings systemd every 15 s from its event loop. No ping for 30 s ⇒ systemd restarts it.
   `Restart=always` covers crashes.
@@ -97,6 +137,10 @@ or `[mpv] vo` in config). Plain `gpu` ignores the shader; preflight warns "Keyst
 | Service restarts every 30 s | Watchdog firing: event loop hung. `journalctl -u spookhub` before the restart. |
 | Edits return 423 | Show mode is on. Unlock on `/show` or Settings (PIN if set). |
 | Preflight red | Click the failing check; the fix link points to the page. |
+| Jukebox: device not found | `systemctl status raspotify`. Select "Spookhub" once in a Spotify app on the same WiFi. Name must match `[jukebox] device_name` (re-run `install.sh` after changing it). |
+| Jukebox: no sound from Spotify, mpv works | `journalctl -u raspotify -e` (ALSA open errors). `/etc/raspotify/conf` has `LIBRESPOT_DEVICE=default`? Drop-in `raspotify.service.d/spookhub.conf` present (group `audio` for dmix)? `/etc/asound.conf` is dmix with `ipc_gid audio`. |
+| Jukebox: Spotify 403 | Account is not Premium, or the Spotify app is in development mode and the account is missing from its User Management. |
+| Guests can't open `http://<ip>/music` | `systemctl status spookhub-http.socket`. Installer warned about another :80 listener? Use `http://<ip>:<port>/music`. |
 | Keystone/mask has no effect | mpv `vo` is not `gpu-next`. Set it in Settings → "mpv video output (vo)" or `[mpv] vo` in config. |
 
 ## Known untested on real hardware
@@ -109,3 +153,6 @@ watchdog, `install.sh` and `deploy.sh` end to end. Covered by roadmap phase 1, t
 Phase 4 is simulator-only too. Open on the hub: dmix on HDMI with three mpv openers, sound cue
 latency (±50 ms of its timestamp) with main audio unaffected, smoothness of the IPC
 brightness/volume fade.
+
+Jukebox is untested on the hub too: raspotify on trixie amd64, librespot through dmix next to
+three mpv openers, the port-80 forward.

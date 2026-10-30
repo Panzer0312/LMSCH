@@ -29,6 +29,36 @@ def config_path() -> Path:
     return Path(os.environ.get("SPOOKHUB_CONFIG", DEFAULT_CONFIG_PATH))
 
 
+def _strip_secrets(con: sqlite3.Connection) -> None:
+    """Backups travel (download, USB stick): no Spotify tokens or guest token hashes in them.
+    A restore keeps the jukebox settings and queue; host and guests log in again."""
+    try:
+        row = con.execute("SELECT value FROM setting WHERE key = 'jukebox'").fetchone()
+    except sqlite3.DatabaseError:
+        return
+    if not row:
+        return
+    try:
+        data = json.loads(row[0])
+    except (TypeError, ValueError):
+        data = None
+    if isinstance(data, dict):
+        data["tokens"] = None
+        data["account"] = None
+        data["admin_id"] = None
+        data["guests"] = [
+            {k: v for k, v in g.items() if k != "token_hash"}
+            for g in data.get("guests") or []
+            if isinstance(g, dict)
+        ]
+        con.execute("UPDATE setting SET value = ? WHERE key = 'jukebox'", (json.dumps(data),))
+    else:
+        con.execute("DELETE FROM setting WHERE key = 'jukebox'")
+    con.commit()
+    # The old row would otherwise survive in free pages of the file.
+    con.execute("VACUUM")
+
+
 def make_backup(db_path: Path) -> bytes:
     buf = io.BytesIO()
     snap = db_path.with_suffix(".snapshot")
@@ -37,6 +67,7 @@ def make_backup(db_path: Path) -> bytes:
     dst = sqlite3.connect(snap)
     try:
         src.backup(dst)
+        _strip_secrets(dst)
     finally:
         dst.close()
         src.close()

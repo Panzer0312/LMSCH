@@ -40,6 +40,8 @@ export default function Settings() {
   const tok = useAction()
   const bak = useAction()
   const lock = useAction()
+  const juke = useAction()
+  const [jukeReset, setJukeReset] = useState(false)
   const [pinEnabled, setPinEnabled] = useState<boolean | null>(null)
   const [pin, setPin] = useState('')
   const [token, setToken] = useState('')
@@ -298,6 +300,22 @@ export default function Settings() {
             </code>
             <p className="mt-1 text-xs text-mute">ESPHome/Arduino sketches: see docs/trigger.</p>
           </div>
+        </div>
+      </Section>
+
+      <Section title="Jukebox">
+        <div className="card space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <a className="btn" href="/music">Open jukebox</a>
+            <button className="btn btn-danger" disabled={juke.busy} onClick={() => {
+              if (!confirm('Reset the jukebox host? The next device that joins /music becomes host.')) return
+              setJukeReset(false)
+              void juke.run(() => api.jukeboxReset()).then((r) => r && setJukeReset(true))
+            }}>Reset jukebox admin</button>
+            {jukeReset && <span className="text-sm text-slime">Done. Join /music to take over.</span>}
+          </div>
+          <p className="text-xs text-mute">Use when the host device is lost. Queue, Spotify login and guests stay.</p>
+          <ErrorText error={juke.error} />
         </div>
       </Section>
 
