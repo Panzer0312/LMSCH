@@ -35,6 +35,7 @@ from spookhub.player.process import MpvPlayer
 from spookhub.settings_store import SettingsStore
 from spookhub.show import display
 from spookhub.show.calibration import CLIP_S, calibration_cues
+from spookhub.show.moments import MomentRunner
 from spookhub.show.resolve import CueSpec, Timeline
 from spookhub.show.scene import IDLE_STATE, SceneRunner
 from spookhub.show.sound_lane import FxPlayer, SoundCue, SoundLane, load_sound_cues
@@ -323,6 +324,8 @@ class ShowEngine:
         # Audio-only effects player for sound cues (set by the hub; None = sound cues off).
         self.fx: FxPlayer | None = None
         self._sound = SoundLane()
+        # Moments (/moments buttons): one-shot runs that restore the state afterwards.
+        self.moments = MomentRunner(self)
         # Ambient loop player (set by the hub; None = ambient off) and what it loops now.
         self.ambient: AmbientPlayer | None = None
         self._ambient_on: AmbientSound | None = None
@@ -357,7 +360,7 @@ class ShowEngine:
     # ----- state for UI -----
 
     def snapshot(self) -> dict[str, Any]:
-        a = self._scene_home or self.active
+        a = self._scene_home or (self.moments.home() if self.moments.running else self.active)
         return {
             "phase": self.phase.value,
             "blackout": self.blackout,
@@ -393,6 +396,7 @@ class ShowEngine:
         await self._cancel_setup()
         async with self._lock:
             await self._cancel_setup()  # a setup may have started between the two
+            self.moments.abort()
             prof = load_active(profile_id)
             if prof is None:
                 raise KeyError(profile_id)
@@ -453,6 +457,7 @@ class ShowEngine:
         await self._cancel_setup()
         async with self._lock:
             await self._cancel_setup()
+            self.moments.abort()
             await self._stop_scheduler()
             self._scene_setup(None)
             self.active = None
@@ -529,6 +534,8 @@ class ShowEngine:
             return False, "blackout active"
         if self.test_pattern:
             return False, "test pattern showing"
+        if self.moments.running:
+            return False, "a moment is playing"
         if self.scene is not None:
             return await self._scene_trigger(source)
         if not a or a.type != ProfileType.video:
@@ -556,6 +563,8 @@ class ShowEngine:
             raise SetupBusy("setup test running")
         if self.test_pattern:  # covers video setup, which rides on the test pattern
             raise SetupBusy(SETUP_ACTIVE)
+        if self.moments.running:
+            raise RuntimeError("a moment is playing")
         if self.blackout or not a or a.type != ProfileType.video:
             raise RuntimeError("no video profile active")
         async with self._lock:
@@ -569,6 +578,8 @@ class ShowEngine:
             raise RuntimeError("video could not start (see event log)")
 
     async def stop_show(self) -> None:
+        if self.moments.running:
+            await self.moments.stop()
         async with self._lock:
             if self.playing_main:
                 await self._end_show("stopped")
@@ -647,6 +658,9 @@ class ShowEngine:
 
     async def _end_show(self, reason: str) -> None:
         await self._stop_scheduler()
+        if self.moments.owns_main():
+            self.moments.main_ended()  # the moment restores; no profile cooldown
+            return
         self.playing_main = False
         self._scene_restore()  # cooldown and base below are the scene's
         a = self.active
@@ -655,6 +669,7 @@ class ShowEngine:
         self._apply_base(critical=True)
         self.bus.event("info", f"Show {reason}, boards back to base")
         await self._go_idle()
+        self.moments.kick()
 
     async def _stop_scheduler(self) -> None:
         if self._stall_task and self._stall_task is not asyncio.current_task():
@@ -897,6 +912,8 @@ class ShowEngine:
             return False, "setup test running"
         if self.playing_main:
             return False, "show is playing on the projector"
+        if self.moments.running:
+            return False, "a moment is playing"
         now = time.monotonic()
         aud = self.audition
         if aud is not None and aud.profile_id == profile_id:
@@ -972,7 +989,20 @@ class ShowEngine:
         """The activated profile: the scene while one is active, even mid-item."""
         if self._scene_home is not None:
             return self._scene_home.id
+        if self.moments.running:
+            home = self.moments.home()
+            return home.id if home else None
         return self.active.id if self.active else None
+
+    def moment_state(self) -> dict[str, Any]:
+        return self.moments.state()
+
+    async def play_moment(self, moment_id: int, variant: int | None = None) -> dict[str, Any]:
+        """Raises KeyError (unknown), ValueError (bad variant), MomentRefused (409)."""
+        return await self.moments.play(moment_id, variant)
+
+    async def stop_moment(self) -> dict[str, Any]:
+        return await self.moments.stop()
 
     def scene_state(self) -> dict[str, Any]:
         return self.scene.state() if self.scene else dict(IDLE_STATE)
@@ -1110,6 +1140,7 @@ class ShowEngine:
             self.phase = Phase.idle
             await self._start_idle_track()
         self._publish()
+        self.moments.kick()
         if self.scene is not None and self.scene.spec.chain:
             await self._scene_chain()
 
@@ -1272,6 +1303,7 @@ class ShowEngine:
                 if self.blackout:
                     raise SetupBusy("blackout active")
                 self._pattern_image = image
+                self.moments.abort()
                 await self._stop_scheduler()
                 if self.playing_main:
                     self.playing_main = False
@@ -1415,6 +1447,7 @@ class ShowEngine:
             if self.blackout:
                 raise SetupBusy("blackout active")
             entering = not self.display_setup
+            self.moments.abort()
             await self._stop_scheduler()
             if self.playing_main:
                 self.playing_main = False
@@ -1496,6 +1529,8 @@ class ShowEngine:
         """Why a setup action may not start now, or None."""
         if self._setup_task is not None:
             return "setup test running"
+        if self.moments.running:
+            return "a moment is playing"
         if self.playing_main:
             return "a show is playing"
         if self.test_pattern:
@@ -1718,6 +1753,7 @@ class ShowEngine:
             await self._cancel_setup()
             async with self._lock:
                 await self._cancel_setup()
+                self.moments.abort()
                 await self._stop_scheduler()
                 self.playing_main = False
                 self.audition = None

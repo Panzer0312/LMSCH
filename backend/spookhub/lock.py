@@ -21,12 +21,15 @@ ALLOWED_EXACT = {
     "/api/scene/pin",
     "/api/sounds/play",
     "/api/sounds/stop",
+    "/api/moments/stop",
 }
 ALLOWED_SHOW = {
     f"/api/show/{n}" for n in ("trigger", "play", "stop", "seek", "pause", "next", "deactivate")
 } | {"/api/auth/login", "/api/auth/logout"}
 MAX_BODY = 4096
 ALLOWED_BOARD = re.compile(r"^/api/boards/[^/]+/(state|identify)$")
+# Pressing a moment is show-time; editing / reordering moments is not.
+ALLOWED_MOMENT = re.compile(r"^/api/moments/\d+/play$")
 LIVE_SETTINGS = {"master_brightness", "master_volume"}
 # Turning these OFF stays possible so a forgotten setup action can be cleared from Show mode.
 OFF_ONLY = {"/api/setup/calibration", "/api/show/test_pattern", "/api/display/setup"}
@@ -48,7 +51,12 @@ class LockMiddleware(BaseHTTPMiddleware):
     async def _refusal(self, request: Request, path: str) -> Response | None:
         """None when the request may pass the lock."""
         locked = JSONResponse({"detail": "Show mode is on"}, status_code=423)
-        if path in ALLOWED_EXACT or path in ALLOWED_SHOW or ALLOWED_BOARD.match(path):
+        if (
+            path in ALLOWED_EXACT
+            or path in ALLOWED_SHOW
+            or ALLOWED_BOARD.match(path)
+            or ALLOWED_MOMENT.match(path)
+        ):
             return None
         if path == "/api/settings" and request.method == "PUT":
             body = await self._json(request)

@@ -425,3 +425,64 @@ class RuntimeSettings(BaseModel):
     active_profile_id: int | None = None
     # Global default display profile ("Projector setup"); None = identity geometry.
     display_profile_id: int | None = None
+
+
+# ---------- Moments ----------
+
+
+class Moment(SQLModel, table=True):
+    """A button on /moments: plays one variant once, then restores what ran before."""
+
+    id: int | None = SQLField(default=None, primary_key=True)
+    name: str
+    icon: str = ""
+    color: str = "#7c3aed"
+    sort: int = 0
+    cooldown_s: float = 0.0
+    busy: str = "ignore"  # 'ignore' | 'interrupt' | 'queue'
+    order: str = "shuffle"  # 'shuffle' | 'weighted'
+    variants: list[dict[str, Any]] = SQLField(
+        default_factory=list, sa_column=Column(JSON, nullable=False, server_default="[]")
+    )
+
+
+class MomentSound(BaseModel):
+    media_id: int
+    volume: float = Field(default=1.0, ge=0, le=1.3, allow_inf_nan=False)
+    fade_in_ms: int = Field(default=0, ge=0, le=60000)
+    fade_out_ms: int = Field(default=0, ge=0, le=60000)
+
+
+class MomentVariant(BaseModel):
+    video_profile_id: int | None = None
+    sound: MomentSound | None = None
+    light_profile_id: int | None = None
+    ambience: Literal["keep", "mute", "replace"] = "keep"
+    ambience_media_id: int | None = None
+    weight: float = Field(default=1.0, gt=0, le=1000, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _parts(self) -> MomentVariant:
+        if self.video_profile_id is None and self.sound is None and self.light_profile_id is None:
+            raise ValueError("a variant needs a video, a sound or a light part")
+        if self.ambience == "replace":
+            if self.ambience_media_id is None:
+                raise ValueError("ambience 'replace' needs ambience_media_id")
+        else:
+            self.ambience_media_id = None
+        return self
+
+
+class MomentIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    icon: str = Field(default="", max_length=32)
+    color: str = Field(default="#7c3aed", pattern=HEX_COLOR)
+    cooldown_s: float = Field(default=0.0, ge=0, le=3600, allow_inf_nan=False)
+    busy: Literal["ignore", "interrupt", "queue"] = "ignore"
+    order: Literal["shuffle", "weighted"] = "shuffle"
+    variants: list[MomentVariant] = Field(min_length=1, max_length=50)
+
+
+class MomentOut(MomentIn):
+    id: int
+    sort: int
