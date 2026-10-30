@@ -80,7 +80,7 @@ press picks a different variant.
   light parts, "test this variant" button, reorder buttons by drag.
   *Built:* reorder by ↑/↓ buttons in edit mode (no drag).
 - [x] Link from Dashboard and `/show`.
-  *Built:* nav entry on every page (incl. Dashboard) and a 🔔 Moments button on `/show`.
+  *Built:* nav entry, 🔔 Moments buttons on the Dashboard (next to Show mode) and on `/show`.
 
 - **Accept:** "Doorbell" with two variants: press 1 plays Dracula video + organ + flicker once, then
   the fog idle + wind ambience resume where they were; press 2 plays the other variant; pressing

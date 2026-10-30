@@ -4,7 +4,7 @@
 
 | Route | Page | Does |
 |---|---|---|
-| `/` | Dashboard (phone-first) | Preflight banner, active profile + progress, scene card (scene active), Trigger, Play/Stop, Next, master brightness, board health strip, last 20 events, History, link to `/show` |
+| `/` | Dashboard (phone-first) | Preflight banner, active profile + progress, scene card (scene active), Trigger, Play/Stop, Next, master brightness, board health strip, last 20 events, History, links to `/show` and `/moments` |
 | `/profiles[/:id]` | Profiles | List, create, edit, duplicate, delete, activate. Light, video or scene type, board selection or "All boards", base state + per-board overrides, playback mode, idle video, cooldown, ambience, fade, idle loop length, scene editor, cue list form |
 | `/profiles/:id/timeline` | Timeline editor | See below. Desktop-first, read-only on phone |
 | `/boards` | Boards | Discovered vs adopted, status, RSSI, latency, firmware, LEDs, live state. Rename, identify, on/off, brightness, sync offset (ms), "Save fallback" per board and for all, open WLED UI, refresh, remove, scan, add by IP, "Check settings", new-board guide |
