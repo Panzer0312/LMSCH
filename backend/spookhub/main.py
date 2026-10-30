@@ -21,6 +21,7 @@ from spookhub.api import (
     routes_media,
     routes_patterns,
     routes_profiles,
+    routes_scene,
     routes_setup,
     routes_show,
     routes_templates,
@@ -79,6 +80,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         routes_media,
         routes_patterns,
         routes_templates,
+        routes_scene,
         ws,
     ):
         app.include_router(r.router)

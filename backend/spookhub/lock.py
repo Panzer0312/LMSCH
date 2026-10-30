@@ -13,7 +13,13 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.responses import Response
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
-ALLOWED_EXACT = {"/api/trigger", "/api/blackout", "/api/show_lock"}
+ALLOWED_EXACT = {
+    "/api/trigger",
+    "/api/blackout",
+    "/api/show_lock",
+    "/api/scene/skip",
+    "/api/scene/pin",
+}
 ALLOWED_SHOW = {
     f"/api/show/{n}" for n in ("trigger", "play", "stop", "seek", "pause", "next", "deactivate")
 } | {"/api/auth/login", "/api/auth/logout"}

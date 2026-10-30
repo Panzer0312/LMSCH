@@ -58,6 +58,7 @@ class PlaybackMode(enum.StrEnum):
 class ProfileType(enum.StrEnum):
     light = "light"
     video = "video"
+    scene = "scene"
 
 
 class BoardSelection(BaseModel):
@@ -138,6 +139,8 @@ class Profile(SQLModel, table=True):
         default_factory=list, sa_column=Column(JSON, nullable=False, server_default="[]")
     )
     display_profile_id: int | None = None
+    # SceneSpec for type=scene, None otherwise.
+    scene: dict[str, Any] | None = SQLField(default=None, sa_column=Column(JSON, nullable=True))
 
 
 class DisplayProfile(SQLModel, table=True):
@@ -277,6 +280,19 @@ class Marker(BaseModel):
     color: str | None = Field(default=None, pattern=HEX_COLOR)
 
 
+class SceneItem(BaseModel):
+    profile_id: int
+    weight: float = Field(default=1.0, gt=0, le=1000, allow_inf_nan=False)
+
+
+class SceneSpec(BaseModel):
+    items: list[SceneItem] = Field(default=[], max_length=200)
+    order: Literal["sequential", "shuffle", "weighted"] = "shuffle"
+    idle_profile_id: int | None = None
+    chain: bool = False
+    light_hold_s: float = Field(default=10.0, gt=0, le=3600, allow_inf_nan=False)
+
+
 class ProfileIn(BaseModel):
     name: str
     type: ProfileType = ProfileType.light
@@ -290,6 +306,7 @@ class ProfileIn(BaseModel):
     # None = leave stored markers untouched (they have their own endpoint).
     markers: list[Marker] | None = None
     display_profile_id: int | None = None
+    scene: SceneSpec | None = None
 
     @model_validator(mode="after")
     def _video_needs_media(self) -> ProfileIn:

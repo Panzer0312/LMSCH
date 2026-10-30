@@ -24,6 +24,8 @@ from spookhub.models import (
     ProfileIn,
     ProfileOut,
     ProfileType,
+    SceneItem,
+    SceneSpec,
 )
 
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
@@ -48,6 +50,7 @@ def to_out(s: Session, p: Profile) -> ProfileOut:
         cooldown_s=p.cooldown_s,
         markers=[Marker.model_validate(m) for m in (p.markers or [])],
         display_profile_id=p.display_profile_id,
+        scene=SceneSpec.model_validate(p.scene) if p.scene is not None else None,
         cues=[
             CueOut(
                 id=c.id or 0,
@@ -71,7 +74,28 @@ def _marker_rows(markers: list[Marker]) -> list[dict[str, Any]]:
     return [m.model_dump() for m in sorted(markers, key=lambda m: m.t)]
 
 
+def _check_scene(body: ProfileIn, s: Session, pid: int | None) -> None:
+    if body.type != ProfileType.scene:
+        return
+    sc = body.scene
+    if sc is None:
+        raise HTTPException(422, "scene profile needs a scene")
+    ids = [i.profile_id for i in sc.items]
+    if len(set(ids)) != len(ids):
+        raise HTTPException(422, "scene lists a profile twice")
+    refs = ids + ([sc.idle_profile_id] if sc.idle_profile_id is not None else [])
+    for ref in refs:
+        if ref == pid:
+            raise HTTPException(422, "a scene cannot contain itself")
+        row = s.get(Profile, ref)
+        if row is None:
+            raise HTTPException(422, f"profile {ref} not found")
+        if row.type == ProfileType.scene:
+            raise HTTPException(422, "scenes cannot contain scenes")
+
+
 def _apply(p: Profile, body: ProfileIn, s: Session) -> None:
+    _check_scene(body, s, p.id)
     for mid in (body.media_id, body.idle_media_id):
         if mid is not None and s.get(Media, mid) is None:
             raise HTTPException(422, f"media {mid} not found")
@@ -92,6 +116,7 @@ def _apply(p: Profile, body: ProfileIn, s: Session) -> None:
     p.idle_media_id = body.idle_media_id if body.type == ProfileType.video else None
     p.playback_mode = body.playback_mode
     p.cooldown_s = body.cooldown_s
+    p.scene = body.scene.model_dump() if body.type == ProfileType.scene and body.scene else None
     if body.markers is not None:
         p.markers = _marker_rows(body.markers)
 
@@ -154,11 +179,30 @@ async def delete(pid: int, hub: HubDep) -> dict[str, bool]:
         for c in s.exec(select(Cue).where(Cue.profile_id == pid)).all():
             s.delete(c)
         s.delete(p)
+        touched = _drop_from_scenes(s, pid)
         s.commit()
-    if hub.engine.active and hub.engine.active.id == pid:
-        await hub.engine.deactivate()
+    engine = hub.engine
+    if engine.home_id() == pid or (engine.active and engine.active.id == pid):
+        await engine.deactivate()
+    for sid in touched:
+        await engine.reload_if_active(sid)
     _changed(hub)
     return {"ok": True}
+
+
+def _drop_from_scenes(s: Session, pid: int) -> list[int]:
+    """Remove a deleted profile from every scene's items / idle part. Returns touched ids."""
+    touched = []
+    for sc in s.exec(select(Profile).where(Profile.type == ProfileType.scene)).all():
+        spec = SceneSpec.model_validate(sc.scene or {})
+        items = [i for i in spec.items if i.profile_id != pid]
+        idle = None if spec.idle_profile_id == pid else spec.idle_profile_id
+        if len(items) != len(spec.items) or idle != spec.idle_profile_id:
+            spec = spec.model_copy(update={"items": items, "idle_profile_id": idle})
+            sc.scene = spec.model_dump()
+            s.add(sc)
+            touched.append(sc.id or 0)
+    return touched
 
 
 @router.post("/{pid}/duplicate", status_code=201)
@@ -245,21 +289,67 @@ def export_profile(pid: int) -> JSONResponse:
         media = s.get(Media, p.media_id) if p.media_id else None
         idle = s.get(Media, p.idle_media_id) if p.idle_media_id else None
         dp = s.get(DisplayProfile, p.display_profile_id) if p.display_profile_id else None
+        scene = _scene_export(s, p.scene) if p.scene else None
     data = {
         "format": EXPORT_FORMAT,
         "version": 1,
         "profile": p.model_dump(
-            exclude={"id", "sort", "cues", "media_id", "idle_media_id", "display_profile_id"}
+            exclude={
+                "id",
+                "sort",
+                "cues",
+                "media_id",
+                "idle_media_id",
+                "display_profile_id",
+                "scene",
+            }
         ),
         "cues": [c.model_dump(exclude={"id"}) for c in p.cues],
         "media_filename": media.filename if media else None,
         "idle_media_filename": idle.filename if idle else None,
         # Ids differ between hubs; the name is the identity, geometry recreates it if missing.
         "display_profile": None if dp is None else {"name": dp.name, "geometry": dp.geometry},
+        # Scene items by profile name, like videos by filename.
+        "scene": scene,
     }
     safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in p.name)[:40] or "profile"
     return JSONResponse(
         data, headers={"Content-Disposition": f'attachment; filename="{safe}.spookhub.json"'}
+    )
+
+
+def _scene_export(s: Session, sc: SceneSpec) -> dict[str, Any]:
+    def name(pid: int | None) -> str | None:
+        row = s.get(Profile, pid) if pid is not None else None
+        return row.name if row else None
+
+    return {
+        "order": sc.order,
+        "chain": sc.chain,
+        "light_hold_s": sc.light_hold_s,
+        "idle_profile": name(sc.idle_profile_id),
+        "items": [{"name": name(i.profile_id), "weight": i.weight} for i in sc.items],
+    }
+
+
+def _scene_import(s: Session, data: Any) -> SceneSpec:
+    """Match items by profile name on this hub; missing ones are skipped."""
+    data = data if isinstance(data, dict) else {}
+    by_name: dict[str, int] = {}
+    for row in s.exec(select(Profile).order_by(col(Profile.id))).all():
+        if row.type != ProfileType.scene and row.id is not None:
+            by_name.setdefault(row.name, row.id)
+    items: list[SceneItem] = []
+    for it in data.get("items") or []:
+        pid = by_name.get(str(it.get("name"))) if isinstance(it, dict) else None
+        if pid is not None and all(i.profile_id != pid for i in items):
+            items.append(SceneItem(profile_id=pid, weight=it.get("weight", 1.0)))
+    return SceneSpec(
+        items=items,
+        order=data.get("order", "shuffle"),
+        idle_profile_id=by_name.get(str(data.get("idle_profile"))),
+        chain=bool(data.get("chain", False)),
+        light_hold_s=data.get("light_hold_s", 10.0),
     )
 
 
@@ -294,6 +384,11 @@ def import_profile(body: ImportIn, hub: HubDep) -> ProfileOut:
         raise HTTPException(422, f"invalid profile data: {e.errors()[0]['msg']}") from e
     created_dp = False
     with db.session() as s:
+        if prof.type == ProfileType.scene:
+            try:
+                prof.scene = _scene_import(s, d.get("scene"))
+            except ValidationError as e:
+                raise HTTPException(422, f"invalid scene data: {e.errors()[0]['msg']}") from e
         if prof.type == ProfileType.video:
             prof.media_id = body.media_id or _media_by_name(s, d.get("media_filename"))
             prof.idle_media_id = body.idle_media_id or _media_by_name(

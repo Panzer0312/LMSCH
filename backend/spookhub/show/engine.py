@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import enum
 import logging
+import random
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -27,12 +28,14 @@ from spookhub.models import (
     Profile,
     ProfileType,
     RuntimeSettings,
+    SceneSpec,
 )
 from spookhub.player.process import MpvPlayer
 from spookhub.settings_store import SettingsStore
 from spookhub.show import display
 from spookhub.show.calibration import CLIP_S, calibration_cues
 from spookhub.show.resolve import CueSpec, Timeline
+from spookhub.show.scene import IDLE_STATE, SceneRunner
 from spookhub.tasks import spawn
 
 log = logging.getLogger(__name__)
@@ -92,6 +95,7 @@ class ActiveProfile:
     idle_path: str | None
     cues: list[CueSpec] = field(default_factory=list)
     display_profile_id: int | None = None
+    scene: SceneSpec | None = None
 
     def macs(self, adopted: list[str]) -> list[str]:
         # "All boards" is resolved at use time so boards adopted later join automatically.
@@ -108,6 +112,8 @@ def load_active(profile_id: int) -> ActiveProfile | None:
         p = s.get(Profile, profile_id)
         if p is None:
             return None
+        if p.type == ProfileType.scene:
+            return _load_scene(p)
         media = s.get(Media, p.media_id) if p.media_id else None
         idle = s.get(Media, p.idle_media_id) if p.idle_media_id else None
         cues = s.exec(select(Cue).where(Cue.profile_id == profile_id)).all()
@@ -144,6 +150,33 @@ def load_active(profile_id: int) -> ActiveProfile | None:
             cues=specs,
             display_profile_id=p.display_profile_id,
         )
+
+
+def _load_scene(p: Profile) -> ActiveProfile:
+    """A scene's idle part: the idle profile's boards and picture under the scene's id."""
+    spec = SceneSpec.model_validate(p.scene or {})
+    idle = load_active(spec.idle_profile_id) if spec.idle_profile_id else None
+    if idle is not None and idle.type == ProfileType.scene:
+        idle = None
+    video = idle is not None and idle.type == ProfileType.video
+    return ActiveProfile(
+        id=p.id or 0,
+        name=p.name,
+        type=ProfileType.scene,
+        selection=idle.selection if idle else BoardSelection.model_validate(p.selection or {}),
+        base=idle.base if idle else LightState.model_validate(p.base_state or {}),
+        overrides=idle.overrides
+        if idle
+        else {k: LightState.model_validate(v) for k, v in (p.overrides or {}).items()},
+        mode=PlaybackMode.idle_trigger,
+        cooldown_s=p.cooldown_s,
+        media_path=None,
+        media_duration=None,
+        # A video idle profile without an idle clip loops its main video as the idle picture.
+        idle_path=(idle.idle_path or idle.media_path) if video and idle else None,
+        display_profile_id=idle.display_profile_id if idle else p.display_profile_id,
+        scene=spec,
+    )
 
 
 SETUP_ACTIVE = "setup active — leave video setup first"
@@ -224,6 +257,11 @@ class ShowEngine:
         # Source sizes of files that are not Media rows (generated patterns).
         self.known_sizes: dict[str, tuple[int, int]] = {}
         self._last_display: dict[str, Any] | None = None
+        # Scene: runner + its idle part; self.active is the playing item while one runs.
+        self.scene: SceneRunner | None = None
+        self._scene_home: ActiveProfile | None = None
+        self._scene_hold: asyncio.Task[None] | None = None
+        self.scene_rng: random.Random | None = None  # injectable for tests
         player.on_change = self._on_player_change
         player.geometry_for = self._geometry_for
         settings.listeners.append(self._on_settings)
@@ -250,7 +288,7 @@ class ShowEngine:
     # ----- state for UI -----
 
     def snapshot(self) -> dict[str, Any]:
-        a = self.active
+        a = self._scene_home or self.active
         return {
             "phase": self.phase.value,
             "blackout": self.blackout,
@@ -294,6 +332,7 @@ class ShowEngine:
             self.test_pattern = False
             self._clear_display_setup()
             self.active = prof
+            self._scene_setup(prof)
             self.timeline = Timeline(prof.cues, self.boards.adopted_macs())
             if self.settings.value.active_profile_id != profile_id:
                 self.settings.update(active_profile_id=profile_id)
@@ -309,10 +348,17 @@ class ShowEngine:
                 await self._go_idle()
             else:
                 await self._play_main(0.0)
+            if self.scene is not None and self.scene.spec.chain and autostart:
+                spawn(self._scene_chain())
             self._publish()
 
     async def reload_if_active(self, profile_id: int) -> None:
         """Profile edited: refresh cues/base live without interrupting a running video."""
+        if self.scene is not None:
+            # Item edits apply the next time the item plays.
+            if self._scene_home and profile_id in (self.scene.profile_id, self._scene_home_idle()):
+                await self._scene_reload()
+            return
         if not self.active or self.active.id != profile_id:
             return
         prof = load_active(profile_id)
@@ -334,6 +380,7 @@ class ShowEngine:
         async with self._lock:
             await self._cancel_setup()
             await self._stop_scheduler()
+            self._scene_setup(None)
             self.active = None
             self.timeline = None
             self.phase = Phase.blackout if self.blackout else Phase.none
@@ -365,7 +412,7 @@ class ShowEngine:
             ids = [p.id for p in s.exec(select(Profile).order_by(Profile.sort, Profile.id))]
         if not ids:
             return
-        cur = self.active.id if self.active else None
+        cur = self.home_id()
         nxt = ids[(ids.index(cur) + 1) % len(ids)] if cur in ids else ids[0]
         await self.activate(nxt)  # type: ignore[arg-type]
 
@@ -403,6 +450,8 @@ class ShowEngine:
             return False, "blackout active"
         if self.test_pattern:
             return False, "test pattern showing"
+        if self.scene is not None:
+            return await self._scene_trigger(source)
         if not a or a.type != ProfileType.video:
             return False, "no video profile active"
         if a.mode != PlaybackMode.idle_trigger:
@@ -486,6 +535,7 @@ class ShowEngine:
 
     async def _go_idle(self) -> None:
         self.playing_main = False
+        self._scene_restore()
         a = self.active
         self.phase = Phase.idle
         if a and a.idle_path:
@@ -496,6 +546,7 @@ class ShowEngine:
     async def _end_show(self, reason: str) -> None:
         await self._stop_scheduler()
         self.playing_main = False
+        self._scene_restore()  # cooldown and base below are the scene's
         a = self.active
         if a:
             self.cooldown_until = time.monotonic() + a.cooldown_s
@@ -541,6 +592,8 @@ class ShowEngine:
             if self.playing_main:
                 await self._end_show(reason)
         self._publish()
+        if reason == "ended" and self.scene is not None and self.scene.spec.chain:
+            spawn(self._scene_chain())
 
     async def _crash_resume(self) -> None:
         """mpv died mid-show and came back: resume once where it was, like a stall."""
@@ -575,7 +628,7 @@ class ShowEngine:
                     self._last_t = None
             elif self._setup_task is not None:
                 return  # short test (sound / test-all): its runner restores idle at the end
-            elif self.active and self.active.type == ProfileType.video:
+            elif self.active and (self.scene is not None or self.active.type == ProfileType.video):
                 await self._go_idle()
             else:
                 await self._safe(self.player.black())
@@ -786,6 +839,182 @@ class ShowEngine:
             await self.activate(profile_id, autostart=False)
         await self.play(t)
 
+    # ----- scenes -----
+
+    def home_id(self) -> int | None:
+        """The activated profile: the scene while one is active, even mid-item."""
+        if self._scene_home is not None:
+            return self._scene_home.id
+        return self.active.id if self.active else None
+
+    def scene_state(self) -> dict[str, Any]:
+        return self.scene.state() if self.scene else dict(IDLE_STATE)
+
+    def _publish_scene(self) -> None:
+        self.bus.publish("scene", self.scene_state())
+
+    def _scene_home_idle(self) -> int | None:
+        h = self._scene_home
+        return h.scene.idle_profile_id if h and h.scene else None
+
+    def _scene_setup(self, prof: ActiveProfile | None) -> None:
+        """Activation: keep the runner (history, pin) when the same scene comes back."""
+        self._scene_cancel_hold()
+        if prof is None or prof.scene is None:
+            changed = self.scene is not None
+            self.scene = self._scene_home = None
+        else:
+            changed = True
+            if self.scene is not None and self.scene.profile_id == prof.id:
+                self.scene.update(prof.scene)
+            else:
+                self.scene = SceneRunner(prof.id, prof.scene, self.scene_rng)
+            self._scene_home = prof
+        if changed:
+            self._publish_scene()
+
+    def _scene_cancel_hold(self) -> None:
+        if self._scene_hold is not None and self._scene_hold is not asyncio.current_task():
+            self._scene_hold.cancel()
+        self._scene_hold = None
+
+    def _scene_busy(self) -> bool:
+        return self.playing_main or self._scene_hold is not None
+
+    def _scene_restore(self) -> None:
+        """Item over: back to the scene's idle part without re-activating it. Boards only;
+        the caller owns the picture (an idle loop under a light item never stopped)."""
+        home = self._scene_home
+        item = self.active
+        if home is None or item is home:
+            return
+        adopted = self.boards.adopted_macs()
+        self.active = home
+        self.timeline = Timeline(home.cues, adopted)
+        home_macs = set(home.macs(adopted))
+        if item is not None:
+            for mac in item.macs(adopted):
+                if mac not in home_macs:
+                    self.boards.set_show_state(mac, None, critical=True)
+        for mac in home_macs:
+            self.boards.set_show_state(mac, home.base_for(mac), critical=True)
+
+    async def _scene_reload(self) -> None:
+        assert self.scene is not None
+        prof = load_active(self.scene.profile_id)
+        if prof is None:
+            await self.deactivate()
+            return
+        if prof.scene is None:  # no longer a scene
+            await self.activate(prof.id, autostart=False)
+            return
+        old = self._scene_home
+        self.scene.update(prof.scene)
+        self._scene_home = prof
+        if self.active is old:
+            self.active = prof
+            self.timeline = Timeline(prof.cues, self.boards.adopted_macs())
+            if self.audition is None and not self.blackout:
+                self._apply_base(critical=False)
+                if self.phase == Phase.idle and (old is None or old.idle_path != prof.idle_path):
+                    await self._go_idle()
+        self.refresh_display()
+        self._publish()
+        self._publish_scene()
+
+    async def _scene_trigger(self, source: str) -> tuple[bool, str]:
+        if self._scene_busy():
+            return False, "already playing"
+        remaining = self.cooldown_until - time.monotonic()
+        if remaining > 0:
+            return False, f"cooldown ({remaining:.0f} s left)"
+        async with self._lock:
+            if self._setup_task is not None:
+                return False, "setup test running"
+            if self.scene is None or self._scene_busy():
+                return False, "already playing" if self.scene else "no scene active"
+            ok, msg = await self._scene_play_next()
+        self._publish()
+        if ok:
+            self.bus.event("info", f"Triggered ({source})", kind="trigger", source=source)
+        return ok, msg
+
+    async def _scene_play_next(self) -> tuple[bool, str]:
+        """Start the next item. Caller holds the lock."""
+        assert self.scene is not None and self._scene_home is not None
+        pid = self.scene.take()
+        self._publish_scene()
+        if pid is None:
+            return False, "scene has no items"
+        item = load_active(pid)
+        if item is None or item.type == ProfileType.scene:
+            return False, f"scene item {pid} not found"
+        self.bus.event("info", f"Scene '{self._scene_home.name}': playing '{item.name}'")
+        self.active = item
+        self.timeline = Timeline(item.cues, self.boards.adopted_macs())
+        # The scheduler assumes boards already show the base: send it before the video.
+        self._apply_base(critical=True)
+        if item.type == ProfileType.light:
+            self.phase = Phase.lights
+            self._scene_hold = asyncio.create_task(
+                self._scene_light_hold(item, self.scene.spec.light_hold_s)
+            )
+            return True, "triggered"
+        item.mode = PlaybackMode.once  # a scene item plays once, whatever its own mode
+        if not await self._play_main(0.0):
+            return False, "video could not start (see event log)"  # _go_idle restored idle
+        return True, "triggered"
+
+    async def _scene_light_hold(self, item: ActiveProfile, hold_s: float) -> None:
+        await asyncio.sleep(hold_s)
+        async with self._lock:
+            if self._scene_hold is not asyncio.current_task():
+                return
+            self._scene_hold = None
+            if self.active is not item or self.test_pattern or self.blackout:
+                return
+            self._scene_restore()
+            if self.active is not None:
+                self.cooldown_until = time.monotonic() + self.active.cooldown_s
+            self.phase = Phase.idle
+        self._publish()
+        if self.scene is not None and self.scene.spec.chain:
+            await self._scene_chain()
+
+    async def _scene_chain(self) -> None:
+        """Chain mode: the next item starts as soon as the last one ended."""
+        async with self._lock:
+            sc = self.scene
+            if (
+                sc is None
+                or not sc.spec.chain
+                or self._scene_busy()
+                or self.blackout
+                or self.test_pattern
+                or self._setup_task is not None
+                or self.audition is not None
+            ):
+                return
+            ok, msg = await self._scene_play_next()
+        if not ok:
+            # No retry loop: a broken item would spin. The next trigger restarts the chain.
+            self.bus.event("warn", f"Scene chain paused: {msg}")
+        self._publish()
+
+    async def scene_skip(self) -> dict[str, Any]:
+        if self.scene is None:
+            raise RuntimeError("no scene active")
+        self.scene.skip()
+        self._publish_scene()
+        return self.scene_state()
+
+    async def scene_pin(self, profile_id: int | None) -> dict[str, Any]:
+        if self.scene is None:
+            raise RuntimeError("no scene active")
+        self.scene.pin(profile_id)
+        self._publish_scene()
+        return self.scene_state()
+
     # ----- test pattern -----
 
     async def set_test_pattern(self, on: bool, image: str | None = None) -> None:
@@ -817,7 +1046,7 @@ class ShowEngine:
                 self.phase = Phase.blackout
                 await self._safe(self.player.black())
             elif self.active:
-                await self.activate(self.active.id, autostart=False)
+                await self.activate(self.home_id() or self.active.id, autostart=False)
             else:
                 self.phase = Phase.none
                 await self._safe(self.player.black())
@@ -1241,6 +1470,7 @@ class ShowEngine:
                 await self._stop_scheduler()
                 self.playing_main = False
                 self.audition = None
+                self._scene_cancel_hold()
                 if self.test_pattern:
                     self.test_pattern = False
                     self._clear_display_setup()
@@ -1251,7 +1481,7 @@ class ShowEngine:
         else:
             self.bus.event("info", "Blackout released")
             if self.active:
-                await self.activate(self.active.id)
+                await self.activate(self.home_id() or self.active.id)
             else:
                 self.phase = Phase.none
         self._publish()
