@@ -337,6 +337,7 @@ export default function ShowMode() {
     <div className="mx-auto flex min-h-[calc(100dvh-6rem)] max-w-xl flex-col gap-4">
       <Header />
       <SetupBanner />
+      <Link to="/moments" className="btn h-14 w-full text-lg font-semibold">🔔 Moments</Link>
       <Controls />
       <LevelSlider label="Brightness" field="master_brightness" scale={100} max={settings?.brightness_cap ?? 1} unit="%" />
       <LevelSlider label="Volume" field="master_volume" scale={1} max={settings?.volume_cap ?? 100} unit="%" />

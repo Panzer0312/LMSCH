@@ -10,6 +10,7 @@ import TimelineEditor from './pages/TimelineEditor'
 import Setup from './pages/Setup'
 import VideoSetup from './pages/VideoSetup'
 import ShowMode from './pages/ShowMode'
+import Moments from './pages/Moments'
 
 const nav = [
   ['/', 'Dashboard'],
@@ -18,6 +19,7 @@ const nav = [
   ['/setup', 'Setup'],
   ['/video', 'Video'],
   ['/media', 'Media'],
+  ['/moments', 'Moments'],
   ['/settings', 'Settings'],
 ] as const
 
@@ -54,6 +56,7 @@ export default function App() {
           <Route path="/setup" element={<Setup />} />
           <Route path="/video" element={<VideoSetup />} />
           <Route path="/show" element={<ShowMode />} />
+          <Route path="/moments" element={<Moments />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </main>
