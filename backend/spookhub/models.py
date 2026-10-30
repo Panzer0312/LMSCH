@@ -143,6 +143,12 @@ class Profile(SQLModel, table=True):
     display_profile_id: int | None = None
     # SceneSpec for type=scene, None otherwise.
     scene: dict[str, Any] | None = SQLField(default=None, sa_column=Column(JSON, nullable=True))
+    # AmbientSpec: sound looped on the ambient player while the profile is active.
+    ambient: dict[str, Any] | None = SQLField(default=None, sa_column=Column(JSON, nullable=True))
+    # Idle -> main fade (picture + sound), 0 = hard cut.
+    fade_ms: int = SQLField(default=400, sa_column_kwargs={"server_default": "400"})
+    # Light profiles: loop length of the idle cue track; None = no idle loop.
+    idle_length_s: float | None = None
 
 
 class DisplayProfile(SQLModel, table=True):
@@ -168,6 +174,8 @@ class Cue(SQLModel, table=True):
     # 'light' | 'sound'. Sound cues ignore target/state; `sound` holds a SoundSpec.
     kind: str = SQLField(default="light", sa_column_kwargs={"server_default": "light"})
     sound: dict[str, Any] | None = SQLField(default=None, sa_column=Column(JSON, nullable=True))
+    # 'main' (main video timeline) | 'idle' (loops with the idle clip / idle_length_s).
+    track: str = SQLField(default="main", sa_column_kwargs={"server_default": "main"})
 
 
 class CueTemplate(SQLModel, table=True):
@@ -298,6 +306,13 @@ class SceneSpec(BaseModel):
     light_hold_s: float = Field(default=10.0, gt=0, le=3600, allow_inf_nan=False)
 
 
+class AmbientSpec(BaseModel):
+    media_id: int
+    volume: float = Field(default=1.0, ge=0, le=1.3, allow_inf_nan=False)
+    # Fraction of `volume` while the main video plays.
+    duck_to: float = Field(default=0.3, ge=0, le=1, allow_inf_nan=False)
+
+
 class ProfileIn(BaseModel):
     name: str
     type: ProfileType = ProfileType.light
@@ -312,6 +327,9 @@ class ProfileIn(BaseModel):
     markers: list[Marker] | None = None
     display_profile_id: int | None = None
     scene: SceneSpec | None = None
+    ambient: AmbientSpec | None = None
+    fade_ms: int = Field(default=400, ge=0, le=10000)
+    idle_length_s: float | None = Field(default=None, ge=0.5, le=3600, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def _video_needs_media(self) -> ProfileIn:
@@ -327,6 +345,7 @@ class SoundSpec(BaseModel):
 
 
 CueKind = Literal["light", "sound"]
+CueTrack = Literal["main", "idle"]
 
 
 class CueIn(BaseModel):
@@ -340,6 +359,7 @@ class CueIn(BaseModel):
     color: str | None = Field(default=None, pattern=HEX_COLOR)
     kind: CueKind = "light"
     sound: SoundSpec | None = None
+    track: CueTrack = "main"
 
     @model_validator(mode="after")
     def _kind_fields(self) -> CueIn:

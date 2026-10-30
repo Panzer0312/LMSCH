@@ -11,6 +11,7 @@ from spookhub import db
 from spookhub.api.deps import get_hub
 from spookhub.hub import Hub
 from spookhub.models import (
+    AmbientSpec,
     Cue,
     CueIn,
     CueOut,
@@ -52,6 +53,9 @@ def to_out(s: Session, p: Profile) -> ProfileOut:
         markers=[Marker.model_validate(m) for m in (p.markers or [])],
         display_profile_id=p.display_profile_id,
         scene=SceneSpec.model_validate(p.scene) if p.scene is not None else None,
+        ambient=AmbientSpec.model_validate(p.ambient) if p.ambient is not None else None,
+        fade_ms=p.fade_ms,
+        idle_length_s=p.idle_length_s,
         cues=[
             CueOut(
                 id=c.id or 0,
@@ -64,6 +68,7 @@ def to_out(s: Session, p: Profile) -> ProfileOut:
                 color=c.color,
                 kind="sound" if c.kind == "sound" else "light",
                 sound=SoundSpec.model_validate(c.sound) if c.kind == "sound" and c.sound else None,
+                track="idle" if c.track == "idle" else "main",
             )
             for c in cues
         ],
@@ -109,6 +114,10 @@ def _apply(p: Profile, body: ProfileIn, s: Session) -> None:
             raise HTTPException(422, f"media {mid} is audio; a video profile needs a video")
     if body.type == ProfileType.video and body.media_id is None:
         raise HTTPException(422, "video profile needs a video")
+    if body.ambient is not None:
+        m = s.get(Media, body.ambient.media_id)
+        if m is None or m.kind != "audio":
+            raise HTTPException(422, f"ambient media {body.ambient.media_id} is not an audio file")
     # Omitted = untouched: clients that predate display profiles must not clear the override.
     if "display_profile_id" in body.model_fields_set:
         dp = body.display_profile_id
@@ -125,6 +134,9 @@ def _apply(p: Profile, body: ProfileIn, s: Session) -> None:
     p.playback_mode = body.playback_mode
     p.cooldown_s = body.cooldown_s
     p.scene = body.scene.model_dump() if body.type == ProfileType.scene and body.scene else None
+    p.ambient = body.ambient.model_dump() if body.ambient else None
+    p.fade_ms = body.fade_ms
+    p.idle_length_s = body.idle_length_s if body.type == ProfileType.light else None
     if body.markers is not None:
         p.markers = _marker_rows(body.markers)
 
@@ -254,6 +266,7 @@ def _cue_row(pid: int, c: CueIn) -> Cue:
         color=c.color,
         kind=c.kind,
         sound=c.sound.model_dump() if c.sound else None,
+        track=c.track,
     )
 
 
@@ -262,8 +275,11 @@ async def replace_cues(pid: int, cues: list[CueIn], hub: HubDep) -> ProfileOut:
     """Replace the whole cue list (list-form editor saves atomically)."""
     with db.session() as s:
         p = _get(s, pid)
-        if p.type != ProfileType.video:
-            raise HTTPException(422, "only video profiles have cues")
+        if p.type == ProfileType.scene:
+            raise HTTPException(422, "scenes have no cues")
+        # A light profile has no main video: only its looping idle track.
+        if p.type == ProfileType.light and any(c.track != "idle" for c in cues):
+            raise HTTPException(422, "light profiles only have idle cues")
         for c in cues:
             if c.sound is not None and s.get(Media, c.sound.media_id) is None:
                 raise HTTPException(422, f"sound media {c.sound.media_id} not found")
@@ -303,6 +319,7 @@ def export_profile(pid: int) -> JSONResponse:
         idle = s.get(Media, p.idle_media_id) if p.idle_media_id else None
         dp = s.get(DisplayProfile, p.display_profile_id) if p.display_profile_id else None
         scene = _scene_export(s, p.scene) if p.scene else None
+        amb = s.get(Media, p.ambient.media_id) if p.ambient else None
     data = {
         "format": EXPORT_FORMAT,
         "version": 1,
@@ -315,6 +332,7 @@ def export_profile(pid: int) -> JSONResponse:
                 "idle_media_id",
                 "display_profile_id",
                 "scene",
+                "ambient",
             }
         ),
         "cues": [c.model_dump(exclude={"id"}) for c in p.cues],
@@ -324,6 +342,9 @@ def export_profile(pid: int) -> JSONResponse:
         "display_profile": None if dp is None else {"name": dp.name, "geometry": dp.geometry},
         # Scene items by profile name, like videos by filename.
         "scene": scene,
+        "ambient": None
+        if p.ambient is None or amb is None
+        else {**p.ambient.model_dump(exclude={"media_id"}), "media_filename": amb.filename},
     }
     safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in p.name)[:40] or "profile"
     return JSONResponse(
@@ -364,6 +385,20 @@ def _scene_import(s: Session, data: Any) -> SceneSpec:
         chain=bool(data.get("chain", False)),
         light_hold_s=data.get("light_hold_s", 10.0),
     )
+
+
+def _ambient_import(s: Session, data: Any) -> AmbientSpec | None:
+    """Ambient sound by filename; a missing (or non-audio) file drops the ambient."""
+    if not isinstance(data, dict):
+        return None
+    mid = _media_by_name(s, data.get("media_filename"))
+    m = s.get(Media, mid) if mid is not None else None
+    if m is None or m.kind != "audio":
+        return None
+    try:
+        return AmbientSpec.model_validate({**data, "media_id": mid})
+    except ValidationError:
+        return None
 
 
 class ImportIn(BaseModel):
@@ -412,6 +447,7 @@ def import_profile(body: ImportIn, hub: HubDep) -> ProfileOut:
                     422, f"video '{d.get('media_filename')}' not found; choose a video to use"
                 )
         prof.display_profile_id = None  # a foreign hub's id means nothing here
+        prof.ambient = _ambient_import(s, d.get("ambient"))
         if dp_name is not None and dp_geom is not None:
             # Same name = same physical setup on this hub: reuse it, never overwrite it.
             row = s.exec(select(DisplayProfile).where(DisplayProfile.name == dp_name)).first()

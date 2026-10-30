@@ -69,6 +69,7 @@ class Hub:
             self.boards, self.player, self.bus, self.settings, tick_s=cfg.timing.scheduler_tick_s
         )
         self.engine.fx = self.fx
+        self.engine.ambient = self.ambient
         self.preflight = Preflight(self)
         self.auth = AuthStore()
         self.version = load_version()

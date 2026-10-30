@@ -64,7 +64,9 @@ async def test_validation_and_trigger_rules(client):
     r = (await client.post("/api/trigger")).json()
     assert r == {"ok": False, "message": "no video profile active"}
     r = await client.post("/api/profiles", json={"name": "L"})
-    assert (await client.put(f"/api/profiles/{r.json()['id']}/cues", json=[])).status_code == 422
+    main_cue = [{"start_s": 0, "state": {"bri": 1}}]  # light profiles only have idle cues
+    r = await client.put(f"/api/profiles/{r.json()['id']}/cues", json=main_cue)
+    assert r.status_code == 422
     assert (await client.delete("/api/media/999")).status_code == 404
 
 

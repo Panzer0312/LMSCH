@@ -90,6 +90,8 @@ class MpvPlayer:
         self._sent_shader: dict[str, str] = dict(DEFAULT_SHADER_OPTS)
         self._geom_flush: asyncio.TimerHandle | None = None
         self._geom_lock = asyncio.Lock()
+        # Transition fade 0..1 on top of geometry brightness and volume (1 = untouched).
+        self.fade: float = 1.0
 
     # ---- lifecycle ---------------------------------------------------------------------------
 
@@ -419,7 +421,7 @@ class MpvPlayer:
     async def _reapply_audio(self, ipc: MpvIpc) -> None:
         try:
             if self._volume is not None:
-                await ipc.set_property("volume", self._volume)
+                await ipc.set_property("volume", self._faded_volume())
             if self._audio_delay_s is not None:
                 await ipc.set_property("audio-delay", self._audio_delay_s)
         except MpvError as exc:
@@ -478,6 +480,30 @@ class MpvPlayer:
         ipc = await self._ready_ipc()
         await ipc.set_property("pause", p)
 
+    # ---- transition fade ---------------------------------------------------------------------
+
+    def _faded_volume(self) -> float:
+        return round((self._volume or 0.0) * self.fade, 2)
+
+    def _faded_brightness(self, b: int) -> int:
+        # -100 is black whatever the geometry's own brightness is.
+        return round(-100 + (b + 100) * self.fade)
+
+    async def set_fade(self, level: float) -> None:
+        """Picture and sound level for transitions; 1 restores geometry brightness and volume.
+
+        Also applies to the next load(), so a file can start black and silent."""
+        self.fade = max(0.0, min(1.0, level))
+        ipc = self._ipc
+        if not self.cfg.enabled or not self.ready.is_set() or ipc is None:
+            return
+        await self._send_geometry(ipc)
+        if self._volume is not None:
+            try:
+                await ipc.set_property("volume", self._faded_volume())
+            except MpvError as exc:
+                log.debug("fade volume: %s", exc)
+
     # ---- display geometry --------------------------------------------------------------------
 
     def _run_geometry_hook(self, path: str) -> None:
@@ -524,6 +550,7 @@ class MpvPlayer:
     async def _send_geometry(self, ipc: MpvIpc) -> None:
         f = SourceFrame(*self._geom_size) if self._geom_size else SourceFrame(0, 0)
         props, shader = to_mpv(self.geometry, f.w, f.h, f.rotate)
+        props["brightness"] = self._faded_brightness(props["brightness"])
         # Serialised: two overlapping flushes would each diff against a stale "sent" state.
         async with self._geom_lock:
             for name, value in props.items():

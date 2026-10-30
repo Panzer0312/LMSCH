@@ -10,14 +10,15 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
-from sqlmodel import select
+from sqlmodel import Session, select
 
 from spookhub import db
 from spookhub.boards.registry import BoardManager
 from spookhub.events import EventBus
 from spookhub.models import (
+    AmbientSpec,
     BoardSelection,
     Cue,
     CueTarget,
@@ -48,6 +49,22 @@ STALL_POLL_S = 0.25
 STALL_RESTART_TIMEOUT_S = 20.0
 # vo=null accepts the shader options (tests, headless) without rendering anything.
 WARP_VOS = ("gpu-next", "null")
+FADE_STEP_S = 0.02  # idle -> main fade: one brightness/volume IPC step per ~20 ms
+AMBIENT_OWNER = "ambient"
+AMBIENT_FADE_MS = 1000  # ambient start/stop/volume change outside a duck
+
+
+@dataclass(frozen=True)
+class AmbientSound:
+    path: str
+    volume: float
+    duck_to: float
+
+
+class AmbientPlayer(FxPlayer, Protocol):
+    current: str | None
+
+    def ramp(self, volume: float, ms: int, then_stop: bool = False) -> Any: ...
 
 
 @dataclass
@@ -98,6 +115,12 @@ class ActiveProfile:
     display_profile_id: int | None = None
     sounds: list[SoundCue] = field(default_factory=list)
     scene: SceneSpec | None = None
+    # Idle track: loops with the idle clip, or every idle_length_s without one.
+    idle_cues: list[CueSpec] = field(default_factory=list)
+    idle_sounds: list[SoundCue] = field(default_factory=list)
+    idle_length_s: float | None = None
+    ambient: AmbientSound | None = None
+    fade_ms: int = 400
 
     def macs(self, adopted: list[str]) -> list[str]:
         # "All boards" is resolved at use time so boards adopted later join automatically.
@@ -119,12 +142,15 @@ def load_active(profile_id: int) -> ActiveProfile | None:
         media = s.get(Media, p.media_id) if p.media_id else None
         idle = s.get(Media, p.idle_media_id) if p.idle_media_id else None
         cues = s.exec(select(Cue).where(Cue.profile_id == profile_id)).all()
-        specs = []
+        main = [c for c in cues if c.track != "idle"]
+        idle_rows = [c for c in cues if c.track == "idle"]
+        specs: list[CueSpec] = []
+        idle_specs: list[CueSpec] = []
         for c in cues:
             if c.kind == "sound":
                 continue  # fx lane, see sounds below
             tgt = CueTarget.model_validate(c.target or {})
-            specs.append(
+            (idle_specs if c.track == "idle" else specs).append(
                 CueSpec(
                     id=c.id or 0,
                     start=c.start_s,
@@ -153,17 +179,39 @@ def load_active(profile_id: int) -> ActiveProfile | None:
             idle_path=idle.path if idle and Path(idle.path).exists() else None,
             cues=specs,
             display_profile_id=p.display_profile_id,
-            sounds=load_sound_cues(s, list(cues)),
+            sounds=load_sound_cues(s, main),
+            idle_cues=idle_specs,
+            idle_sounds=load_sound_cues(s, idle_rows),
+            idle_length_s=p.idle_length_s if p.type == ProfileType.light else None,
+            ambient=_load_ambient(s, p),
+            fade_ms=p.fade_ms,
         )
 
 
+def _load_ambient(s: Session, p: Profile) -> AmbientSound | None:
+    if not p.ambient:
+        return None
+    try:
+        spec = AmbientSpec.model_validate(p.ambient)
+    except ValueError:
+        log.warning("profile %s has an invalid ambient spec", p.id)
+        return None
+    m = s.get(Media, spec.media_id)
+    if m is None or not Path(m.path).exists():
+        return None
+    return AmbientSound(m.path, spec.volume, spec.duck_to)
+
+
 def _load_scene(p: Profile) -> ActiveProfile:
-    """A scene's idle part: the idle profile's boards and picture under the scene's id."""
+    """A scene's idle part: the idle profile's boards, picture and idle track under the scene's
+    id. Ambient: the scene's own, else the idle profile's."""
     spec = SceneSpec.model_validate(p.scene or {})
     idle = load_active(spec.idle_profile_id) if spec.idle_profile_id else None
     if idle is not None and idle.type == ProfileType.scene:
         idle = None
     video = idle is not None and idle.type == ProfileType.video
+    with db.session() as s:
+        own_ambient = _load_ambient(s, p)
     return ActiveProfile(
         id=p.id or 0,
         name=p.name,
@@ -181,6 +229,11 @@ def _load_scene(p: Profile) -> ActiveProfile:
         idle_path=(idle.idle_path or idle.media_path) if video and idle else None,
         display_profile_id=idle.display_profile_id if idle else p.display_profile_id,
         scene=spec,
+        idle_cues=idle.idle_cues if idle else [],
+        idle_sounds=idle.idle_sounds if idle else [],
+        idle_length_s=idle.idle_length_s if idle else None,
+        ambient=own_ambient or (idle.ambient if idle else None),
+        fade_ms=p.fade_ms,
     )
 
 
@@ -270,6 +323,14 @@ class ShowEngine:
         # Audio-only effects player for sound cues (set by the hub; None = sound cues off).
         self.fx: FxPlayer | None = None
         self._sound = SoundLane()
+        # Ambient loop player (set by the hub; None = ambient off) and what it loops now.
+        self.ambient: AmbientPlayer | None = None
+        self._ambient_on: AmbientSound | None = None
+        self._ducked = False
+        # Scheduler drives the idle track (not main/audition/calibration); mono = no idle clip.
+        self._idle_track = False
+        self._idle_mono = False
+        self._fade_task: asyncio.Task[None] | None = None
         player.on_change = self._on_player_change
         player.geometry_for = self._geometry_for
         settings.listeners.append(self._on_settings)
@@ -352,10 +413,12 @@ class ShowEngine:
             elif prof.type == ProfileType.light:
                 self.phase = Phase.lights
                 await self._safe(self.player.black())
+                await self._start_idle_track()
             elif prof.mode == PlaybackMode.idle_trigger or not autostart:
                 await self._go_idle()
             else:
                 await self._play_main(0.0)
+            await self._sync_ambient()
             if self.scene is not None and self.scene.spec.chain and autostart:
                 spawn(self._scene_chain())
             self._publish()
@@ -380,6 +443,9 @@ class ShowEngine:
         self._last_cue.clear()  # forces re-apply on next tick
         if not self.playing_main and self.audition is None:
             self._apply_base(critical=False)
+            if self.phase in (Phase.idle, Phase.lights):
+                await self._start_idle_track()
+        await self._sync_ambient()
         self.refresh_display()
         self._publish()
 
@@ -395,6 +461,7 @@ class ShowEngine:
             self.settings.update(active_profile_id=None)
             await self._safe(self.player.black())
             await self._stop_fx()
+            await self._sync_ambient()
             self._publish()
 
     def boards_changed(self) -> None:
@@ -413,7 +480,10 @@ class ShowEngine:
         if self.playing_main:
             self._sched_prof, self._sched_tl = self.active, self.timeline
         self._last_cue.clear()
-        if not self.playing_main and self.audition is None:
+        if self._idle_track and self._sched_prof is not None:
+            # The next tick re-sends base or idle cue to every board, new ones included.
+            self._sched_tl = Timeline(self._sched_prof.idle_cues, self.boards.adopted_macs())
+        elif not self.playing_main and self.audition is None:
             self._apply_base(critical=False)
 
     async def next_profile(self) -> None:
@@ -524,16 +594,33 @@ class ShowEngine:
             self.bus.event("error", f"Profile '{a.name}' has no playable video")
             await self._go_idle()
             return False
+        home = self._scene_home or a
+        # Fade only away from a visible idle clip; mpv off (tests, headless) has no picture.
+        fade = (
+            home.fade_ms
+            if self.phase == Phase.idle
+            and home.idle_path is not None
+            and self.player.path is not None
+            and self.player.cfg.enabled
+            else 0
+        )
         await self._stop_scheduler()
         if self.audition is not None:
             self.audition = None
             self._apply_base(critical=False)
+        self._duck_ambient(True, home.fade_ms)
+        await self._fade_out(fade)
+        if self.blackout:  # pressed during the fade; blackout takes over the player
+            await self._reset_fade()
+            return False
         loop = a.mode == PlaybackMode.loop
         ok = await self._safe(self.player.load(a.media_path, start=from_s, loop=loop))
         if not ok:
             self.bus.event("error", "Video player not ready")
             await self._go_idle()
             return False
+        if self.player.fade < 1.0:
+            self._fade_task = asyncio.create_task(self._fade_in(fade))
         self.playing_main = True
         self._recovered = False
         self.phase = Phase.playing
@@ -548,12 +635,15 @@ class ShowEngine:
     async def _go_idle(self) -> None:
         self.playing_main = False
         self._scene_restore()
+        await self._reset_fade()
         a = self.active
         self.phase = Phase.idle
+        self._duck_ambient(False, a.fade_ms if a else 0)
         if a and a.idle_path:
             await self._safe(self.player.load(a.idle_path, loop=True))
         else:
             await self._safe(self.player.black())
+        await self._start_idle_track()
 
     async def _end_show(self, reason: str) -> None:
         await self._stop_scheduler()
@@ -578,7 +668,9 @@ class ShowEngine:
             except asyncio.CancelledError:
                 pass
         self._sched = None
+        self._idle_track = self._idle_mono = False
         self._sound.stop(self.fx)
+        await self._reset_fade()
 
     async def _stop_fx(self) -> None:
         """Stop / blackout / deactivate: silence every effects sound, soundboard included."""
@@ -757,7 +849,12 @@ class ShowEngine:
         a = self._sched_prof
         tl = self._sched_tl
         assert a and tl
-        if (
+        if self._idle_track:
+            if self._idle_mono:
+                self._sound.tick(self.fx, a.idle_sounds, t)
+            elif not self.player.paused:
+                self._sound.tick(self.fx, a.idle_sounds, t - self.settings.value.audio_delay_s)
+        elif (
             self.playing_main
             and self.audition is None
             and not self.calibrating
@@ -851,6 +948,8 @@ class ShowEngine:
                 self._last_cue.clear()
             else:
                 self._apply_base(critical=False)
+                if self.phase in (Phase.idle, Phase.lights):
+                    await self._start_idle_track()
         self.bus.event("info", "Live audition stopped")
         self._publish()
 
@@ -946,6 +1045,9 @@ class ShowEngine:
                 self._apply_base(critical=False)
                 if self.phase == Phase.idle and (old is None or old.idle_path != prof.idle_path):
                     await self._go_idle()
+                elif self.phase == Phase.idle:
+                    await self._start_idle_track()
+        await self._sync_ambient()
         self.refresh_display()
         self._publish()
         self._publish_scene()
@@ -978,6 +1080,7 @@ class ShowEngine:
         if item is None or item.type == ProfileType.scene:
             return False, f"scene item {pid} not found"
         self.bus.event("info", f"Scene '{self._scene_home.name}': playing '{item.name}'")
+        await self._stop_scheduler()  # idle track off: the item owns the boards now
         self.active = item
         self.timeline = Timeline(item.cues, self.boards.adopted_macs())
         # The scheduler assumes boards already show the base: send it before the video.
@@ -1005,6 +1108,7 @@ class ShowEngine:
             if self.active is not None:
                 self.cooldown_until = time.monotonic() + self.active.cooldown_s
             self.phase = Phase.idle
+            await self._start_idle_track()
         self._publish()
         if self.scene is not None and self.scene.spec.chain:
             await self._scene_chain()
@@ -1042,6 +1146,119 @@ class ShowEngine:
         self.scene.pin(profile_id)
         self._publish_scene()
         return self.scene_state()
+
+    # ----- idle track -----
+
+    async def _start_idle_track(self) -> None:
+        """(Re)start the active profile's idle cue track: timed off the idle clip's time-pos
+        (wraps with its loop), or a monotonic loop of idle_length_s without a clip."""
+        await self._stop_scheduler()
+        a = self.active
+        if (
+            a is None
+            or self.playing_main
+            or self.blackout
+            or self.test_pattern
+            or self.calibrating
+            or self.audition is not None
+            or self._setup_task is not None
+            or not (a.idle_cues or a.idle_sounds)
+        ):
+            return
+        if a.idle_path is not None and self.phase == Phase.idle:
+            clock, mono = self._player_clock, False
+        elif a.idle_length_s:
+            t0, length = time.monotonic(), a.idle_length_s
+
+            def clock() -> tuple[float | None, bool]:
+                return (time.monotonic() - t0) % length, False
+
+            mono = True
+        else:
+            return
+        self._start_scheduler(a, Timeline(a.idle_cues, self.boards.adopted_macs()), clock)
+        self._idle_track, self._idle_mono = True, mono
+        # Boards may still show an idle cue from before the restart: re-send everything.
+        self._last_cue.clear()
+
+    # ----- ambient -----
+
+    def _ambient_level(self, amb: AmbientSound) -> float:
+        return amb.volume * (amb.duck_to if self._ducked else 1.0)
+
+    async def _sync_ambient(self) -> None:
+        """Ambient loop follows the activated profile (scene included); blackout and
+        deactivate stop it. An unchanged loop keeps playing (no restart on re-activate)."""
+        amb = self.ambient
+        if amb is None:
+            return
+        home = self._scene_home or self.active
+        want = None if self.blackout or home is None else home.ambient
+        cur = self._ambient_on
+        self._ducked = self.playing_main
+        self._ambient_on = want
+        if want is None:
+            if cur is not None:
+                await self._safe(amb.stop(0 if self.blackout else 300, owner=AMBIENT_OWNER))
+            return
+        level = self._ambient_level(want)
+        if cur is None or cur.path != want.path or amb.current != want.path:
+            await self._safe(
+                amb.play(
+                    want.path,
+                    volume=level,
+                    fade_in_ms=AMBIENT_FADE_MS,
+                    loop=True,
+                    owner=AMBIENT_OWNER,
+                )
+            )
+        elif cur != want:
+            amb.ramp(level, AMBIENT_FADE_MS)
+
+    def _duck_ambient(self, on: bool, ms: int) -> None:
+        """Main video starts (on) / ends (off): ramp the ambient to duck_to*volume and back."""
+        if on == self._ducked:
+            return
+        self._ducked = on
+        amb, cur = self.ambient, self._ambient_on
+        if amb is not None and cur is not None and amb.current == cur.path:
+            amb.ramp(self._ambient_level(cur), ms)
+
+    # ----- transition fade -----
+
+    async def _fade_to(self, level: float, ms: int) -> None:
+        start = self.player.fade
+        steps = max(1, round(ms / 1000 / FADE_STEP_S))
+        for i in range(1, steps + 1):
+            await self._safe(self.player.set_fade(start + (level - start) * i / steps))
+            if i < steps:
+                await asyncio.sleep(FADE_STEP_S)
+
+    async def _fade_out(self, ms: int) -> None:
+        """Ramp the main player to black (brightness -> -100) and silence over `ms`.
+
+        0 = hard cut: nothing is sent. The level stays at 0, so the next load starts black
+        and silent; `_fade_in` (or `_reset_fade`) brings it back."""
+        if ms > 0:
+            await self._fade_to(0.0, ms)
+
+    async def _fade_in(self, ms: int) -> None:
+        """Ramp back to the display geometry's brightness and the master volume over `ms`;
+        0 = at once (no-op when nothing is faded)."""
+        if self.player.fade >= 1.0:
+            return
+        if ms > 0:
+            await self._fade_to(1.0, ms)
+        else:
+            await self._safe(self.player.set_fade(1.0))
+
+    async def _reset_fade(self) -> None:
+        """Cancel a running fade-in and restore full level (anything that loads other media)."""
+        t, self._fade_task = self._fade_task, None
+        if t is not None and t is not asyncio.current_task():
+            t.cancel()
+        if self.player.fade < 1.0:
+            await self._safe(self.player.set_fade(1.0))
 
     # ----- test pattern -----
 
@@ -1303,6 +1520,8 @@ class ShowEngine:
             why = self.setup_blocker()
             if why:
                 raise SetupBusy(why)
+            if self._idle_track:  # the setup action owns player and boards; restore restarts it
+                await self._stop_scheduler()
             if not await start():
                 raise SetupUnavailable("player not available")
             self._setup_cleanup = cleanup
@@ -1371,6 +1590,8 @@ class ShowEngine:
             self.timeline = None
             self.phase = Phase.none
         await self._safe(self.player.black())
+        if self.phase == Phase.lights:
+            await self._start_idle_track()
 
     async def play_test_sound(self, path: str, max_wait_s: float = 6.0) -> None:
         async def start() -> bool:
@@ -1492,6 +1713,7 @@ class ShowEngine:
         self.boards.set_blackout(on)
         if on:
             await self._stop_fx()
+            await self._sync_ambient()
             # Safety control: never waits for a setup test.
             await self._cancel_setup()
             async with self._lock:

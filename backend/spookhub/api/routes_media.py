@@ -76,11 +76,16 @@ def _users(mid: int) -> list[str]:
             or_(col(Profile.media_id) == mid, col(Profile.idle_media_id) == mid)
         )
         names = [p.name for p in s.exec(q).all()]
-        # Sound cues reference media inside JSON; few rows, so filter in Python.
+        # Sound cues and ambients reference media inside JSON; few rows, so filter in Python.
         cue_pids = {
             c.profile_id
             for c in s.exec(select(Cue).where(col(Cue.kind) == "sound")).all()
             if (c.sound or {}).get("media_id") == mid
+        }
+        cue_pids |= {
+            p.id or 0
+            for p in s.exec(select(Profile)).all()
+            if (p.ambient or {}).get("media_id") == mid
         }
         for pid in sorted(cue_pids):
             p = s.get(Profile, pid)
