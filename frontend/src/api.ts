@@ -1,4 +1,4 @@
-import type { Board, Cue, Media, Profile, ProfileIn, Settings, LightState, ThumbsMeta, Waveform, Recommendation, ProfileExport, AppState, Preflight, DrmOutput, AudioDevice, EventRow, EventStats, FallbackResult, LastTrigger, Marker, Onsets, SavedTemplate, TemplateCue, DisplayGeometry, DisplayProfile, DisplaySource, DisplayState, PatternInfo, BlackCheck } from './types'
+import type { Board, Cue, Media, Profile, ProfileIn, Settings, LightState, ThumbsMeta, Waveform, Recommendation, ProfileExport, AppState, Preflight, DrmOutput, AudioDevice, EventRow, EventStats, FallbackResult, LastTrigger, Marker, Onsets, SavedTemplate, TemplateCue, SceneState, DisplayGeometry, DisplayProfile, DisplaySource, DisplayState, PatternInfo, BlackCheck } from './types'
 
 export class ApiError extends Error {
   status: number
@@ -103,6 +103,17 @@ export const api = {
       post<{ ok: boolean; message: string }>('/api/audition', { profile_id, t, playing, muted }),
     auditionStop: () => post('/api/audition/stop'),
     testPattern: (on: boolean) => post('/api/show/test_pattern', { on }),
+  },
+  scene: {
+    get: () => req<SceneState>('GET', '/api/scene'),
+    skip: () => post<SceneState>('/api/scene/skip'),
+    /** null clears the pin. */
+    pin: (profile_id: number | null) => post<SceneState>('/api/scene/pin', { profile_id }),
+  },
+  sounds: {
+    /** Soundboard: plays on the fx player; allowed under show lock. */
+    play: (media_id: number, volume?: number) => post('/api/sounds/play', volume == null ? { media_id } : { media_id, volume }),
+    stop: () => post('/api/sounds/stop'),
   },
   templates: {
     list: () => req<SavedTemplate[]>('GET', '/api/templates'),

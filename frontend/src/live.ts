@@ -1,5 +1,5 @@
 import { createContext, useContext, useSyncExternalStore } from 'react'
-import type { Board, DisplayState, Preflight, Settings, ShowEvent, ShowState, Version } from './types'
+import type { Board, DisplayState, Preflight, SceneState, Settings, ShowEvent, ShowState, Version } from './types'
 
 export interface Live {
   connected: boolean
@@ -17,12 +17,13 @@ export interface Live {
   transcodes: Record<number, number>
   preflight: Preflight | null
   version: Version | null
+  scene: SceneState | null
 }
 
 export const initial: Live = {
   connected: false, boards: {}, show: null, settings: null, events: [],
   profilesRev: 0, mediaRev: 0, boardsRev: 0, displayProfilesRev: 0, transcodes: {},
-  preflight: null, version: null,
+  preflight: null, version: null, scene: null,
 }
 export const Ctx = createContext<Live>(initial)
 
@@ -35,7 +36,7 @@ export function reduce(s: Live, m: Msg): Live {
         ...s,
         boards: Object.fromEntries((m.data.boards as Board[]).map((b) => [b.mac, b])),
         show: m.data.show, settings: m.data.settings, events: m.data.events.slice(-20),
-        preflight: m.data.preflight, version: m.data.version,
+        preflight: m.data.preflight, version: m.data.version, scene: m.data.scene ?? null,
       }
     case 'board':
       return { ...s, boards: { ...s.boards, [m.data.mac]: m.data } }
@@ -48,6 +49,7 @@ export function reduce(s: Live, m: Msg): Live {
     case 'show': return { ...s, show: m.data }
     case 'settings': return { ...s, settings: m.data }
     case 'preflight': return { ...s, preflight: m.data }
+    case 'scene': return { ...s, scene: m.data }
     case 'trigger_seen': return s.show ? { ...s, show: { ...s.show, last_trigger: m.data } } : s
     case 'event': return { ...s, events: [...s.events, m.data].slice(-20) }
     case 'profiles_changed': return { ...s, profilesRev: s.profilesRev + 1 }

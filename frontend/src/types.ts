@@ -36,7 +36,7 @@ export interface Board {
   presets: Record<string, string> // id -> name
 }
 
-export type ProfileType = 'light' | 'video'
+export type ProfileType = 'light' | 'video' | 'scene'
 export type PlaybackMode = 'once' | 'loop' | 'idle_trigger'
 
 export interface BoardSelection { all: boolean; macs: string[] }
@@ -53,7 +53,14 @@ export interface Cue {
   transition_ms: number | null
   label?: string | null
   color?: string | null // '#rrggbb'
+  /** Default 'light'. Sound cues ignore target/state and live on the sound lane only. */
+  kind?: CueKind
+  sound?: SoundSpec | null
 }
+
+export type CueKind = 'light' | 'sound'
+/** volume 0..1.3 (default 1). */
+export interface SoundSpec { media_id: number; volume: number; fade_in_ms: number; fade_out_ms: number; loop: boolean }
 
 export interface Marker { id: string; t: number; label: string; color: string | null }
 
@@ -86,7 +93,16 @@ export interface ProfileIn {
   markers?: Marker[] | null
   /** Per-show display profile; wins over media and global default. */
   display_profile_id?: number | null
+  /** Only for type 'scene'; null otherwise. */
+  scene?: SceneSpec | null
 }
+
+export type SceneOrder = 'sequential' | 'shuffle' | 'weighted'
+export interface SceneItem { profile_id: number; weight: number }
+/** chain: play items back to back without trigger. light_hold_s: how long a light item holds. */
+export interface SceneSpec { items: SceneItem[]; order: SceneOrder; idle_profile_id: number | null; chain: boolean; light_hold_s: number }
+/** GET /api/scene and WS `scene`. profile_id null = no scene active. */
+export interface SceneState { profile_id: number | null; next_id: number | null; pinned: number | null; history: number[]; upcoming: number[] }
 
 export interface Profile extends ProfileIn { id: number; sort: number; cues: Cue[]; markers: Marker[] }
 
@@ -104,6 +120,7 @@ export interface Media {
   /** Display aspect w/h after rotation. */
   aspect?: number
   display_profile_id?: number | null
+  kind?: 'video' | 'audio'
 }
 
 export type Phase = 'none' | 'lights' | 'idle' | 'playing' | 'paused' | 'blackout'
