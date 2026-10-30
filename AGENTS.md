@@ -4,8 +4,10 @@ Read this first. Then read only the docs your task touches.
 
 ## Doc map
 
-- `docs/architecture.md`: backend modules, data model, reliability, cue rules, API/WS.
+- `docs/architecture.md`: backend modules, data model, reliability, cue rules, frontend modules.
+- `docs/api.md`: REST routes, WS message types.
 - `docs/features.md`: user-facing behavior per page.
+- `docs/timeline.md`: timeline editor behavior and keys.
 - `docs/decisions.md`: open-spec decisions. Append, never silently change.
 - `docs/development.md`: dev setup, simulator, checks.
 - `docs/operations.md`: deploy, paths, hardware, troubleshooting.
@@ -19,8 +21,9 @@ matching doc **in the same commit**:
 
 | You changed | Update |
 |---|---|
-| Backend module, model field, migration, REST route, WS message type | `docs/architecture.md` |
-| UI page, user-visible behavior, keyboard shortcut | `docs/features.md` |
+| Backend module, model field, migration | `docs/architecture.md` |
+| REST route, WS message type | `docs/api.md` |
+| UI page, user-visible behavior, keyboard shortcut | `docs/features.md` (timeline editor: `docs/timeline.md`) |
 | A choice between valid options | new row in `docs/decisions.md` |
 | Config key, install/deploy script, hardware requirement | `docs/operations.md` (+ `deploy/config.example.toml`) |
 | Dev scripts, simulator, test commands | `docs/development.md` |

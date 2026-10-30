@@ -57,3 +57,11 @@ Choices made where the spec was open. Append new rows; mark replaced rows "super
 | Show vs setup | Play, play-from and trigger refuse (409) while video setup or a test pattern is on; leaving `/video` also clears a separately started test pattern. |
 | Media rotation backfill | Rows from before `Media.rotation` are re-probed in the background at startup instead of assuming 0. |
 | ffmpeg timeouts | Pattern render 60 s (503), black check 120 s (504); the process is killed on timeout or cancel. |
+| Scene model | A scene is a profile type (`Profile.type = scene`, `Profile.scene` JSON), not its own table. Activation, cooldown, export/import and the lock reuse the profile paths. Scenes cannot contain scenes. |
+| Audio mixing | Three mpv processes (main, `fx`, `ambient`) share the card through an ALSA `dmix` default written by `install.sh`. The fallback (mixing effects into main mpv via `af`/lavfi) is not built; revisit only if dmix fails on the hub. |
+| Sounds per player | One sound at a time per effects player; a new play replaces the old. Overlapping sound cues: the latest-started covering cue wins, an older longer one resumes at its offset when it ends. Soundboard and cue sounds share `fx`. |
+| Moment restore | Snapshot on press (active profile, timeline, phase, idle clip and ambient position). Restore without re-activation: idle clip resumes at the saved position, idle track and ambient carry on, touched boards return to the home base. Cooldown starts when the moment ends. The editor's test variant skips the cooldown. An interrupting moment keeps the first snapshot, so it restores what ran before both. |
+| Scene chain after stop | A manual stop, blackout release or a failed item pauses a chain scene until the next trigger. No retry loop on a broken item. |
+| Idle → main fade | Stepped mpv IPC: `brightness` (to -100) and `volume` every 20 ms over `fade_ms`. No filter rebuild. Ramp smoothness on the hub is an open spike. |
+| Scene skip | Skip re-picks the next item; it does not stop a playing item. Pin wins once, then the picked next stays queued. |
+| Moment light-only length | A light-only moment lasts its profile's `idle_length_s`, else 5 s. Video and sound parts: the longest wins. |

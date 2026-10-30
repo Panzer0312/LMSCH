@@ -32,7 +32,8 @@ cd frontend && npx tsc -b && npm run lint && npm test
 
 `npm test` runs vitest on `frontend/src/**/*.test.ts`: the TS resolver against the shared fixtures in
 `backend/tests/fixtures/resolve/` (pytest runs the same files), ribbon runs, time editing and clipboard
-ops (`timeops.ts`), parametric templates (`generators.ts`).
+ops (`timeops.ts`), parametric templates (`generators.ts`), sound cue lane/ends (`sound.test.ts`), main/idle
+track split and loop clock (`tracks.test.ts`).
 
 | Test file | Covers |
 |---|---|
@@ -47,4 +48,9 @@ ops (`timeops.ts`), parametric templates (`generators.ts`).
 | `test_lock_events.py` | Lock matrix (codes), EventLog writer, history and stats |
 | `test_resilience.py` | Stall recovery, sd_notify, board fallback preset |
 | `test_clear_manual.py` | `DELETE /boards/{mac}/state` |
-| `test_e2e.py` | Real mpv (null out) + simulator; every cue within ±100 ms, prints error |
+| `test_sound.py` | Audio media, effects players, sound cue scheduling + seek, soundboard |
+| `test_picker.py` | Picker orders (seeded), no back-to-back repeat, scene runner state |
+| `test_scenes.py` | Scene validation, export/import, engine cycle, chain, API + lock |
+| `test_ambient.py` | Idle track, light idle loop, ambient loop + duck, idle → main fade |
+| `test_moments.py` | Moment CRUD + validation, lock, cooldown, busy policies, variant pick, run + restore |
+| `test_e2e.py` | Real mpv (null out) + simulator; every cue within ±100 ms, prints error; scene cycle + chain |

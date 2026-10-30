@@ -7,7 +7,8 @@ desktop browser.
 **Status:** M1 core show, M2 timeline editor, M3 polish and phase 1 (setup page, preflight, sync
 calibration, show mode, run log, watchdog and fallbacks) and phase 2 (timeline editing: markers,
 onsets, templates, time editing, clipboard, effect picker, WLED segments) and phase 3 (video setup
-page, display profiles, keystone/mask shader, alignment patterns) built and tested against the
+page, display profiles, keystone/mask shader, alignment patterns) and phase 4 (scenes, sound cues,
+soundboard, ambient layer, idle track, idle → main fade, moments page) built and tested against the
 simulator.
 Not yet run on real hardware. Next work: [`docs/roadmap/`](docs/roadmap/README.md).
 
@@ -45,7 +46,7 @@ they apply.
 | `python3-pip` | Installs the backend into the venv | yes |
 | `avahi-daemon` | Announces `<hostname>.local` | yes |
 | `libnss-mdns` | Resolves `.local` names (WLED boards) | yes |
-| `alsa-utils` | Audio test, `aplay -l` device list | yes |
+| `alsa-utils` | Audio test, `aplay -l` device list, dmix HDMI autodetect | yes |
 | `intel-media-va-driver` | VA-API hardware decode, Intel Broadwell+ (falls back to `-non-free`) | yes (Intel CPU only) |
 | `i965-va-driver` | VA-API hardware decode, older Intel | yes (Intel CPU only) |
 | `mesa-va-drivers` | VA-API hardware decode, AMD | yes |
@@ -72,8 +73,10 @@ Hub packages above, plus:
 
 | File | Content |
 |---|---|
-| [docs/architecture.md](docs/architecture.md) | Modules, data model, reliability design, cue rules, API and WebSocket |
+| [docs/architecture.md](docs/architecture.md) | Modules, data model, reliability design, cue rules |
+| [docs/api.md](docs/api.md) | REST routes and WebSocket messages |
 | [docs/features.md](docs/features.md) | What each UI page and feature does |
+| [docs/timeline.md](docs/timeline.md) | Timeline editor: lanes, tracks, keys, sound cues |
 | [docs/decisions.md](docs/decisions.md) | Choices made where the spec was open |
 | [docs/development.md](docs/development.md) | Dev setup, simulator, tests and checks |
 | [docs/operations.md](docs/operations.md) | Deploy, paths, hardware tips, troubleshooting |

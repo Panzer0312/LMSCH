@@ -10,7 +10,7 @@ cd ~/spookhub && git pull && sudo scripts/install.sh
 
 `scripts/install.sh` is idempotent: apt packages (list: README "Debian 13 hub: required packages"),
 `spookhub` user (groups video, render, audio), frontend build if inputs changed, copies the repo to `/opt/spookhub`, venv,
-`/etc/spookhub/config.toml` (kept if present), systemd unit, console blanking off, sleep targets
+`/etc/spookhub/config.toml` (kept if present), ALSA dmix (`/etc/asound.conf`, see below), systemd unit, console blanking off, sleep targets
 masked, restarts the service, prints the URL. Reboot once after the first run so `consoleblank=0` applies.
 
 The installer installs `nodejs npm git` and rebuilds `frontend/dist` whenever a hash of the frontend
@@ -29,6 +29,24 @@ machine, rsyncs and runs the installer remotely.
 | Diagnostics | `scripts/hubcheck.sh` |
 
 Every config key has an env override, e.g. `SPOOKHUB_MPV__EXTRA_ARGS='["--drm-connector=HDMI-A-1"]'`.
+
+## Audio mixing (ALSA dmix)
+
+Main video, sound effects (`fx`) and ambience are three mpv processes on one card. A plain hw
+device allows one opener; `dmix` lets them share it.
+
+- `install.sh` writes `/etc/asound.conf` when it is absent or carries the `# spookhub-managed`
+  marker (older installs: the `# Written by Spookhub install.sh` header). Any other file is kept;
+  it must define a dmix default itself. Delete the marker line to stop rewrites.
+- Content: `pcm.!default` = plug → `spookmix` (dmix, `ipc_gid audio`, `ipc_perm 0660`, 48 kHz) on
+  `hw:CARD,DEVICE`, `ctl.!default` on that card.
+- Device choice: `SPOOKHUB_ALSA_CARD` / `SPOOKHUB_ALSA_DEVICE` env when set
+  (`sudo SPOOKHUB_ALSA_CARD=1 SPOOKHUB_ALSA_DEVICE=3 scripts/install.sh`). Else the first HDMI
+  port with a connected display (aplay shows its name instead of `[HDMI N]`), else the first HDMI
+  port, else `hw:0,0` with a warning.
+- mpv audio device must be `auto` or `alsa/default` (Setup → Audio output or `mpv_audio_device`).
+  A raw `alsa/hdmi:…` or `alsa/hw:…` device grabs the card and blocks the effects players.
+- Dev desktop (PipeWire) needs nothing.
 
 ## Diagnostics and watchdog
 
@@ -70,7 +88,8 @@ or `[mpv] vo` in config). Plain `gpu` ignores the shader; preflight warns "Keyst
 | `install.sh` stops after a step header | It prints `install.sh failed at line N: <command>`. Fix that step, then re-run (the script is idempotent). |
 | Black screen | `journalctl -u spookhub -e` for mpv errors. `vainfo`. Try `extra_args = ["--drm-connector=HDMI-A-1"]` or `hwdec = "no"`. |
 | "mpv exited, restarting" loop | Another process holds DRM (desktop or KMS getty). User in `video` + `render`? |
-| No sound | `aplay -l`, then `extra_args = ["--audio-device=alsa/hdmi:CARD=PCH,DEV=0"]` or analog device. |
+| No sound | `aplay -l`. Check `/etc/asound.conf` points at the right `hw:CARD,DEVICE`; re-run `install.sh` with `SPOOKHUB_ALSA_CARD`/`SPOOKHUB_ALSA_DEVICE`. Keep the mpv device `auto` or `alsa/default`. |
+| Video has sound, no effects/ambience | Main mpv holds the card raw: set the audio device to `auto`/`alsa/default`. `/etc/asound.conf` missing or not dmix (user file kept). `spookhub` user in group `audio`? `journalctl -u spookhub | grep -i 'fx\|ambient'`. |
 | Board offline | Ping. Router lease. Boards → Scan network or add by IP. |
 | Lights lag video | Disable WiFi sleep. Run sync calibration on Setup, adjust global and per-board offset. |
 | Wrong or no projector output | Setup → Projector output: pick connector and mode. `scripts/hubcheck.sh` lists connectors. |
@@ -86,3 +105,7 @@ Phase 1 features are built and tested against the simulator only: DRM connector/
 ALSA device choice, test sound and calibration clip on real output, stall recovery, WLED
 `/json/cfg` key `wifi.sleep` on installed firmware, fallback preset on real boards, systemd
 watchdog, `install.sh` and `deploy.sh` end to end. Covered by roadmap phase 1, task group 1.1.
+
+Phase 4 is simulator-only too. Open on the hub: dmix on HDMI with three mpv openers, sound cue
+latency (±50 ms of its timestamp) with main audio unaffected, smoothness of the IPC
+brightness/volume fade.

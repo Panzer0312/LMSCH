@@ -4,13 +4,14 @@
 
 | Route | Page | Does |
 |---|---|---|
-| `/` | Dashboard (phone-first) | Preflight banner, active profile + progress, Trigger, Play/Stop, Next, master brightness, board health strip, last 20 events, History, link to `/show` |
-| `/profiles[/:id]` | Profiles | List, create, edit, duplicate, delete, activate. Light or video type, board selection or "All boards", base state + per-board overrides, playback mode, idle video, cooldown, cue list form |
+| `/` | Dashboard (phone-first) | Preflight banner, active profile + progress, scene card (scene active), Trigger, Play/Stop, Next, master brightness, board health strip, last 20 events, History, link to `/show` |
+| `/profiles[/:id]` | Profiles | List, create, edit, duplicate, delete, activate. Light, video or scene type, board selection or "All boards", base state + per-board overrides, playback mode, idle video, cooldown, ambience, fade, idle loop length, scene editor, cue list form |
 | `/profiles/:id/timeline` | Timeline editor | See below. Desktop-first, read-only on phone |
 | `/boards` | Boards | Discovered vs adopted, status, RSSI, latency, firmware, LEDs, live state. Rename, identify, on/off, brightness, sync offset (ms), "Save fallback" per board and for all, open WLED UI, refresh, remove, scan, add by IP, "Check settings", new-board guide |
 | `/setup` | Setup | Five steps with status dots, see below. Phone-friendly |
-| `/show` | Show mode | Full-screen big buttons for the night, see below |
-| `/media` | Media | Upload with progress, probe info, transcode, used-by, delete (blocked if used), aspect badge, black check, per-video display profile |
+| `/show` | Show mode | Full-screen big buttons for the night, soundboard, Moments link, see below |
+| `/moments` | Moments | Button board for one-shot moments, see below. Phone and tablet |
+| `/media` | Media | Video and audio upload with progress, All/Video/Audio filter, probe info, transcode, used-by, delete (blocked if used), aspect badge, black check, per-video display profile |
 | `/video` | Video setup | Setup mode, source on projector, display profile editor (frame, keystone, mask, image), A/B compare. Works on a phone |
 | `/settings` | Settings | Sync offset, health interval, default transition, log level, mpv output, brightness and volume caps, show mode toggle, test pattern, PIN, trigger token, backup/restore. Footer shows deployed commit and install time |
 
@@ -73,6 +74,8 @@ A deleted profile falls through to the next.
 
 Other pages:
 
+- **Media audio:** audio files (mp3, wav, ogg, flac, m4a, opus) get a waveform and onsets, no
+  thumbnail, transcode or black check. Used-by also lists profiles using it in sound cues or ambience.
 - **Media:** badge "aspect … differs from display" when a video's aspect is more than 0.02 off
   the default. "Create display profile for this video" copies the default with that aspect and assigns
   it. "Black check" samples frames and warns when the background is not near black.
@@ -97,7 +100,33 @@ Dashboard banner shows when any check fails.
   "Base" clears the manual override so the profile look returns. A red banner shows while
   calibration, a setup test or the test pattern runs (triggers are refused); its "Stop" turns
   calibration / test pattern off, also under the lock.
-- **Caps:** `brightness_cap` and `volume_cap` limit the master sliders everywhere.
+- **Soundboard** (on `/show`, shown when audio media exists, collapsible): one button per audio
+  file, "Sound volume" slider (0–130 %), "Stop sounds". One sound at a time on the effects player;
+  a new press replaces the last. Works under the lock, refused in blackout.
+- **🔔 Moments** button opens `/moments`. Also in the nav.
+- **Caps:** `brightness_cap` and `volume_cap` limit the master sliders everywhere, effects included.
+
+## Moments (`/moments`)
+
+- **Buttons:** grid, 2 columns at 375 px, 4 on tablet, 6 on desktop. Icon (emoji), name, color.
+  Press plays one variant once, then returns to what ran before.
+- **Rings:** green progress ring while playing; orange cooldown ring with seconds left after.
+  Pressing during cooldown shows "cooldown N s" and does nothing. Refusals (blackout, setup,
+  busy) show as a short message on the button.
+- **Top bar:** Stop (ends the moment, restores), Blackout, Edit / Done, Kiosk.
+- **Kiosk:** full-screen overlay without nav (browser fullscreen where supported). Edit is hidden.
+- **Edit mode** (hidden under the show lock and in kiosk): per button ↑/↓ reorder, Edit, Del;
+  "+ Add moment".
+- **Editor:** icon, name, color, cooldown (s), when busy (Ignore / Interrupt / Queue), order
+  (Shuffle / Weighted). Variants: video profile, light profile, sound (volume, fade in/out ms),
+  ambience (Keep / Mute / Replace + replacement sound), weight, "Test", "Remove". Test plays that
+  variant now, without cooldown.
+- **Variant pick:** shuffle never repeats the last variant; weighted picks by weight, no immediate
+  repeat.
+- **Busy:** something playing (moment, show, scene item). Ignore refuses, Queue plays it after
+  (one queued), Interrupt ends it and starts.
+- **Restore:** idle video resumes where it was, idle lights and ambience carry on, boards the
+  moment touched go back to the profile look. Cooldown starts when the moment ends.
 
 ## History
 
@@ -106,71 +135,33 @@ from the persistent log. Events survive restarts and are kept 7 days.
 
 ## Profiles and playback
 
-- **Light profile:** applies base states to its boards.
+- **Light profile:** applies base states to its boards. Optional "Idle loop length (s)": its idle
+  cue track loops on the boards (breathing lights); edit it in the timeline Idle tab.
 - **Video profile:** video + cues + mode `once`, `loop` or `idle_trigger` (idle video or black between
   triggered plays, with cooldown). End or stop ⇒ boards to base, idle video or black.
+- **Scene profile:** a playlist of light and video profiles. Editor: add items (each once),
+  weight, ↑/↓ order, remove; order Sequential / Shuffle / Weighted; idle profile (video or light,
+  runs between items); light hold (s) for light items; "Play back to back, no trigger" (chain);
+  preview "Next 10 picks (example)". Trigger plays the next item once, then returns to the idle
+  part where it was. Chain stops after a manual stop or blackout until the next trigger.
+- **Dashboard scene card:** scene name, "Next: …" (with "pinned"), Skip (pick another next),
+  "Pin next" select, Upcoming (10), Recently played (5).
+- **Ambience** (any type): "Ambient sound loop" with sound, volume and "Duck to during scare" (default 30 %). Loops while the
+  profile is active, ducks while the main video plays, returns after.
+- **Fade idle → scare (ms)** (video and scene, default 400, 0 = hard cut): picture and sound fade out, the
+  scare loads, fades in.
+- **Sound cues** play from the timeline Sound lane, see [`timeline.md`](timeline.md).
 - One profile active at a time. Switch stops video and applies new base states.
 
 ## Timeline editor
 
-- **Lanes:** "All selected" on top, one lane per board in the profile. Board lane header shows the
-  resolved color + effect at the playhead; a ribbon under the lane shows the resolved color over time.
-- **Overview bar** above the lanes: cues, markers, playhead, visible window. Click or drag to scroll.
-- **Ruler:** m:ss; zoomed in far enough it switches to `mm:ss.ff` frame ticks (25 fps).
-- **Editing:** drag to move, drag edges to resize, double-click empty lane to add. Shift/Ctrl-click
-  multi-select. Snap to cue edges, playhead, markers and visible onsets; Alt disables snap. Ctrl + wheel zooms.
-- **Keys:**
-
-| Key | Action |
-|---|---|
-| Space | Play/pause |
-| ←/→, Shift+←/→ | Seek 0.1 s / one frame |
-| C | Add cue at playhead |
-| M | Drop marker at playhead (also while playing) |
-| Delete | Delete selected cues and markers |
-| Ctrl+D | Duplicate |
-| Ctrl+C / Ctrl+V | Copy / paste at playhead (works across profiles) |
-| Ctrl+Z / Ctrl+Shift+Z | Undo / redo |
-| `[` / `]` / `\` | Loop start / loop end / clear loop |
-| F / Shift+F | Zoom to fit / zoom to selection |
-| + / − | Zoom |
-
-- **Cue panel:** label and custom block color; numeric start/duration with ±1 frame and ±0.1 s
-  buttons; searchable effect and palette picker with favorites and recents. When the board reports
-  WLED fxdata, only the sliders the effect uses are shown, with their real names. Every panel edit is
-  undoable; a burst of edits to one cue (slider drag, typing) is one undo step.
-- **Markers:** lane above the waveform. Drag to move, double-click to rename. Select markers, then
-  "Markers → cues" makes one cue per marker from a template. Saved with the profile and in exports.
-- **Onsets:** ticks on the waveform from audio analysis. The threshold slider filters them.
-  "Generate cues…" makes one cue per onset above the threshold in a range (default: loop A–B).
-- **Loop A–B:** preview playback loops the range; audition follows.
-- **Time editing:** Δ s field, then "⇤ Shift"/"Shift ⇥" moves everything after the playhead (or only
-  the selection), "Insert time" opens a gap at the playhead, "Delete A–B" removes the loop range and
-  closes the gap.
-- **Paste remap:** when pasted cues target boards missing in this profile, a dialog maps each source
-  board to a lane here or drops it.
-- **Templates…:** parametric generators (heartbeat, breathe, fire, police, strobe burst, creep,
-  lightning) with a parameter form and a live preview on the ribbon. "Save as template" stores the
-  selection (relative times) on the hub; saved templates appear in the same dialog.
-- **Mute/solo (M/S in the lane header):** muted lanes get the profile base during live audition.
-- **WLED segments:** boards with more than one segment get ▸ in the lane header to show one
-  sub-lane per segment. Cues added on a sub-lane target only that segment; the cue panel target list
-  has per-segment checkboxes. Segment cues on a collapsed board are drawn on the board lane.
-  Segments follow on/brightness of the whole board; effect, palette, speed, intensity and colors are per segment.
-- **Overlaps** on a board get a warning badge.
-- **Live audition:** browser preview drives real boards. Browser reports playhead every 1 s and on
-  play/pause/seek; backend interpolates. Tab closes ⇒ boards to base after 3 s. Rejected while a show plays.
-- **Capture from board:** pull a board's live WLED state into the selected cue.
-- **Play on projector from here:** real show from the playhead.
-- **Autosave** 0.8 s after last edit, with indicator.
-- **Templates:** Flicker, Strobe, Blackout, Blood red, Lightning flash. Add more in
-  `frontend/src/timeline/templates.ts`.
+See [`timeline.md`](timeline.md).
 
 ## Operations
 
 - **Recommended settings:** reads `/json/cfg`, offers confirmed one-click fix. Check: WiFi sleep off.
 - **Transcode** to H.264 1080p for non-H.264/HEVC or >1080p. Media id kept, profiles keep working.
-- **Export/import** profile JSON with cues. Video matched by filename or picked on import. Unknown board targets dropped.
+- **Export/import** profile JSON with cues. Video and ambient sound matched by filename (video can be picked on import), scene items by profile name. Unknown board targets and missing scene items dropped.
 - **UI PIN:** all API + WS need session cookie (1 year). Changing/removing PIN logs everyone out. Off by default.
 - **External trigger:** `POST /api/trigger`, outside the PIN, optional token via `?token=` or
   `X-Trigger-Token`. PIR examples in `docs/trigger/`.
