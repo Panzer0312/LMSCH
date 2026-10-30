@@ -18,7 +18,7 @@ const emptyScene = (): SceneSpec => ({ items: [], order: 'shuffle', idle_profile
 const emptyDraft = (): ProfileIn => ({
   name: '', type: 'light', selection: { all: true, macs: [] }, base_state: { on: true, bri: 255 },
   overrides: {}, media_id: null, idle_media_id: null, playback_mode: 'once', cooldown_s: 0, display_profile_id: null,
-  scene: null,
+  scene: null, ambient: null, fade_ms: 400, idle_length_s: null,
 })
 
 const toDraft = (p: Profile): ProfileIn => ({
@@ -27,13 +27,19 @@ const toDraft = (p: Profile): ProfileIn => ({
   // PUT without it clears the per-show display profile.
   display_profile_id: p.display_profile_id ?? null,
   scene: p.type === 'scene' ? (p.scene ?? emptyScene()) : null,
+  ambient: p.ambient ?? null, fade_ms: p.fade_ms ?? 400, idle_length_s: p.idle_length_s ?? null,
 })
 
 // The backend rejects scene specs on light/video and media on scenes; strip them before sending.
-const toPayload = (d: ProfileIn): ProfileIn =>
-  d.type === 'scene'
-    ? { ...d, scene: d.scene ?? emptyScene(), media_id: null, idle_media_id: null }
-    : { ...d, scene: null }
+const toPayload = (d: ProfileIn): ProfileIn => {
+  const common = {
+    ...d, ambient: d.ambient ?? null, fade_ms: d.fade_ms ?? 400,
+    idle_length_s: d.type === 'light' ? (d.idle_length_s ?? null) : null,
+  }
+  return d.type === 'scene'
+    ? { ...common, scene: d.scene ?? emptyScene(), media_id: null, idle_media_id: null }
+    : { ...common, scene: null }
+}
 
 export default function Profiles() {
   const { id } = useParams<{ id: string }>()
@@ -107,7 +113,7 @@ function ProfileList() {
             <span className="label">Video</span>
             <select className="input" value={mediaId} onChange={(e) => setMediaId(e.target.value === '' ? '' : Number(e.target.value))}>
               <option value="">Select a video…</option>
-              {importMedia.map((m) => <option key={m.id} value={m.id}>{m.filename}</option>)}
+              {importMedia.filter((m) => m.kind !== 'audio').map((m) => <option key={m.id} value={m.id}>{m.filename}</option>)}
             </select>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -136,7 +142,7 @@ function ProfileList() {
             <div className="flex flex-wrap gap-2">
               <button className="btn btn-primary" disabled={busy || p.id === activeId} onClick={() => act(() => api.profiles.activate(p.id))}>Activate</button>
               <button className="btn" onClick={() => navigate(`/profiles/${p.id}`)}>Edit</button>
-              {p.type === 'video' && <button className="btn" onClick={() => navigate(`/profiles/${p.id}/timeline`)}>Timeline</button>}
+              {(p.type === 'video' || (p.type === 'light' && p.idle_length_s != null)) && <button className="btn" onClick={() => navigate(`/profiles/${p.id}/timeline`)}>Timeline</button>}
               <button className="btn" disabled={busy} onClick={() => act(() => api.profiles.duplicate(p.id))}>Duplicate</button>
               <a className="btn" href={api.profiles.exportUrl(p.id)} download>Export</a>
               <button className="btn btn-danger" disabled={busy}
@@ -217,6 +223,8 @@ function ProfileEditor({ id }: { id: string }) {
   }
 
   const mediaLabel = (m: Media) => `${m.filename} (${fmtTime(m.duration_s)})`
+  const audio = media.filter((m) => m.kind === 'audio')
+  const videos = media.filter((m) => m.kind !== 'audio')
 
   return (
     <div className="space-y-6">
@@ -304,14 +312,14 @@ function ProfileEditor({ id }: { id: string }) {
                 <span className="label">Media</span>
                 <select className="input" value={draft.media_id ?? ''} onChange={(e) => set({ media_id: e.target.value === '' ? null : Number(e.target.value) })}>
                   <option value="">(none)</option>
-                  {media.map((m) => <option key={m.id} value={m.id}>{mediaLabel(m)}</option>)}
+                  {videos.map((m) => <option key={m.id} value={m.id}>{mediaLabel(m)}</option>)}
                 </select>
               </div>
               <div>
                 <span className="label">Idle video</span>
                 <select className="input" value={draft.idle_media_id ?? ''} onChange={(e) => set({ idle_media_id: e.target.value === '' ? null : Number(e.target.value) })}>
                   <option value="">None (black)</option>
-                  {media.map((m) => <option key={m.id} value={m.id}>{mediaLabel(m)}</option>)}
+                  {videos.map((m) => <option key={m.id} value={m.id}>{mediaLabel(m)}</option>)}
                 </select>
               </div>
               <div>
@@ -337,6 +345,58 @@ function ProfileEditor({ id }: { id: string }) {
             </div>
           )}
 
+          {(draft.type === 'video' || draft.type === 'scene') && (
+            <div>
+              <span className="label">Fade idle → scare (ms)</span>
+              <input type="number" min={0} step={50} className="input" value={draft.fade_ms ?? 400}
+                onChange={(e) => set({ fade_ms: Math.max(0, Number(e.target.value) || 0) })} />
+              <p className="mt-1 text-xs text-mute">0 = hard cut.</p>
+            </div>
+          )}
+
+          {draft.type === 'light' && (
+            <div>
+              <span className="label">Idle loop length (s)</span>
+              <input type="number" min={0.5} step={0.5} className="input" placeholder="No idle loop"
+                value={draft.idle_length_s ?? ''}
+                onChange={(e) => set({ idle_length_s: e.target.value === '' ? null : Math.max(0.5, Number(e.target.value) || 0.5) })} />
+              <p className="mt-1 text-xs text-mute">Empty = no idle loop. Edit idle cues in the timeline's Idle tab.</p>
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <span className="label">Ambience</span>
+            <Toggle checked={draft.ambient != null} label="Ambient sound loop"
+              onChange={(v) => set({
+                ambient: v && audio[0] ? { media_id: audio[0].id, volume: 1, duck_to: 0.3 } : null,
+              })} />
+            {draft.ambient == null && audio.length === 0 && <p className="text-xs text-mute">Upload an audio file to use ambience.</p>}
+            {draft.ambient != null && (() => {
+              const amb = draft.ambient
+              return (
+                <div className="grid gap-3 rounded-lg border border-line bg-panel-2 p-3 sm:grid-cols-3">
+                  <div>
+                    <span className="label">Sound</span>
+                    <select className="input" value={amb.media_id} onChange={(e) => set({ ambient: { ...amb, media_id: Number(e.target.value) } })}>
+                      {!audio.some((m) => m.id === amb.media_id) && <option value={amb.media_id}>(missing #{amb.media_id})</option>}
+                      {audio.map((m) => <option key={m.id} value={m.id}>{mediaLabel(m)}</option>)}
+                    </select>
+                  </div>
+                  <label className="block">
+                    <span className="label">Volume {Math.round(amb.volume * 100)}%</span>
+                    <input type="range" min={0} max={1.3} step={0.01} className="w-full" value={amb.volume}
+                      onChange={(e) => set({ ambient: { ...amb, volume: Number(e.target.value) } })} />
+                  </label>
+                  <label className="block">
+                    <span className="label">Duck to during scare {Math.round(amb.duck_to * 100)}%</span>
+                    <input type="range" min={0} max={1} step={0.01} className="w-full" value={amb.duck_to}
+                      onChange={(e) => set({ ambient: { ...amb, duck_to: Number(e.target.value) } })} />
+                  </label>
+                </div>
+              )
+            })()}
+          </div>
+
           <ErrorText error={save.error} />
           <div className="flex flex-wrap items-center gap-3">
             <button type="submit" className="btn btn-primary" disabled={save.busy}>{save.busy ? 'Saving…' : isNew ? 'Create' : 'Save'}</button>
@@ -354,6 +414,13 @@ function ProfileEditor({ id }: { id: string }) {
           </div>
           <CueList profile={profile} boards={selected} onSaved={(p) => setProfile(p)} />
         </>
+      )}
+
+      {!isNew && profile && profile.type === 'light' && profile.idle_length_s != null && (
+        <div className="card flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-mute">Edit idle cues in the timeline's Idle tab.</p>
+          <button type="button" className="btn btn-primary" onClick={() => navigate(`/profiles/${profile.id}/timeline`)}>Open timeline editor</button>
+        </div>
       )}
     </div>
   )
