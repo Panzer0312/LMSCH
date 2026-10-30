@@ -3,7 +3,8 @@
  * Pure functions: inputs are never mutated.
  */
 import type { Cue, Marker } from '../types'
-import { ALL_LANE, lanesOf, newKey, round3, targetFromLanes, type TLCue } from './model'
+import type { SoundSpec } from '../types'
+import { ALL_LANE, lanesOf, newKey, round3, SOUND_LANE, targetFromLanes, type TLCue } from './model'
 
 type Doc = { cues: TLCue[]; markers: Marker[] }
 
@@ -70,7 +71,7 @@ export function timecode(t: number, fps: number): string {
 
 export const CLIP_KEY = 'spookhub.clipboard'
 
-/** lanes: ALL_LANE or board macs. */
+/** lanes: ALL_LANE, SOUND_LANE or board macs. */
 export interface ClipCue {
   offset_s: number
   duration_s: number | null
@@ -79,6 +80,8 @@ export interface ClipCue {
   transition_ms: number | null
   label?: string | null
   color?: string | null
+  kind?: 'light' | 'sound'
+  sound?: SoundSpec | null
 }
 export interface Clip { v: 1; cues: ClipCue[] }
 
@@ -94,6 +97,7 @@ export function toClip(cues: TLCue[]): Clip {
       transition_ms: c.transition_ms,
       label: c.label ?? null,
       color: c.color ?? null,
+      ...(c.kind === 'sound' ? { kind: 'sound' as const, sound: c.sound ? { ...c.sound } : null } : {}),
     })),
   }
 }
@@ -105,7 +109,11 @@ const isOptStr = (v: unknown) => v === undefined || v === null || typeof v === '
 
 function parseClipCue(v: unknown): ClipCue | null {
   if (!isObj(v)) return null
-  const { offset_s, duration_s, lanes, state, transition_ms, label, color } = v
+  const { offset_s, duration_s, lanes, state, transition_ms, label, color, kind, sound } = v
+  if (kind === 'sound') {
+    if (!isObj(sound) || !isNum(sound.media_id) || !isNum(sound.volume) || !isNum(sound.fade_in_ms)
+      || !isNum(sound.fade_out_ms) || typeof sound.loop !== 'boolean') return null
+  } else if (kind !== undefined && kind !== 'light') return null
   if (!isNum(offset_s) || !isNumOrNull(duration_s) || !isNumOrNull(transition_ms)) return null
   if (!Array.isArray(lanes) || !lanes.every((l) => typeof l === 'string')) return null
   if (!isObj(state) || !isOptStr(label) || !isOptStr(color)) return null
@@ -117,6 +125,7 @@ function parseClipCue(v: unknown): ClipCue | null {
     transition_ms: transition_ms as number | null,
     label: (label as string | null | undefined) ?? null,
     color: (color as string | null | undefined) ?? null,
+    ...(kind === 'sound' ? { kind: 'sound' as const, sound: sound as unknown as SoundSpec } : {}),
   }
 }
 
@@ -139,10 +148,13 @@ export function parseClip(raw: string | null): Clip | null {
   return { v: 1, cues }
 }
 
-/** Distinct board lanes referenced by the clip (ALL lane excluded). */
+/** Distinct board lanes referenced by the clip (ALL and sound lanes excluded). */
 export function clipLanes(clip: Clip): string[] {
   const out: string[] = []
-  for (const c of clip.cues) for (const l of c.lanes) if (l !== ALL_LANE && !out.includes(l)) out.push(l)
+  for (const c of clip.cues) {
+    if (c.kind === 'sound') continue
+    for (const l of c.lanes) if (l !== ALL_LANE && l !== SOUND_LANE && !out.includes(l)) out.push(l)
+  }
   return out
 }
 
@@ -150,6 +162,17 @@ export function clipLanes(clip: Clip): string[] {
 export function fromClip(clip: Clip, at: number, remap: Record<string, string | null>): TLCue[] {
   const out: TLCue[] = []
   for (const c of clip.cues) {
+    if (c.kind === 'sound') {
+      if (!c.sound) continue
+      out.push({
+        key: newKey(), kind: 'sound', sound: { ...c.sound },
+        start_s: Math.max(0, round3(at + c.offset_s)),
+        duration_s: c.duration_s == null ? null : round3(c.duration_s),
+        target: { all: true, macs: [] }, state: {}, transition_ms: null,
+        label: c.label ?? null, color: c.color ?? null,
+      })
+      continue
+    }
     const lanes: string[] = []
     for (const l of c.lanes) {
       const to = l === ALL_LANE ? ALL_LANE : l in remap ? remap[l] : l

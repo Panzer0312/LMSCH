@@ -18,8 +18,9 @@ export function boardBase(base: LightState, overrides: Record<string, LightState
   return merged(base, overrides[mac] ?? null)
 }
 
+/** Sound cues carry no light state and are dropped. */
 export function toSpecs(cues: Cue[] & { key?: string }[]): CueSpec[] {
-  return cues.map((c, i) => ({
+  return cues.filter((c) => c.kind !== 'sound').map((c, i) => ({
     id: i,
     start: c.start_s,
     duration: c.duration_s,

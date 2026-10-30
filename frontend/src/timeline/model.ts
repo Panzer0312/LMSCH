@@ -3,16 +3,19 @@
  * Pure logic, shared by TimelineView (rendering + pointer editing) and TimelineEditor (page).
  */
 import { useCallback, useState } from 'react'
-import type { Board, BoardStatus, Cue, CueTarget, LightState, Marker, Onset } from '../types'
+import type { Board, BoardStatus, Cue, CueTarget, LightState, Marker, Media, Onset, SoundSpec, Waveform } from '../types'
 
 /** Lane id of the "All selected boards" lane (always the first lane). */
 export const ALL_LANE = '__all__'
 
+/** Lane id of the sound lane (sound cues live here only). */
+export const SOUND_LANE = '__sound__'
+
 /** Cue with a stable client key (server ids change on every save). */
 export interface TLCue extends Cue { key: string }
 
-/** `sound` (phase 4) and `device` (phase 5) kinds extend this union. */
-export interface Lane { kind: 'all' | 'board' | 'segment'; id: string; label: string; status?: BoardStatus; mac?: string; seg?: number }
+/** `device` (phase 5) kind extends this union. */
+export interface Lane { kind: 'all' | 'board' | 'segment' | 'sound'; id: string; label: string; status?: BoardStatus; mac?: string; seg?: number }
 
 /** Segment lanes are keyed `mac#seg` so lane ids stay plain strings everywhere else. */
 export const segLaneId = (mac: string, seg: number) => `${mac}#${seg}`
@@ -21,9 +24,33 @@ export function parseLaneId(id: string): { mac: string; seg: number | null } {
   return i < 0 ? { mac: id, seg: null } : { mac: id.slice(0, i), seg: Number(id.slice(i + 1)) }
 }
 
-/** Cue target for a set of lane ids (ALL lane wins over everything else). */
+export const isSound = (c: Pick<Cue, 'kind'>) => c.kind === 'sound'
+export const SOUND_LANE_DEF: Lane = { kind: 'sound', id: SOUND_LANE, label: 'Sound' }
+/** Light cues only: generators, templates, resolve and overlap checks never see sound cues. */
+export const lightCues = <T extends Pick<Cue, 'kind'>>(cues: T[]): T[] => cues.filter((c) => !isSound(c))
+/** Lanes a light cue can be placed on (generator/remap targets). */
+export const lightLanes = <T extends { kind: Lane['kind'] }>(lanes: T[]): T[] => lanes.filter((l) => l.kind !== 'sound')
+
+/** Sound cues keep a harmless light target/state the backend accepts but ignores. */
+export function newSoundCue(t: number, media_id: number, extra: Partial<TLCue> = {}): TLCue {
+  const sound: SoundSpec = { media_id, volume: 1, fade_in_ms: 0, fade_out_ms: 0, loop: false }
+  return {
+    key: newKey(), kind: 'sound', sound, start_s: round3(Math.max(0, t)), duration_s: null,
+    target: { all: true, macs: [] }, state: {}, transition_ms: null, ...extra,
+  }
+}
+
+/** Where a sound cue's bar ends: its duration, else the media length (unknown media: 1 s stub). */
+export function soundEnd(c: Pick<Cue, 'start_s' | 'duration_s' | 'sound'>, media: Map<number, Pick<Media, 'duration_s'>>): number {
+  if (c.duration_s != null) return c.start_s + c.duration_s
+  const d = c.sound ? media.get(c.sound.media_id)?.duration_s : undefined
+  return c.start_s + (d && d > 0 ? d : 1)
+}
+
+/** Cue target for a set of lane ids (ALL lane wins over everything else; the sound lane is not a light target). */
 export function targetFromLanes(lanes: string[]): CueTarget {
-  if (lanes.includes(ALL_LANE)) return { all: true, macs: [] }
+  lanes = lanes.filter((l) => l !== SOUND_LANE)
+  if (!lanes.length || lanes.includes(ALL_LANE)) return { all: true, macs: [] }
   const macs: string[] = []
   const segs: Record<string, number[]> = {}
   for (const id of lanes) {
@@ -44,8 +71,9 @@ export const toServer = (cues: TLCue[]): Cue[] =>
 
 export const round3 = (n: number) => Math.round(n * 1000) / 1000
 
-/** Lanes a cue is drawn on: the ALL lane, or each targeted board and segment lane. */
-export const lanesOf = (c: Pick<Cue, 'target'>): string[] => {
+/** Lanes a cue is drawn on: the sound lane, the ALL lane, or each targeted board and segment lane. */
+export const lanesOf = (c: Pick<Cue, 'target' | 'kind'>): string[] => {
+  if (isSound(c)) return [SOUND_LANE]
   if (c.target.all) return [ALL_LANE]
   const segs = c.target.segs
   if (!segs) return c.target.macs
@@ -61,7 +89,7 @@ const boardsOf = (c: Cue, macs: string[]) => (c.target.all ? macs : c.target.mac
  */
 export function overlapKeys(cues: TLCue[], macs: string[]): Set<string> {
   const out = new Set<string>()
-  const sorted = [...cues].sort((a, b) => a.start_s - b.start_s)
+  const sorted = lightCues(cues).sort((a, b) => a.start_s - b.start_s)
   for (let i = 0; i < sorted.length; i++) {
     const a = sorted[i]
     if (a.duration_s == null) continue
@@ -161,6 +189,10 @@ export interface TimelineViewProps {
   playhead: number
   pxPerSec: number
   mediaId: number | null
+  /** Audio media by id: sound cue bar length (duration null = to media end) and names. */
+  audio?: Map<number, Media>
+  /** Waveforms by media id for the mini waveform inside sound cue bars. */
+  waves?: Map<number, Waveform>
   /** Boards, profile base and overrides drive the lane preview and ribbon. */
   boards?: Board[]
   base?: LightState
@@ -199,6 +231,7 @@ export interface TimelineViewProps {
 
 /** Short human summary of a cue's light state for block labels. */
 export function stateLabel(c: Cue, effects: string[]): string {
+  if (isSound(c)) return 'Sound'
   const s = c.state
   if (s.preset != null) return `Preset ${s.preset}`
   const parts: string[] = []
@@ -208,9 +241,12 @@ export function stateLabel(c: Cue, effects: string[]): string {
   return parts.join(' · ') || 'State'
 }
 
+export const SOUND_COLOR = '#4fc3f7'
+
 /** CSS color for a cue block: custom color, else its first light color, else a neutral accent. */
 export function cueColor(c: Cue): string {
   if (c.color) return c.color
+  if (isSound(c)) return SOUND_COLOR
   const col = c.state.colors?.[0]
   if (c.state.on === false) return '#333'
   return col ? `rgb(${col[0]},${col[1]},${col[2]})` : '#b49cff'

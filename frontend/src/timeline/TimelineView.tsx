@@ -1,6 +1,6 @@
 import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react'
-import type { Board, BoardStatus } from '../types'
+import type { Board, BoardStatus, Media, Waveform } from '../types'
 import { MarkersLane, MARKERS_H } from './MarkersLane'
 import { Minimap } from './Minimap'
 import { MediaStrip } from './Strip'
@@ -9,7 +9,7 @@ import { Ribbon } from './Ribbon'
 import { lookAt, toSpecs } from './ribbon'
 import type { ResolveCtx } from './ribbon'
 import { Timeline } from './resolve'
-import { ALL_LANE, clamp, cueColor, lanesOf, parseLaneId, round3, snap, snapCandidates, stateLabel, setDragging } from './model'
+import { ALL_LANE, clamp, cueColor, isSound, lanesOf, parseLaneId, round3, snap, snapCandidates, soundEnd, stateLabel, setDragging } from './model'
 import type { TLCue, TimelineViewProps } from './model'
 
 const RULER_H = 24
@@ -22,6 +22,8 @@ const NO_OVERRIDES = {}
 const NO_BOARDS: never[] = []
 const NO_LIST: never[] = []
 const NO_SET = new Set<string>()
+const NO_AUDIO = new Map<number, Media>()
+const NO_WAVES = new Map<number, Waveform>()
 const noop = () => {}
 const SNAP_PX = 8
 const MIN_DUR = 0.05
@@ -90,6 +92,7 @@ export function TimelineView(props: TimelineViewProps) {
     markers = NO_LIST, selectedMarkers = NO_SET, onMarkerSelect = noop, onMarkersChange = noop, onMarkerRename = noop,
     onsets = NO_LIST, snapExtra = NO_LIST, loop = null, fps = 25, muted = NO_SET, solo = NO_SET,
     onToggleMute, onToggleSolo, viewReq = null, expanded = NO_SET, onToggleExpand,
+    audio = NO_AUDIO, waves = NO_WAVES,
   } = props
   const editable = !readOnly
 
@@ -126,6 +129,7 @@ export function TimelineView(props: TimelineViewProps) {
     for (const [id, list] of lists) {
       list.sort((a, b) => a.start_s - b.start_s)
       m.set(id, list.map((cue, i) => {
+        if (isSound(cue)) return { cue, end: soundEnd(cue, audio), open: false }
         if (cue.duration_s != null) return { cue, end: cue.start_s + cue.duration_s, open: false }
         let end = Math.max(duration, cue.start_s)
         for (let j = i + 1; j < list.length; j++) {
@@ -135,7 +139,36 @@ export function TimelineView(props: TimelineViewProps) {
       }))
     }
     return m
-  }, [cues, lanes, duration])
+  }, [cues, lanes, duration, audio])
+
+  // Mini waveform per sound cue in seconds-space (viewBox), so zoom never recomputes it.
+  const wavePaths = useMemo(() => {
+    const out = new Map<string, { len: number; pts: string }>()
+    for (const c of cues) {
+      const w = isSound(c) && c.sound ? waves.get(c.sound.media_id) : undefined
+      if (!w || !w.peaks.length || w.rate <= 0) continue
+      const len = soundEnd(c, audio) - c.start_s
+      const mediaLen = w.peaks.length / w.rate
+      const span = c.sound?.loop ? len : Math.min(len, mediaLen)
+      const n = Math.max(2, Math.min(240, Math.ceil(span * w.rate)))
+      const top: string[] = []
+      const bot: string[] = []
+      for (let i = 0; i <= n; i++) {
+        const t = (span * i) / n
+        const p = w.peaks[Math.min(w.peaks.length - 1, Math.floor((t % mediaLen) * w.rate))] ?? 0
+        const x = round3(t)
+        top.push(`${x},${round3(0.5 - p / 2)}`)
+        bot.push(`${x},${round3(0.5 + p / 2)}`)
+      }
+      out.set(c.key, { len, pts: [...top, ...bot.reverse()].join(' ') })
+    }
+    return out
+  }, [cues, waves, audio])
+  const blockTitle = (cue: TLCue, laneId: string) => {
+    if (!isSound(cue)) return cue.label || stateLabel(cue, boardByMac.get(laneId)?.effects ?? [])
+    const name = cue.sound ? audio.get(cue.sound.media_id)?.filename ?? `media #${cue.sound.media_id}` : 'no media'
+    return cue.label || `♪ ${name}`
+  }
 
   const ticks = useMemo(() => {
     // Zoomed in far enough that single frames are distinguishable: tick per frame, label every 5.
@@ -379,6 +412,7 @@ export function TimelineView(props: TimelineViewProps) {
           >
             {l.kind === 'board' && <span className={`h-2 w-2 shrink-0 rounded-full ${DOT[l.status ?? 'unknown']}`} />}
             {l.kind === 'segment' && <span className="w-3 shrink-0 text-mute">└</span>}
+            {l.kind === 'sound' && <span className="shrink-0 text-mute">♪</span>}
             {l.kind === 'board' && onToggleExpand && (boardByMac.get(l.id)?.segments.length ?? 0) > 1 && (
               <button type="button" className="shrink-0 text-[10px] text-mute hover:text-ink" title="Show segments"
                 onClick={() => onToggleExpand(l.id)}>{expanded.has(l.id) ? '▾' : '▸'}</button>
@@ -467,6 +501,10 @@ export function TimelineView(props: TimelineViewProps) {
                 const isSel = selected.has(cue.key)
                 const isOverlap = overlaps.has(cue.key)
                 const width = Math.max(MIN_BLOCK_PX, (end - cue.start_s) * pxPerSec)
+                const wave = wavePaths.get(cue.key)
+                const title = blockTitle(cue, l.id)
+                // A sound cue always starts its media at 0, so a start-trim only makes sense with a fixed end.
+                const leftHandle = !open && !(isSound(cue) && cue.duration_s == null)
                 const ring = isSel ? 'ring-2 ring-pumpkin z-10' : isOverlap ? 'ring-2 ring-blood/60' : ''
                 return (
                   <div
@@ -485,17 +523,22 @@ export function TimelineView(props: TimelineViewProps) {
                         : undefined,
                       borderLeft: `3px solid ${col}`,
                     }}
-                    title={cue.label || stateLabel(cue, boardByMac.get(l.id)?.effects ?? [])}
+                    title={title}
                     onPointerDown={(e) => onBlockDown(e, cue, 'move', end)}
                     onPointerMove={onBlockMove}
                     onPointerUp={onBlockUp}
                     onPointerCancel={onBlockUp}
                   >
-                    <span className="pointer-events-none truncate px-1.5">{cue.label || stateLabel(cue, boardByMac.get(l.id)?.effects ?? [])}</span>
+                    {wave && (
+                      <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${wave.len} 1`} preserveAspectRatio="none">
+                        <polygon points={wave.pts} fill={col} opacity={0.45} />
+                      </svg>
+                    )}
+                    <span className="pointer-events-none relative truncate px-1.5">{title}</span>
                     {isOverlap && (
                       <span className="pointer-events-none absolute right-0.5 top-0 text-[10px] text-blood">⚠</span>
                     )}
-                    {editable && !open && (
+                    {editable && leftHandle && (
                       <div
                         className="absolute inset-y-0 left-0 w-1.5 cursor-ew-resize touch-none hover:bg-ink/30"
                         onPointerDown={(e) => onBlockDown(e, cue, 'left', end)}

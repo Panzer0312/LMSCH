@@ -7,13 +7,14 @@ import { useAdoptedBoards } from '../live'
 import { CuePanel, MultiPanel } from '../timeline/CuePanel'
 import { GenerateDialog } from '../timeline/GenerateDialog'
 import type { GenCue } from '../timeline/generators'
-import { ALL_LANE, clamp, fromServer, newKey, overlapKeys, round3, toServer, useHistory, lanesOf, segLaneId, targetFromLanes, type Doc, type Lane, type SetMode, type TLCue, isDragging } from '../timeline/model'
+import { ALL_LANE, clamp, fromServer, newKey, overlapKeys, round3, toServer, useHistory, lanesOf, segLaneId, targetFromLanes, type Doc, type Lane, type SetMode, type TLCue, isDragging, isSound, lightLanes, newSoundCue, SOUND_LANE, SOUND_LANE_DEF } from '../timeline/model'
 import { RemapDialog } from '../timeline/RemapDialog'
+import { SoundPickDialog } from '../timeline/SoundPickDialog'
 import { TemplateDialog } from '../timeline/TemplateDialog'
 import { CUE_TEMPLATES, resolveTemplate } from '../timeline/templates'
 import { CLIP_KEY, clipLanes, deleteRange, fromClip, insertTime, parseClip, rippleShift, timecode, toClip, type Clip } from '../timeline/timeops'
 import { TimelineView } from '../timeline/TimelineView'
-import type { CueTarget, LightState, Marker, Media, Onset, Profile, SavedTemplate, TemplateCue } from '../types'
+import type { CueTarget, LightState, Marker, Media, Onset, Profile, SavedTemplate, TemplateCue, Waveform } from '../types'
 
 // The media probe has no frame rate yet; 25 is the plan's fallback.
 const FPS = 25
@@ -26,20 +27,20 @@ const laneTarget = (laneId: string): CueTarget => targetFromLanes([laneId])
 export default function TimelineEditor() {
   const { id } = useParams<{ id: string }>()
   const pid = Number(id)
-  const [data, setData] = useState<{ profile: Profile; media: Media | null } | null>(null)
+  const [data, setData] = useState<{ profile: Profile; media: Media | null; audio: Media[] } | null>(null)
   const { error, run } = useAction()
 
   useEffect(() => {
     run(async () => {
       const [profile, list] = await Promise.all([api.profiles.get(pid), api.media.list()])
-      setData({ profile, media: list.find((m) => m.id === profile.media_id) ?? null })
+      setData({ profile, media: list.find((m) => m.id === profile.media_id) ?? null, audio: list.filter((m) => m.kind === 'audio') })
     })
   }, [pid, run])
 
   const back = <Link to={`/profiles/${id}`} className="text-sm text-ghost hover:underline">← Back to profile</Link>
   if (error) return <div className="space-y-3">{back}<ErrorText error={error} /></div>
   if (!data || data.profile.id !== pid) return <p className="text-sm text-mute">Loading…</p>
-  const { profile, media } = data
+  const { profile, media, audio } = data
   if (profile.type !== 'video' || profile.media_id == null) {
     return (
       <div className="space-y-3">
@@ -50,7 +51,7 @@ export default function TimelineEditor() {
       </div>
     )
   }
-  return <Editor key={profile.id} profile={profile} media={media} mediaId={profile.media_id} />
+  return <Editor key={profile.id} profile={profile} media={media} mediaId={profile.media_id} initialAudio={audio} />
 }
 
 type Dialog =
@@ -58,9 +59,10 @@ type Dialog =
   | { kind: 'onsets' }
   | { kind: 'markers' }
   | { kind: 'remap'; clip: Clip; at: number }
+  | { kind: 'sound'; at: number }
   | null
 
-function Editor({ profile, media, mediaId }: { profile: Profile; media: Media | null; mediaId: number }) {
+function Editor({ profile, media, mediaId, initialAudio }: { profile: Profile; media: Media | null; mediaId: number; initialAudio: Media[] }) {
   const pid = profile.id
   const adopted = useAdoptedBoards()
   const boards = profile.selection.all ? adopted : adopted.filter((b) => profile.selection.macs.includes(b.mac))
@@ -76,6 +78,7 @@ function Editor({ profile, media, mediaId }: { profile: Profile; media: Media | 
       }
     }
   }
+  lanes.push(SOUND_LANE_DEF)
   const effects = boards.find((b) => b.effects.length > 0)?.effects ?? NO_EFFECTS
 
   const [initial] = useState<Doc>(() => ({ cues: fromServer(profile.cues), markers: profile.markers ?? [] }))
@@ -104,6 +107,9 @@ function Editor({ profile, media, mediaId }: { profile: Profile; media: Media | 
   const [solo, setSolo] = useState<Set<string>>(() => new Set())
   const videoRef = useRef<HTMLVideoElement>(null)
   const overlaps = useMemo(() => overlapKeys(cues, macsKey ? macsKey.split(',') : []), [cues, macsKey])
+  const [audio, setAudio] = useState<Media[]>(initialAudio)
+  const audioById = useMemo(() => new Map(audio.map((m) => [m.id, m])), [audio])
+  const [waves, setWaves] = useState<Map<number, Waveform>>(() => new Map())
   const proj = useAction()
   const tools = useAction()
 
@@ -118,6 +124,17 @@ function Editor({ profile, media, mediaId }: { profile: Profile; media: Media | 
     api.media.onsets(mediaId).then((o) => setOnsets(o.onsets), () => {})
     api.templates.list().then(setSaved, () => {})
   }, [mediaId])
+
+  // Waveforms for the mini waveform in sound cue bars; fetched once per referenced media.
+  const soundIds = [...new Set(cues.filter(isSound).map((c) => c.sound?.media_id).filter((x): x is number => x != null))].sort().join(',')
+  const waveReq = useRef(new Set<number>())
+  useEffect(() => {
+    for (const id of soundIds ? soundIds.split(',').map(Number) : []) {
+      if (waveReq.current.has(id)) continue
+      waveReq.current.add(id)
+      api.media.waveform(id).then((w) => setWaves((m) => new Map(m).set(id, w)), () => {})
+    }
+  }, [soundIds])
 
   // Loop A–B is enforced here (not via the video loop flag) so any range works.
   const loopRef = useRef(loop)
@@ -255,6 +272,12 @@ function Editor({ profile, media, mediaId }: { profile: Profile; media: Media | 
     return laneTarget(one ? lanesOf(one)[0] ?? ALL_LANE : ALL_LANE)
   }
   const addAtPlayhead = () => addCue(now(), playheadTarget())
+  const openSoundPicker = (at: number) => {
+    setDialog({ kind: 'sound', at })
+    // Uploads may have happened since the editor opened.
+    api.media.list().then((l) => setAudio(l.filter((m) => m.kind === 'audio')), () => {})
+  }
+  const addSound = (at: number, mediaId: number) => { addCues([newSoundCue(at, mediaId)]); setDialog(null) }
   const addTemplate = (tid: string) => {
     const t = CUE_TEMPLATES.find((x) => x.id === tid)
     if (t) addCue(now(), playheadTarget(), resolveTemplate(t, boards), t.duration_s)
@@ -307,11 +330,13 @@ function Editor({ profile, media, mediaId }: { profile: Profile; media: Media | 
       { transition_ms: g.transition_ms, label: g.label ?? null, color: g.color ?? null }))
   const insertGenerated = (gcs: GenCue[]) => { setPreview(null); addCues(genToCues(gcs, now(), playheadTarget())) }
   const saveAsTemplate = () => {
-    if (!selCues.length) return
+    // Templates hold light cues only.
+    const tplCues = selCues.filter((c) => !isSound(c))
+    if (!tplCues.length) return
     const name = window.prompt('Template name')?.trim()
     if (!name) return
-    const t0 = Math.min(...selCues.map((c) => c.start_s))
-    const tcs: TemplateCue[] = selCues.map((c) => ({
+    const t0 = Math.min(...tplCues.map((c) => c.start_s))
+    const tcs: TemplateCue[] = tplCues.map((c) => ({
       offset_s: round3(c.start_s - t0), duration_s: c.duration_s, lane: c.target.all ? 'all' : 'same',
       state: c.state, transition_ms: c.transition_ms, label: c.label ?? null, color: c.color ?? null,
     }))
@@ -419,17 +444,17 @@ function Editor({ profile, media, mediaId }: { profile: Profile; media: Media | 
   )
 
   const panel = selCues.length === 1 ? (
-    <CuePanel key={selCues[0].key} cue={selCues[0]} boards={boards} lanes={lanes} readOnly={mobile} fps={FPS}
+    <CuePanel key={selCues[0].key} cue={selCues[0]} boards={boards} lanes={lanes} audio={audio} readOnly={mobile} fps={FPS}
       onChange={updateCue} onDelete={deleteSel} onDuplicate={duplicateSel} />
   ) : selCues.length > 1 ? (
     <MultiPanel count={selCues.length} readOnly={mobile} onDelete={deleteSel} onDuplicate={duplicateSel} onNudge={nudgeSel} />
   ) : (
     <div className="card text-sm text-mute">
-      {mobile ? 'Tap a cue to see its details. Editing works on desktop.' : 'Select a cue to edit it. Double-click a lane or press C to add one. M drops a marker.'}
+      {mobile ? 'Tap a cue to see its details. Editing works on desktop.' : 'Select a cue to edit it. Double-click a lane or press C to add one (double-click the Sound lane for a sound cue). M drops a marker.'}
     </div>
   )
 
-  const laneOpts = lanes.map((l) => ({ id: l.id, label: l.label }))
+  const laneOpts = lightLanes(lanes).map((l) => ({ id: l.id, label: l.label }))
   const boardName = (mac: string) => adopted.find((b) => b.mac === mac)?.name ?? mac
   const toggler = (set: (f: (s: Set<string>) => Set<string>) => void) => (id: string) =>
     set((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
@@ -497,6 +522,7 @@ function Editor({ profile, media, mediaId }: { profile: Profile; media: Media | 
                 <button type="button" className="btn" title="Undo (Ctrl+Z)" disabled={!canUndo} onClick={undo}>Undo</button>
                 <button type="button" className="btn" title="Redo (Ctrl+Shift+Z)" disabled={!canRedo} onClick={redo}>Redo</button>
                 <button type="button" className="btn" title="C" onClick={addAtPlayhead}>Add cue at playhead</button>
+                <button type="button" className="btn" title="Add a sound cue at the playhead" onClick={() => openSoundPicker(now())}>+ Sound</button>
                 <select className="btn" value="" title="Insert template cue at playhead" onChange={(e) => addTemplate(e.target.value)}>
                   <option value="">Template ▾</option>
                   {CUE_TEMPLATES.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
@@ -514,7 +540,7 @@ function Editor({ profile, media, mediaId }: { profile: Profile; media: Media | 
               </button>
               <button type="button" className="btn" disabled={!selCues.length} title="Copy (Ctrl+C)" onClick={copySel}>Copy</button>
               <button type="button" className="btn" title="Paste at playhead (Ctrl+V)" onClick={paste}>Paste</button>
-              <button type="button" className="btn" disabled={!selCues.length} onClick={saveAsTemplate}>Save as template</button>
+              <button type="button" className="btn" disabled={selCues.every(isSound)} onClick={saveAsTemplate}>Save as template</button>
               <span className="mx-1 h-5 w-px bg-line" />
               <label className="flex items-center gap-1 text-xs text-mute">
                 Δ s
@@ -564,6 +590,8 @@ function Editor({ profile, media, mediaId }: { profile: Profile; media: Media | 
         playhead={playhead}
         pxPerSec={pxPerSec}
         mediaId={mediaId}
+        audio={audioById}
+        waves={waves}
         boards={boards}
         base={profile.base_state}
         overrides={profile.overrides}
@@ -574,7 +602,7 @@ function Editor({ profile, media, mediaId }: { profile: Profile; media: Media | 
         onSelect={(k) => { setSelected(k); setSelMarkers(new Set()) }}
         onChange={onViewChange}
         onZoom={(p) => setPxPerSec(clamp(p, 5, 400))}
-        onAddAt={(t, laneId) => { if (!mobile) addCue(t, laneTarget(laneId)) }}
+        onAddAt={(t, laneId) => { if (mobile) return; if (laneId === SOUND_LANE) openSoundPicker(t); else addCue(t, laneTarget(laneId)) }}
         markers={doc.markers}
         selectedMarkers={selMarkers}
         onMarkerSelect={(ids) => { setSelMarkers(ids); setSelected(new Set()) }}
@@ -608,6 +636,9 @@ function Editor({ profile, media, mediaId }: { profile: Profile; media: Media | 
         <GenerateDialog title="Markers → cues" points={doc.markers.filter((m) => selMarkers.has(m.id))} threshold={null}
           range={{ a: 0, b: duration }} lanes={laneOpts} defaultLane={ALL_LANE}
           onGenerate={generate} onClose={() => setDialog(null)} />
+      )}
+      {dialog?.kind === 'sound' && (
+        <SoundPickDialog audio={audio} at={dialog.at} onPick={(id) => addSound(dialog.at, id)} onClose={() => setDialog(null)} />
       )}
       {dialog?.kind === 'remap' && (
         <RemapDialog sources={clipLanes(dialog.clip).map((id) => ({ id, label: boardName(id) }))} targets={laneOpts}
