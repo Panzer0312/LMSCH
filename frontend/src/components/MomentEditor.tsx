@@ -139,8 +139,8 @@ function VariantRow({ v, index, videos, lights, sounds, weighted, canTest, onCha
         <label className="block">
           <span className="label">Weight</span>
           <input
-            type="number" min={0} step={1} className="input" value={v.weight}
-            onChange={(e) => set({ weight: Math.max(0, Number(e.target.value) || 0) })}
+            type="number" min={0.1} step={0.1} className="input" value={v.weight}
+            onChange={(e) => set({ weight: Math.max(0.1, Number(e.target.value) || 0.1) })}
           />
         </label>
       )}
@@ -169,6 +169,8 @@ export function MomentEditor({ moment, onClose, onSaved }: {
   const lights = profiles.filter((p) => p.type === 'light')
   const set = (p: Partial<MomentIn>) => setDraft((d) => ({ ...d, ...p }))
   const setVariant = (i: number, v: MomentVariant) => setDraft((d) => ({ ...d, variants: d.variants.map((x, j) => (j === i ? v : x)) }))
+  // Test plays the saved variant by index, so any unsaved variant edit would hit the wrong one.
+  const variantsDirty = moment == null || JSON.stringify(toIn(moment).variants) !== JSON.stringify(draft.variants)
 
   const save = async () => {
     const msg = validate(draft)
@@ -234,7 +236,7 @@ export function MomentEditor({ moment, onClose, onSaved }: {
               lights={lights}
               sounds={sounds}
               weighted={draft.order === 'weighted'}
-              canTest={moment != null && !test.busy}
+              canTest={!variantsDirty && !test.busy}
               onChange={(nv) => setVariant(i, nv)}
               onRemove={() => setDraft((d) => ({ ...d, variants: d.variants.filter((_, j) => j !== i) }))}
               onTest={() => { if (moment) void test.run(() => api.moments.play(moment.id, i)) }}

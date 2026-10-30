@@ -20,11 +20,11 @@ function inkFor(hex: string) {
 const R = 18
 const CIRC = 2 * Math.PI * R
 
-function Ring({ frac, color, label }: { frac: number; color: string; label?: string }) {
+function Ring({ frac, color, label, spin }: { frac: number; color: string; label?: string; spin?: boolean }) {
   const f = Math.max(0, Math.min(1, frac))
   return (
     <span className="absolute right-2 top-2 inline-flex size-11 items-center justify-center rounded-full bg-black/50">
-      <svg viewBox="0 0 44 44" className="absolute inset-0 size-11 -rotate-90">
+      <svg viewBox="0 0 44 44" className={`absolute inset-0 size-11 -rotate-90 ${spin ? 'animate-spin' : ''}`}>
         <circle cx={22} cy={22} r={R} fill="none" stroke="rgba(255,255,255,.2)" strokeWidth={4} />
         <circle
           cx={22} cy={22} r={R} fill="none" stroke={color} strokeWidth={4} strokeLinecap="round"
@@ -59,16 +59,18 @@ export default function Moments() {
     void runList(() => api.moments.list().then(setList))
   }, [momentsRev, runList])
 
-  // Cooldowns arrive as "seconds left at receipt"; count down locally for display only.
+  // Backend sends `moment` only on state change; cooldowns and progress advance locally from receipt.
   useEffect(() => {
     const t = Date.now()
     const max = Math.max(0, ...Object.values(moment?.cooldown ?? {}))
-    if (max <= 0) return
+    const playing = moment?.playing_id != null
+    if (!playing && max <= 0) return
+    const runLeft = moment?.playing_id != null && moment.duration_s != null ? moment.duration_s - moment.elapsed_s : 0
     const iv = window.setInterval(() => {
-      const n = Date.now()
-      setTick({ of: moment, s: (n - t) / 1000 })
-      if ((n - t) / 1000 >= max) window.clearInterval(iv)
-    }, 1000)
+      const s = (Date.now() - t) / 1000
+      setTick({ of: moment, s })
+      if (s >= max && s >= runLeft) window.clearInterval(iv)
+    }, playing ? 250 : 1000)
     return () => window.clearInterval(iv)
   }, [moment])
 
@@ -89,6 +91,11 @@ export default function Moments() {
     const cd = moment?.cooldown[String(id)] ?? 0
     return Math.max(0, cd - (tick.of === moment ? tick.s : 0))
   }
+
+  // null = unknown duration, render indeterminate.
+  const progress = moment?.duration_s != null && moment.duration_s > 0
+    ? Math.min(1, (moment.elapsed_s + (tick.of === moment ? tick.s : 0)) / moment.duration_s)
+    : null
 
   const showFlash = (id: number, msg: string) => {
     setFlash({ id, msg })
@@ -178,7 +185,9 @@ export default function Moments() {
               >
                 <span className="text-4xl leading-none">{m.icon}</span>
                 <span className="line-clamp-2 break-words text-base font-semibold">{m.name}</span>
-                {playing && <Ring frac={moment?.progress ?? 0} color="#7ee36b" />}
+                {playing && (progress == null
+                  ? <Ring frac={0.25} color="#7ee36b" spin />
+                  : <Ring frac={progress} color="#7ee36b" />)}
                 {!playing && rem > 0 && <Ring frac={m.cooldown_s > 0 ? rem / m.cooldown_s : 0} color="#ff7a1a" label={String(Math.ceil(rem))} />}
                 {flash?.id === m.id && (
                   <span className="absolute inset-x-1 bottom-1 rounded bg-black/75 px-1 py-0.5 text-xs text-white">{flash.msg}</span>

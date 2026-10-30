@@ -130,8 +130,16 @@ export interface MomentIn {
   variants: MomentVariant[]
 }
 export interface Moment extends MomentIn { id: number; sort: number }
-/** WS `moment` and GET /api/moments/state. progress 0..1; cooldown: moment id -> seconds left. */
-export interface MomentState { playing_id: number | null; variant: number | null; progress: number; cooldown: Record<string, number> }
+/** WS `moment` and GET /api/moments/state, sent on state change only. cooldown: moment id -> seconds
+ * left at send time. Progress is derived client-side from elapsed_s (at send) + duration_s (null = unknown). */
+export interface MomentState {
+  playing_id: number | null
+  variant: number | null
+  progress: number
+  elapsed_s: number
+  duration_s: number | null
+  cooldown: Record<string, number>
+}
 
 export type SceneOrder = 'sequential' | 'shuffle' | 'weighted'
 export interface SceneItem { profile_id: number; weight: number }
