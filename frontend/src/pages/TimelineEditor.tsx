@@ -72,9 +72,10 @@ export default function TimelineEditor() {
   const track: CueTrack = isLight ? 'idle' : tab ?? 'main'
   const setLength = (v: number | null) => len.run(async () => {
     // Markers have their own endpoint; sending the loaded ones could undo marker edits.
-    const { id: _id, sort: _sort, cues: _cues, markers: _markers, ...body } = profile
+    const fresh = await api.profiles.get(pid)
+    const { id: _id, sort: _sort, cues: _cues, markers: _markers, ...body } = fresh
     const p = await api.profiles.update(pid, { ...body, idle_length_s: v })
-    setData((d) => (d ? { ...d, profile: { ...d.profile, idle_length_s: p.idle_length_s } } : d))
+    setData((d) => (d ? { ...d, profile: { ...p, cues: d.profile.cues, markers: d.profile.markers } } : d))
   })
   const tabs = (
     <div className="flex flex-wrap items-center gap-2">
