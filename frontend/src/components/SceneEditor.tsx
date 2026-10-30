@@ -69,6 +69,7 @@ export function SceneEditor({ value, onChange, profiles }: {
   const nameOf = (pid: number) => profiles.find((p) => p.id === pid)?.name ?? `#${pid}`
   const set = (patch: Partial<SceneSpec>) => onChange({ ...value, ...patch })
   const setItems = (items: SceneItem[]) => set({ items })
+  const nextFree = choices.find((p) => !value.items.some((x) => x.profile_id === p.id))
 
   const move = (i: number, d: -1 | 1) => {
     const j = i + d
@@ -90,7 +91,8 @@ export function SceneEditor({ value, onChange, profiles }: {
             <select className="input min-w-0 flex-1" value={it.profile_id}
               onChange={(e) => setItems(value.items.map((x, k) => (k === i ? { ...x, profile_id: Number(e.target.value) } : x)))}>
               {!choices.some((p) => p.id === it.profile_id) && <option value={it.profile_id}>{nameOf(it.profile_id)}</option>}
-              {choices.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.type})</option>)}
+              {choices.filter((p) => p.id === it.profile_id || !value.items.some((x, k) => k !== i && x.profile_id === p.id))
+                .map((p) => <option key={p.id} value={p.id}>{p.name} ({p.type})</option>)}
             </select>
             {value.order === 'weighted' && (
               <input type="number" min={0} step={1} className="input w-20" aria-label="Weight" title="Weight" value={it.weight}
@@ -103,8 +105,9 @@ export function SceneEditor({ value, onChange, profiles }: {
             </div>
           </div>
         ))}
-        <button type="button" className="btn" disabled={choices.length === 0}
-          onClick={() => setItems([...value.items, { profile_id: choices[0].id, weight: 1 }])}>Add item</button>
+        <button type="button" className="btn" disabled={!nextFree}
+          title={choices.length > 0 && !nextFree ? 'all profiles added' : undefined}
+          onClick={() => { if (nextFree) setItems([...value.items, { profile_id: nextFree.id, weight: 1 }]) }}>Add item</button>
         {choices.length === 0 && <p className="text-sm text-mute">Create a light or video profile first.</p>}
       </div>
 
