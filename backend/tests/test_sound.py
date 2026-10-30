@@ -44,12 +44,19 @@ def _wav(path: Path, seconds: float = 0.5) -> Path:
 class FakeFx:
     def __init__(self):
         self.calls = []
+        self.current = None
+        self.ramp_task = None
 
     async def play(self, path, start=0.0, volume=1.0, fade_in_ms=0, loop=False, owner=None):
+        self.current = path
         self.calls.append(("play", path, round(start, 3), volume, fade_in_ms, loop, owner))
 
     async def stop(self, fade_out_ms=0, owner=None):
+        self.current = None
         self.calls.append(("stop", fade_out_ms, owner))
+
+    def ramp(self, volume, ms, then_stop=False):
+        self.calls.append(("ramp", volume, ms))
 
     async def set_pause(self, p):
         self.calls.append(("pause", p))
@@ -255,10 +262,15 @@ async def test_lane_fires_once_seeks_to_offset_and_fades_at_end():
 async def test_lane_partial_fade_and_loop_offset():
     fx, lane = FakeFx(), SoundLane()
     lane.tick(fx, [_sc(1, 0.0, fade_in_ms=1000)], 0.4)
+    await _settle()
+    # Seek 400 ms into a 1 s fade-in: start at 40 % gain and ramp the remaining 600 ms.
+    assert fx.calls[0][2:5] == (0.4, 0.4, 0)
+    assert fx.calls[1] == ("ramp", 1.0, 600)
+
+    fx, lane = FakeFx(), SoundLane()
     lane.tick(fx, [_sc(2, 10.0, loop=True, media=2.0)], 15.0)
     await _settle()
-    assert fx.calls[0][2:5] == (0.4, 1.0, 600)
-    assert fx.calls[1][2] == 1.0 and fx.calls[1][5] is True
+    assert fx.calls[0][2] == 1.0 and fx.calls[0][5] is True
 
 
 # ---------- engine + API ----------

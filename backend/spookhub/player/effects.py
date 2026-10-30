@@ -37,8 +37,14 @@ class EffectsPlayer(MpvPlayer):
         self.owner: str | None = None
         self.current: str | None = None
         self.ramp_task: asyncio.Task[None] | None = None
-        # FIFO: spawned play/stop calls reach mpv in the order they were made.
+        # Only one load() at a time; which call still matters is decided by `_gen`.
         self._cmd = asyncio.Lock()
+        # Bumped by every play/stop: an older call that has not reached mpv yet is stale and drops
+        # out, so calls piled up while mpv was down do not replay after it recovers.
+        self._gen = 0
+        self._load_gen = 0
+        # `current` names a file mpv has not started yet; an eof now belongs to the previous one.
+        self._await_start = False
         self._volume = self._level()
 
     # ---- lifecycle ---------------------------------------------------------------------------
@@ -127,8 +133,7 @@ class EffectsPlayer(MpvPlayer):
             if i < steps:
                 await asyncio.sleep(RAMP_STEP_S)
         if then_stop:
-            async with self._cmd:
-                await self._halt()
+            await self._halt()
 
     # ---- playback ----------------------------------------------------------------------------
 
@@ -142,13 +147,38 @@ class EffectsPlayer(MpvPlayer):
         owner: str | None = None,
     ) -> None:
         volume = max(0.0, min(volume, MAX_GAIN))
-        async with self._cmd:
-            self._cancel_ramp()
-            self.gain = 0.0 if fade_in_ms > 0 else volume
-            self._volume = self._level()
-            self.owner, self.current = owner, path
-            # load() re-asserts self._volume before the first samples.
-            await self.load(path, start=max(0.0, start), loop=loop)
+        self._gen += 1
+        gen = self._gen
+        self._cancel_ramp()
+        # Set now, not after load(): stop() must be able to cancel a play still in flight.
+        self.owner, self.current = owner, path
+        self._await_start = True
+        try:
+            if self.cfg.enabled:
+                # Wait for mpv outside the lock so a newer call is not queued behind a dead mpv.
+                await self._ready_ipc()
+            if gen != self._gen:
+                return
+            async with self._cmd:
+                if gen != self._gen:
+                    return
+                self.gain = 0.0 if fade_in_ms > 0 else volume
+                self._volume = self._level()
+                self._load_gen = gen
+                # load() re-asserts self._volume before the first samples.
+                await self.load(path, start=max(0.0, start), loop=loop)
+                if gen != self._gen:
+                    # A stop landed while loadfile was in flight; its mpv `stop` may have gone out
+                    # first. A newer play replaces the file anyway, so only halt if none is pending.
+                    if self.current is None:
+                        await self._halt()
+                    return
+        except MpvError:
+            if gen == self._gen:
+                self.current = self.owner = None
+                self._await_start = False
+                raise
+            return
         if fade_in_ms > 0:
             self.ramp(volume, fade_in_ms)
 
@@ -158,12 +188,13 @@ class EffectsPlayer(MpvPlayer):
             return
         if self.current is None:
             return
+        self._gen += 1
         if fade_out_ms > 0:
             self.ramp(0.0, fade_out_ms, then_stop=True)
             return
-        async with self._cmd:
-            self._cancel_ramp()
-            await self._halt()
+        # No lock: blackout must not wait seconds on a load; the play notices it was superseded.
+        self._cancel_ramp()
+        await self._halt()
 
     async def _halt(self) -> None:
         self.current = self.owner = None
@@ -177,7 +208,12 @@ class EffectsPlayer(MpvPlayer):
 
     def _on_event(self, msg: dict[str, Any]) -> None:
         # keep-open=no: a finished sound ends with reason "eof"; a replaced one with "stop".
-        if msg.get("event") == "end-file" and msg.get("reason") == "eof":
+        ev = msg.get("event")
+        if ev == "start-file":
+            # A superseded load's file starting does not mean the newest one has.
+            if self._load_gen == self._gen:
+                self._await_start = False
+        elif ev == "end-file" and msg.get("reason") == "eof" and not self._await_start:
             self.current = self.owner = None
         super()._on_event(msg)
 
@@ -185,3 +221,4 @@ class EffectsPlayer(MpvPlayer):
         super()._reset_state()
         # A restarted mpv plays nothing.
         self.current = self.owner = None
+        self._await_start = False
