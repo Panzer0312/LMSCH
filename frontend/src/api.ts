@@ -1,4 +1,4 @@
-import type { Board, Cue, Media, Profile, ProfileIn, Settings, LightState, ThumbsMeta, Waveform, Recommendation, ProfileExport, AppState, Preflight, DrmOutput, AudioDevice, EventRow, EventStats, FallbackResult, LastTrigger, Marker, Onsets, SavedTemplate, TemplateCue, SceneState, DisplayGeometry, DisplayProfile, DisplaySource, DisplayState, PatternInfo, BlackCheck } from './types'
+import type { Board, Cue, Media, Profile, ProfileIn, Settings, LightState, ThumbsMeta, Waveform, Recommendation, ProfileExport, AppState, Preflight, DrmOutput, AudioDevice, EventRow, EventStats, FallbackResult, LastTrigger, Marker, Onsets, SavedTemplate, TemplateCue, SceneState, Moment, MomentIn, MomentState, DisplayGeometry, DisplayProfile, DisplaySource, DisplayState, PatternInfo, BlackCheck } from './types'
 
 export class ApiError extends Error {
   status: number
@@ -109,6 +109,18 @@ export const api = {
     skip: () => post<SceneState>('/api/scene/skip'),
     /** null clears the pin. */
     pin: (profile_id: number | null) => post<SceneState>('/api/scene/pin', { profile_id }),
+  },
+  moments: {
+    list: () => req<Moment[]>('GET', '/api/moments'),
+    state: () => req<MomentState>('GET', '/api/moments/state'),
+    create: (m: MomentIn) => post<Moment>('/api/moments', m),
+    update: (id: number, m: MomentIn) => req<Moment>('PUT', `/api/moments/${id}`, m),
+    remove: (id: number) => req<{ ok: boolean }>('DELETE', `/api/moments/${id}`),
+    /** ids in new order. */
+    reorder: (ids: number[]) => req<{ ok: boolean }>('PUT', '/api/moments/order', ids),
+    /** variant: test a specific variant (ignores cooldown). */
+    play: (id: number, variant?: number) => post<MomentState>(`/api/moments/${id}/play`, variant == null ? {} : { variant }),
+    stop: () => post<MomentState>('/api/moments/stop'),
   },
   sounds: {
     /** Soundboard: plays on the fx player; allowed under show lock. */

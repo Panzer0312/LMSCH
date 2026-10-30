@@ -56,6 +56,8 @@ export interface Cue {
   /** Default 'light'. Sound cues ignore target/state and live on the sound lane only. */
   kind?: CueKind
   sound?: SoundSpec | null
+  /** Default 'main'. 'idle' cues loop with the idle clip (or idle_length_s for light profiles). */
+  track?: CueTrack
 }
 
 export type CueKind = 'light' | 'sound'
@@ -95,7 +97,41 @@ export interface ProfileIn {
   display_profile_id?: number | null
   /** Only for type 'scene'; null otherwise. */
   scene?: SceneSpec | null
+  /** Ambient sound loop on the ambient player, ducked to duck_to (0..1) during the main video. */
+  ambient?: AmbientSpec | null
+  /** Idle → main fade (brightness + volume ramp), default 400. */
+  fade_ms?: number
+  /** Light profiles: length of the looping idle cue track (s); null = no idle loop. */
+  idle_length_s?: number | null
 }
+
+/** volume 0..1.3, duck_to 0..1 (default 0.3). */
+export interface AmbientSpec { media_id: number; volume: number; duck_to: number }
+
+export type CueTrack = 'main' | 'idle'
+export type MomentBusy = 'ignore' | 'interrupt' | 'queue'
+export type MomentAmbience = 'keep' | 'mute' | 'replace'
+/** Any combination of parts; at least one of video/sound/light. */
+export interface MomentVariant {
+  video_profile_id?: number | null
+  sound?: { media_id: number; volume: number; fade_in_ms: number; fade_out_ms: number } | null
+  light_profile_id?: number | null
+  ambience: MomentAmbience
+  ambience_media_id?: number | null
+  weight: number
+}
+export interface MomentIn {
+  name: string
+  icon: string
+  color: string // '#rrggbb'
+  cooldown_s: number
+  busy: MomentBusy
+  order: 'shuffle' | 'weighted'
+  variants: MomentVariant[]
+}
+export interface Moment extends MomentIn { id: number; sort: number }
+/** WS `moment` and GET /api/moments/state. progress 0..1; cooldown: moment id -> seconds left. */
+export interface MomentState { playing_id: number | null; variant: number | null; progress: number; cooldown: Record<string, number> }
 
 export type SceneOrder = 'sequential' | 'shuffle' | 'weighted'
 export interface SceneItem { profile_id: number; weight: number }
