@@ -7,7 +7,14 @@ import { normalize } from '../video/geometry'
 import { ErrorText, Section } from '../components/ui'
 import { fmtTime, useAction } from '../lib'
 
-const ALLOWED_EXT = ['.mp4', '.m4v', '.mkv', '.mov', '.webm', '.avi']
+const ALLOWED_EXT = ['.mp4', '.m4v', '.mkv', '.mov', '.webm', '.avi', '.mp3', '.wav', '.ogg', '.flac', '.m4a', '.opus']
+const ACCEPT = [...ALLOWED_EXT, 'audio/*'].join(',')
+type KindFilter = 'all' | 'video' | 'audio'
+const FILTERS: { id: KindFilter; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'video', label: 'Video' },
+  { id: 'audio', label: 'Audio' },
+]
 const MAX_BYTES = 8 * 1024 ** 3
 const HW_CODECS = ['h264', 'hevc']
 
@@ -29,7 +36,8 @@ function MediaCard({ m, profiles, defaultProfile, onChanged }: {
   const dp = useAction()
   const bc = useAction()
   const [black, setBlack] = useState<BlackCheck | null>(null)
-  const aspect = m.aspect ?? (m.width > 0 && m.height > 0 ? m.width / m.height : null)
+  const isAudio = m.kind === 'audio'
+  const aspect = isAudio ? null : m.aspect ?? (m.width > 0 && m.height > 0 ? m.width / m.height : null)
   // Compare against what the default profile forces, else the 16:9 output.
   const refAspect = defaultProfile?.geometry.aspect ?? 16 / 9
   const ownProfile = m.display_profile_id != null ? profiles.find((p) => p.id === m.display_profile_id) ?? null : null
@@ -48,7 +56,7 @@ function MediaCard({ m, profiles, defaultProfile, onChanged }: {
   }
   const { transcodes } = useLive()
   const inUse = m.used_by.length > 0
-  const hwRisk = !HW_CODECS.includes(m.codec.toLowerCase()) || m.height > 1080
+  const hwRisk = !isAudio && !HW_CODECS.includes(m.codec.toLowerCase()) || m.height > 1080
   const tc = m.transcode
   const tcProgress = tc && tc.state === 'running' ? (transcodes[m.id] ?? tc.progress) : null
   const running = tcProgress !== null
@@ -72,22 +80,29 @@ function MediaCard({ m, profiles, defaultProfile, onChanged }: {
 
   return (
     <div className="card flex flex-col gap-3 sm:flex-row">
-      <video
-        src={api.media.fileUrl(m.id)}
-        preload="metadata"
-        muted
-        playsInline
-        onClick={(e) => togglePlay(e.currentTarget)}
-        className="aspect-video w-full shrink-0 cursor-pointer rounded-lg bg-black object-contain sm:w-48"
-      />
+      {isAudio ? (
+        <div className="flex aspect-video w-full shrink-0 items-center justify-center rounded-lg bg-black text-4xl sm:w-48"
+          role="img" aria-label="Audio file">
+          🔊
+        </div>
+      ) : (
+        <video
+          src={api.media.fileUrl(m.id)}
+          preload="metadata"
+          muted
+          playsInline
+          onClick={(e) => togglePlay(e.currentTarget)}
+          className="aspect-video w-full shrink-0 cursor-pointer rounded-lg bg-black object-contain sm:w-48"
+        />
+      )}
       <div className="min-w-0 flex-1 space-y-1">
         <p className="break-all font-medium">{m.filename}</p>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-mute">
           <span>{fmtTime(m.duration_s)}</span>
-          <span>{m.width}×{m.height}</span>
+          {!isAudio && <span>{m.width}×{m.height}</span>}
           <span>{m.codec}</span>
           <span>{fmtSize(m.size)}</span>
-          {(hwRisk || m.needs_transcode) && !running && (
+          {!isAudio && (hwRisk || m.needs_transcode) && !running && (
             <span className="rounded-md border border-pumpkin/60 bg-pumpkin/15 px-1.5 py-0.5 text-xs text-pumpkin">
               may not hardware-decode
             </span>
@@ -102,7 +117,10 @@ function MediaCard({ m, profiles, defaultProfile, onChanged }: {
             <button className="btn px-2 py-1 text-xs" disabled={dp.busy} onClick={createProfile}>Create display profile for this video</button>
           </div>
         )}
-        {ownProfile && (
+        {isAudio && (
+          <audio controls preload="none" src={api.media.fileUrl(m.id)} className="w-full max-w-md" />
+        )}
+        {!isAudio && ownProfile && (
           <p className="text-sm text-mute">Display profile: <Link className="text-ghost underline" to="/video">{ownProfile.name}</Link></p>
         )}
         {black && (
@@ -125,15 +143,17 @@ function MediaCard({ m, profiles, defaultProfile, onChanged }: {
           <p className="text-sm text-blood">Conversion failed: {tc?.error ?? 'unknown error'}</p>
         )}
         <div className="flex flex-wrap gap-2 pt-1">
-          {(m.needs_transcode || running || failed) && (
+          {!isAudio && (m.needs_transcode || running || failed) && (
             <button className="btn" disabled={running || tx.busy} onClick={startTranscode}>
               {running ? `Converting… ${pct} %` : failed ? 'Retry conversion' : 'Convert to H.264 1080p'}
             </button>
           )}
-          <button className="btn" disabled={bc.busy} title="Checks the background is near black (no light spill on the scrim)"
-            onClick={() => void bc.run(async () => setBlack(await api.media.blackCheck(m.id)))}>
-            {bc.busy ? 'Checking…' : 'Black check'}
-          </button>
+          {!isAudio && (
+            <button className="btn" disabled={bc.busy} title="Checks the background is near black (no light spill on the scrim)"
+              onClick={() => void bc.run(async () => setBlack(await api.media.blackCheck(m.id)))}>
+              {bc.busy ? 'Checking…' : 'Black check'}
+            </button>
+          )}
           <span title={inUse ? 'In use by a profile; remove it there first' : undefined} className="inline-block">
             <button className="btn btn-danger" disabled={inUse || del.busy} onClick={remove}>
               Delete
@@ -160,6 +180,7 @@ export default function Media() {
   const [progress, setProgress] = useState<number | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const [filter, setFilter] = useState<KindFilter>('all')
 
   const { run } = list
   const load = useCallback(async () => {
@@ -200,6 +221,7 @@ export default function Media() {
 
   const uploading = progress !== null
   const processing = uploading && progress >= 1
+  const shown = items?.filter((m) => filter === 'all' || (m.kind ?? 'video') === filter) ?? null
 
   return (
     <div className="space-y-6">
@@ -207,11 +229,11 @@ export default function Media() {
         title="Media"
         actions={
           <label className={`btn btn-primary cursor-pointer ${uploading ? 'pointer-events-none opacity-40' : ''}`}>
-            Upload video
+            Upload media
             <input
               ref={fileRef}
               type="file"
-              accept={ALLOWED_EXT.join(',')}
+              accept={ACCEPT}
               className="hidden"
               disabled={uploading}
               onChange={(e) => void onFile(e.target.files?.[0])}
@@ -232,13 +254,25 @@ export default function Media() {
         <ErrorText error={uploadError} />
         <ErrorText error={list.error} />
 
-        {items === null ? (
+        <div className="flex flex-wrap gap-2">
+          {FILTERS.map((f) => (
+            <button key={f.id} aria-pressed={filter === f.id}
+              className={`btn px-3 py-1 text-xs ${filter === f.id ? 'btn-primary' : ''}`}
+              onClick={() => setFilter(f.id)}>
+              {f.label}
+            </button>
+          ))}
+        </div>
+
+        {items === null || shown === null ? (
           <p className="text-sm text-mute">Loading…</p>
         ) : items.length === 0 ? (
-          <p className="text-sm text-mute">No media yet. Upload a video to get started.</p>
+          <p className="text-sm text-mute">No media yet. Upload a video or audio file to get started.</p>
+        ) : shown.length === 0 ? (
+          <p className="text-sm text-mute">No {filter} files.</p>
         ) : (
           <div className="space-y-3">
-            {items.map((m) => (
+            {shown.map((m) => (
               <MediaCard key={m.id} m={m} profiles={displayProfiles} defaultProfile={defaultProfile}
                 onChanged={() => { loadDisplay(); void load() }} />
             ))}

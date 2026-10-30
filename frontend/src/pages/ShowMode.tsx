@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, ApiError } from '../api'
 import { useAdoptedBoards, useLive } from '../live'
-import type { CheckStatus, LightState, Settings } from '../types'
+import type { CheckStatus, LightState, Media, Settings } from '../types'
 import { BlackoutButton } from '../components/BlackoutButton'
 import { ErrorText, StatusDot } from '../components/ui'
 import { fmtTime, useAction } from '../lib'
@@ -234,6 +234,67 @@ function LevelSlider({ label, field, scale, max, unit }: {
   )
 }
 
+function Soundboard() {
+  const mediaRev = useLive().mediaRev
+  const [sounds, setSounds] = useState<Media[]>([])
+  const [open, setOpen] = useState(true)
+  const [volume, setVolume] = useState(1)
+  const { busy, error, run } = useAction()
+
+  useEffect(() => {
+    api.media.list().then((ms) => setSounds(ms.filter((m) => m.kind === 'audio')), () => undefined)
+  }, [mediaRev])
+
+  if (sounds.length === 0) return null
+  return (
+    <div className="space-y-2">
+      <button
+        type="button"
+        className="flex w-full items-center justify-between text-lg font-semibold"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span>Soundboard</span>
+        <span className="text-sm text-mute">{open ? 'Hide' : 'Show'}</span>
+      </button>
+      {open && (
+        <div className="card space-y-3">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+            {sounds.map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                className="btn h-20 break-words text-base"
+                disabled={busy}
+                onClick={() => void run(() => api.sounds.play(m.id, volume))}
+              >
+                {m.filename.replace(/\.[^.]+$/, '')}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="label mb-0">Sound volume</span>
+            <span className="text-lg font-semibold tabular-nums">{Math.round(volume * 100)} %</span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={1.3}
+            step={0.05}
+            value={volume}
+            onChange={(e) => setVolume(Number(e.target.value))}
+            className="h-10 w-full accent-pumpkin"
+          />
+          <button type="button" className="btn h-14 w-full text-base" disabled={busy} onClick={() => void run(() => api.sounds.stop())}>
+            Stop sounds
+          </button>
+          <ErrorText error={error} />
+        </div>
+      )}
+    </div>
+  )
+}
+
 const OFF: LightState = { on: false }
 const WHITE: LightState = { on: true, bri: 255, colors: [[255, 255, 255]], fx: 0 }
 
@@ -279,6 +340,7 @@ export default function ShowMode() {
       <Controls />
       <LevelSlider label="Brightness" field="master_brightness" scale={100} max={settings?.brightness_cap ?? 1} unit="%" />
       <LevelSlider label="Volume" field="master_volume" scale={1} max={settings?.volume_cap ?? 100} unit="%" />
+      <Soundboard />
       <BoardPanel />
     </div>
   )

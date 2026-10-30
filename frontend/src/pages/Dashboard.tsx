@@ -103,6 +103,86 @@ function Controls() {
   )
 }
 
+function SceneCard() {
+  const { scene, profilesRev } = useLive()
+  const [profiles, setProfiles] = useState<Profile[]>([])
+  const load = useAction()
+  const act = useAction()
+  const runLoad = load.run
+  const active = scene?.profile_id != null
+
+  useEffect(() => {
+    if (!active) return
+    let cancelled = false
+    void runLoad(() => api.profiles.list()).then((ps) => {
+      if (!cancelled && ps) setProfiles(ps)
+    })
+    return () => { cancelled = true }
+  }, [active, profilesRev, runLoad])
+
+  if (!scene || scene.profile_id == null) return null
+  const byId = new Map(profiles.map((p) => [p.id, p]))
+  const name = (id: number | null) => (id == null ? '–' : byId.get(id)?.name ?? `#${id}`)
+  const sceneProfile = byId.get(scene.profile_id)
+  const itemIds = [...new Set((sceneProfile?.scene?.items ?? []).map((i) => i.profile_id))]
+  const history = scene.history.slice(-5).reverse()
+
+  return (
+    <div className="card space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-xs uppercase tracking-wide text-mute">Scene · {name(scene.profile_id)}</div>
+          <div className="truncate text-lg font-semibold">
+            Next: {name(scene.next_id)}
+            {scene.pinned != null && <span className="ml-2 text-xs uppercase text-pumpkin">pinned</span>}
+          </div>
+        </div>
+        <button type="button" className="btn shrink-0" disabled={act.busy} onClick={() => void act.run(() => api.scene.skip())}>
+          Skip
+        </button>
+      </div>
+      <label className="block">
+        <span className="label">Pin next</span>
+        <select
+          className="input w-full"
+          disabled={act.busy}
+          value={scene.pinned ?? ''}
+          onChange={(e) => {
+            const v = e.target.value
+            void act.run(() => api.scene.pin(v === '' ? null : Number(v)))
+          }}
+        >
+          <option value="">No pin</option>
+          {itemIds.map((id) => <option key={id} value={id}>{name(id)}</option>)}
+        </select>
+      </label>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="min-w-0">
+          <div className="label">Upcoming</div>
+          {scene.upcoming.length === 0 ? (
+            <p className="text-sm text-mute">–</p>
+          ) : (
+            <ol className="list-decimal pl-5 text-sm">
+              {scene.upcoming.map((id, i) => <li key={`${id}-${i}`} className="truncate">{name(id)}</li>)}
+            </ol>
+          )}
+        </div>
+        <div className="min-w-0">
+          <div className="label">Recently played</div>
+          {history.length === 0 ? (
+            <p className="text-sm text-mute">–</p>
+          ) : (
+            <ul className="text-sm text-mute">
+              {history.map((id, i) => <li key={`${id}-${i}`} className="truncate">{name(id)}</li>)}
+            </ul>
+          )}
+        </div>
+      </div>
+      <ErrorText error={act.error ?? load.error} />
+    </div>
+  )
+}
+
 function LevelSlider({ label, field, scale, max }: {
   label: string
   field: 'master_brightness' | 'master_volume'
@@ -380,6 +460,7 @@ export default function Dashboard() {
     <div className="mx-auto max-w-3xl space-y-6">
       <PreflightBanner />
       <ActiveProfile />
+      <SceneCard />
       <Controls />
       <Link to="/show" className="btn w-full">Show mode</Link>
       <div className="grid gap-3 sm:grid-cols-2">

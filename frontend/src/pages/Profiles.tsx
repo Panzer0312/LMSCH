@@ -3,16 +3,22 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api, ApiError } from '../api'
 import { CueList } from '../components/CueList'
 import { LightStateEditor } from '../components/LightStateEditor'
+import { SceneEditor } from '../components/SceneEditor'
 import { ErrorText, Section, Toggle } from '../components/ui'
 import { fmtTime, useAction } from '../lib'
 import { useAdoptedBoards, useLive } from '../live'
-import type { DisplayProfile, LightState, Media, PlaybackMode, Profile, ProfileExport, ProfileIn } from '../types'
+import type { DisplayProfile, LightState, Media, PlaybackMode, Profile, ProfileExport, ProfileIn, ProfileType, SceneSpec } from '../types'
 
 const modeLabel: Record<PlaybackMode, string> = { once: 'Play once', loop: 'Loop', idle_trigger: 'Idle + trigger' }
+const typeLabel: Record<ProfileType, string> = { light: 'Light', video: 'Video', scene: 'Scene' }
+const typeBadge: Record<ProfileType, string> = { light: 'border-slime text-slime', video: 'border-ghost text-ghost', scene: 'border-pumpkin text-pumpkin' }
+
+const emptyScene = (): SceneSpec => ({ items: [], order: 'shuffle', idle_profile_id: null, chain: false, light_hold_s: 10 })
 
 const emptyDraft = (): ProfileIn => ({
   name: '', type: 'light', selection: { all: true, macs: [] }, base_state: { on: true, bri: 255 },
   overrides: {}, media_id: null, idle_media_id: null, playback_mode: 'once', cooldown_s: 0, display_profile_id: null,
+  scene: null,
 })
 
 const toDraft = (p: Profile): ProfileIn => ({
@@ -20,7 +26,14 @@ const toDraft = (p: Profile): ProfileIn => ({
   media_id: p.media_id, idle_media_id: p.idle_media_id, playback_mode: p.playback_mode, cooldown_s: p.cooldown_s,
   // PUT without it clears the per-show display profile.
   display_profile_id: p.display_profile_id ?? null,
+  scene: p.type === 'scene' ? (p.scene ?? emptyScene()) : null,
 })
+
+// The backend rejects scene specs on light/video and media on scenes; strip them before sending.
+const toPayload = (d: ProfileIn): ProfileIn =>
+  d.type === 'scene'
+    ? { ...d, scene: d.scene ?? emptyScene(), media_id: null, idle_media_id: null }
+    : { ...d, scene: null }
 
 export default function Profiles() {
   const { id } = useParams<{ id: string }>()
@@ -111,12 +124,14 @@ function ProfileList() {
             <div className="flex flex-wrap items-center gap-2">
               <span className="min-w-0 flex-1 truncate font-medium">{p.name}</span>
               {p.id === activeId && <span className="rounded bg-pumpkin px-1.5 py-0.5 text-xs font-semibold text-black">ACTIVE</span>}
-              <span className={`rounded border px-1.5 py-0.5 text-xs ${p.type === 'video' ? 'border-ghost text-ghost' : 'border-slime text-slime'}`}>
+              <span className={`rounded border px-1.5 py-0.5 text-xs ${typeBadge[p.type]}`}>
                 {p.type}
               </span>
             </div>
             <div className="text-sm text-mute">
-              {p.type === 'video' ? modeLabel[p.playback_mode] : 'static'} · {p.cues.length} cue{p.cues.length === 1 ? '' : 's'}
+              {p.type === 'scene'
+                ? `${p.scene?.items.length ?? 0} item${p.scene?.items.length === 1 ? '' : 's'} · ${p.scene?.order ?? 'shuffle'}`
+                : `${p.type === 'video' ? modeLabel[p.playback_mode] : 'static'} · ${p.cues.length} cue${p.cues.length === 1 ? '' : 's'}`}
             </div>
             <div className="flex flex-wrap gap-2">
               <button className="btn btn-primary" disabled={busy || p.id === activeId} onClick={() => act(() => api.profiles.activate(p.id))}>Activate</button>
@@ -143,6 +158,7 @@ function ProfileEditor({ id }: { id: string }) {
   const [draft, setDraft] = useState<ProfileIn | null>(isNew ? emptyDraft() : null)
   const [media, setMedia] = useState<Media[]>([])
   const [displays, setDisplays] = useState<DisplayProfile[]>([])
+  const [allProfiles, setAllProfiles] = useState<Profile[]>([])
   const [saved, setSaved] = useState(false)
   const load = useAction()
   const save = useAction()
@@ -159,6 +175,7 @@ function ProfileEditor({ id }: { id: string }) {
 
   useEffect(() => { api.media.list().then(setMedia).catch(() => setMedia([])) }, [live.mediaRev])
   useEffect(() => { api.display.profiles().then(setDisplays).catch(() => setDisplays([])) }, [live.displayProfilesRev])
+  useEffect(() => { api.profiles.list().then(setAllProfiles).catch(() => setAllProfiles([])) }, [live.profilesRev])
 
   const back = <Link to="/profiles" className="text-sm text-ghost hover:underline">← Back to profiles</Link>
 
@@ -187,7 +204,8 @@ function ProfileEditor({ id }: { id: string }) {
   }
 
   const submit = async () => {
-    const p = await save.run(() => (isNew ? api.profiles.create(draft) : api.profiles.update(Number(id), draft)))
+    const body = toPayload(draft)
+    const p = await save.run(() => (isNew ? api.profiles.create(body) : api.profiles.update(Number(id), body)))
     if (!p) return
     if (isNew) {
       navigate(`/profiles/${p.id}`, { replace: true })
@@ -212,16 +230,25 @@ function ProfileEditor({ id }: { id: string }) {
 
           <div>
             <span className="label">Type</span>
-            <div className="flex gap-4">
-              {(['light', 'video'] as const).map((t) => (
+            <div className="flex flex-wrap gap-4">
+              {(['light', 'video', 'scene'] as const).map((t) => (
                 <label key={t} className="flex items-center gap-2 text-sm">
-                  <input type="radio" name="ptype" checked={draft.type === t} onChange={() => set({ type: t })} />
-                  {t === 'light' ? 'Light' : 'Video'}
+                  <input type="radio" name="ptype" checked={draft.type === t}
+                    onChange={() => set(t === 'scene'
+                      ? { type: t, scene: draft.scene ?? emptyScene(), media_id: null, idle_media_id: null }
+                      : { type: t, scene: null })} />
+                  {typeLabel[t]}
                 </label>
               ))}
             </div>
           </div>
 
+          {draft.type === 'scene' && (
+            <SceneEditor value={draft.scene ?? emptyScene()} onChange={(s) => set({ scene: s })}
+              profiles={allProfiles.filter((p) => String(p.id) !== id)} />
+          )}
+
+          {draft.type !== 'scene' && (<>
           <div className="space-y-2">
             <span className="label">Boards</span>
             <Toggle checked={draft.selection.all} label="All boards"
@@ -269,6 +296,7 @@ function ProfileEditor({ id }: { id: string }) {
               })}
             </div>
           )}
+          </>)}
 
           {draft.type === 'video' && (
             <div className="grid gap-3 sm:grid-cols-2">
