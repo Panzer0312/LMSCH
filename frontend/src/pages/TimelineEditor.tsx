@@ -14,7 +14,8 @@ import { TemplateDialog } from '../timeline/TemplateDialog'
 import { CUE_TEMPLATES, resolveTemplate } from '../timeline/templates'
 import { CLIP_KEY, clipLanes, deleteRange, fromClip, insertTime, parseClip, rippleShift, timecode, toClip, type Clip } from '../timeline/timeops'
 import { TimelineView } from '../timeline/TimelineView'
-import type { CueTarget, LightState, Marker, Media, Onset, Profile, SavedTemplate, TemplateCue, Waveform } from '../types'
+import { cuesOfTrack, LoopClock, mergeTrack, type Playable } from '../timeline/tracks'
+import type { Cue, CueTarget, CueTrack, LightState, Marker, Media, Onset, Profile, SavedTemplate, TemplateCue, Waveform } from '../types'
 
 // The media probe has no frame rate yet; 25 is the plan's fallback.
 const FPS = 25
@@ -24,34 +25,108 @@ const MOBILE_Q = '(max-width: 767px)'
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const laneTarget = (laneId: string): CueTarget => targetFromLanes([laneId])
 
+/** Latest cues of both tracks + markers, shared by the tab editors so a tab switch never loses edits. */
+interface Latest { cues: Cue[]; markers: Marker[] }
+
 export default function TimelineEditor() {
   const { id } = useParams<{ id: string }>()
   const pid = Number(id)
-  const [data, setData] = useState<{ profile: Profile; media: Media | null; audio: Media[] } | null>(null)
+  const [data, setData] = useState<{ profile: Profile; media: Media | null; idle: Media | null; audio: Media[] } | null>(null)
+  const [tab, setTab] = useState<CueTrack | null>(null)
+  const latest = useRef<Latest>({ cues: [], markers: [] })
+  // Stable: the editor's save callbacks depend on them.
+  const getLatest = useCallback(() => latest.current, [])
+  const setLatest = useCallback((l: Latest) => { latest.current = l }, [])
   const { error, run } = useAction()
+  const len = useAction()
 
   useEffect(() => {
     run(async () => {
       const [profile, list] = await Promise.all([api.profiles.get(pid), api.media.list()])
-      setData({ profile, media: list.find((m) => m.id === profile.media_id) ?? null, audio: list.filter((m) => m.kind === 'audio') })
+      latest.current = { cues: profile.cues, markers: profile.markers ?? [] }
+      setData({
+        profile,
+        media: list.find((m) => m.id === profile.media_id) ?? null,
+        idle: list.find((m) => m.id === profile.idle_media_id) ?? null,
+        audio: list.filter((m) => m.kind === 'audio'),
+      })
     })
   }, [pid, run])
 
   const back = <Link to={`/profiles/${id}`} className="text-sm text-ghost hover:underline">← Back to profile</Link>
   if (error) return <div className="space-y-3">{back}<ErrorText error={error} /></div>
   if (!data || data.profile.id !== pid) return <p className="text-sm text-mute">Loading…</p>
-  const { profile, media, audio } = data
-  if (profile.type !== 'video' || profile.media_id == null) {
+  const { profile, media, idle, audio } = data
+  const isLight = profile.type === 'light'
+  if (!isLight && (profile.type !== 'video' || profile.media_id == null)) {
     return (
       <div className="space-y-3">
         {back}
         <p className="text-sm text-mute">
-          {profile.type !== 'video' ? 'The timeline editor is only available for video profiles.' : 'This profile has no video assigned yet.'}
+          {profile.type !== 'video' ? 'The timeline editor is only available for video and light profiles.' : 'This profile has no video assigned yet.'}
         </p>
       </div>
     )
   }
-  return <Editor key={profile.id} profile={profile} media={media} mediaId={profile.media_id} initialAudio={audio} />
+  // Light profiles have no main video: their only track is the idle loop.
+  const track: CueTrack = isLight ? 'idle' : tab ?? 'main'
+  const setLength = (v: number | null) => len.run(async () => {
+    // Markers have their own endpoint; sending the loaded ones could undo marker edits.
+    const { id: _id, sort: _sort, cues: _cues, markers: _markers, ...body } = profile
+    const p = await api.profiles.update(pid, { ...body, idle_length_s: v })
+    setData((d) => (d ? { ...d, profile: { ...d.profile, idle_length_s: p.idle_length_s } } : d))
+  })
+  const tabs = (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="flex gap-1" role="tablist">
+        {(['main', 'idle'] as const).map((t) => (
+          <button key={t} type="button" role="tab" aria-selected={track === t} disabled={isLight && t === 'main'}
+            title={isLight && t === 'main' ? 'Light profiles have no main video' : undefined}
+            className={`btn ${track === t ? 'btn-primary' : ''}`} onClick={() => setTab(t)}>
+            {t === 'main' ? 'Main' : 'Idle'}
+          </button>
+        ))}
+      </div>
+      {isLight && (
+        <label className="flex items-center gap-1 text-sm text-mute">
+          Loop length (s)
+          <input key={profile.idle_length_s ?? 'none'} type="number" min={0.5} step={0.5} className="input w-20" placeholder="off"
+            defaultValue={profile.idle_length_s ?? ''}
+            onBlur={(e) => {
+              const v = e.target.value === '' ? null : Math.max(0.5, Number(e.target.value) || 0.5)
+              if (v !== profile.idle_length_s) setLength(v)
+            }} />
+        </label>
+      )}
+      <ErrorText error={len.error} />
+    </div>
+  )
+  if (track === 'idle' && !isLight && idle == null) {
+    return (
+      <div className="space-y-3">
+        {back}
+        {tabs}
+        <p className="text-sm text-mute">Assign an idle video to this profile to give it an idle cue track.</p>
+      </div>
+    )
+  }
+  if (isLight && profile.idle_length_s == null) {
+    return (
+      <div className="space-y-3">
+        {back}
+        {tabs}
+        <p className="text-sm text-mute">Set a loop length to give this light profile a looping idle track (breathing lights).</p>
+      </div>
+    )
+  }
+  const shown = track === 'idle' ? idle : media
+  return (
+    <div className="space-y-3">
+      {tabs}
+      <Editor key={`${profile.id}:${track}`} profile={profile} media={shown} mediaId={shown?.id ?? null} initialAudio={audio}
+        track={track} getLatest={getLatest} setLatest={setLatest} loopLength={isLight ? profile.idle_length_s ?? null : null} />
+    </div>
+  )
 }
 
 type Dialog =
@@ -62,7 +137,19 @@ type Dialog =
   | { kind: 'sound'; at: number }
   | null
 
-function Editor({ profile, media, mediaId, initialAudio }: { profile: Profile; media: Media | null; mediaId: number; initialAudio: Media[] }) {
+interface EditorProps {
+  profile: Profile
+  media: Media | null
+  /** Clip the track is timed against; null = light idle loop (LoopClock, no video). */
+  mediaId: number | null
+  initialAudio: Media[]
+  track: CueTrack
+  getLatest: () => Latest
+  setLatest: (l: Latest) => void
+  loopLength: number | null
+}
+
+function Editor({ profile, media, mediaId, initialAudio, track, getLatest, setLatest, loopLength }: EditorProps) {
   const pid = profile.id
   const adopted = useAdoptedBoards()
   const boards = profile.selection.all ? adopted : adopted.filter((b) => profile.selection.macs.includes(b.mac))
@@ -81,7 +168,7 @@ function Editor({ profile, media, mediaId, initialAudio }: { profile: Profile; m
   lanes.push(SOUND_LANE_DEF)
   const effects = boards.find((b) => b.effects.length > 0)?.effects ?? NO_EFFECTS
 
-  const [initial] = useState<Doc>(() => ({ cues: fromServer(profile.cues), markers: profile.markers ?? [] }))
+  const [initial] = useState<Doc>(() => ({ cues: fromServer(cuesOfTrack(getLatest().cues, track)), markers: getLatest().markers }))
   const { doc, set: setDoc, undo: undoDoc, redo: redoDoc, canUndo, canRedo } = useHistory<Doc>(initial)
   const cues = doc.cues
   const [rev, setRev] = useState(0)
@@ -90,8 +177,8 @@ function Editor({ profile, media, mediaId, initialAudio }: { profile: Profile; m
   const [playhead, setPlayhead] = useState(0)
   const [playing, setPlaying] = useState(false)
   const [videoDur, setVideoDur] = useState(0)
-  const duration = media?.duration_s || videoDur
-  const [pxPerSec, setPxPerSec] = useState(() => clamp(1100 / (media?.duration_s || 60), 5, 400))
+  const duration = loopLength ?? (media?.duration_s || videoDur)
+  const [pxPerSec, setPxPerSec] = useState(() => clamp(1100 / (loopLength ?? (media?.duration_s || 60)), 5, 400))
   const [snapOn, setSnapOn] = useState(true)
   const [mobile, setMobile] = useState(() => window.matchMedia(MOBILE_Q).matches)
   const [loop, setLoop] = useState<{ a: number; b: number } | null>(null)
@@ -105,7 +192,9 @@ function Editor({ profile, media, mediaId, initialAudio }: { profile: Profile; m
   const [shiftBy, setShiftBy] = useState(1)
   const [muted, setMuted] = useState<Set<string>>(() => new Set())
   const [solo, setSolo] = useState<Set<string>>(() => new Set())
-  const videoRef = useRef<HTMLVideoElement>(null)
+  const videoRef = useRef<Playable | null>(null)
+  const [clock] = useState(() => (loopLength != null ? new LoopClock(loopLength) : null))
+  const isMain = track === 'main'
   const overlaps = useMemo(() => overlapKeys(cues, macsKey ? macsKey.split(',') : []), [cues, macsKey])
   const [audio, setAudio] = useState<Media[]>(initialAudio)
   const audioById = useMemo(() => new Map(audio.map((m) => [m.id, m])), [audio])
@@ -121,7 +210,7 @@ function Editor({ profile, media, mediaId, initialAudio }: { profile: Profile; m
   }, [])
 
   useEffect(() => {
-    api.media.onsets(mediaId).then((o) => setOnsets(o.onsets), () => {})
+    if (mediaId != null) api.media.onsets(mediaId).then((o) => setOnsets(o.onsets), () => {})
     api.templates.list().then(setSaved, () => {})
   }, [mediaId])
 
@@ -159,17 +248,22 @@ function Editor({ profile, media, mediaId, initialAudio }: { profile: Profile; m
   const [savedRev, setSavedRev] = useState(0)
   const [saveErr, setSaveErr] = useState<string | null>(null)
   const saver = useRef({ doc: initial, pending: false, markers: initial.markers, chain: Promise.resolve() })
-  useEffect(() => { saver.current.doc = doc }, [doc])
+  useEffect(() => {
+    saver.current.doc = doc
+    // The other tab mounts from here, edits included, even before they are saved.
+    setLatest({ cues: mergeTrack(getLatest().cues, track, toServer(doc.cues)), markers: doc.markers })
+  }, [doc, getLatest, setLatest, track])
   const persist = useCallback(async () => {
     const s = saver.current
     const d = s.doc
-    await api.profiles.setCues(pid, toServer(d.cues))
+    // PUT replaces every cue: send this track as edited plus the other one as last known.
+    await api.profiles.setCues(pid, mergeTrack(getLatest().cues, track, toServer(d.cues)))
     // Markers have their own endpoint; skip it when untouched to avoid a redundant profiles_changed.
     if (d.markers !== s.markers) {
       await api.profiles.setMarkers(pid, d.markers)
       s.markers = d.markers
     }
-  }, [pid])
+  }, [pid, getLatest, track])
   const save = useCallback((r: number) => {
     const s = saver.current
     s.pending = false
@@ -218,6 +312,18 @@ function Editor({ profile, media, mediaId, initialAudio }: { profile: Profile; m
     const v = videoRef.current
     if (v) sendAudition(v.currentTime, !v.paused)
   }, [mutedKey, audition, sendAudition])
+
+  // --- player events (<video> and LoopClock) ---
+  const onPlayEv = (t: number) => { setPlaying(true); if (audition) sendAudition(t, true) }
+  const onPauseEv = (t: number) => { setPlaying(false); setPlayhead(t); if (audition) sendAudition(t, false) }
+  const onSeekedEv = (t: number, paused: boolean) => { setPlayhead(t); if (audition) sendAudition(t, !paused) }
+  useEffect(() => {
+    if (!clock) return
+    videoRef.current = clock
+    clock.listen({ onPlay: onPlayEv, onPause: onPauseEv, onSeeked: onSeekedEv })
+  })
+  useEffect(() => { if (clock && loopLength != null) clock.setLength(loopLength) }, [clock, loopLength])
+  useEffect(() => () => clock?.pause(), [clock])
 
   // --- actions ---
   const now = () => videoRef.current?.currentTime ?? playhead
@@ -466,7 +572,10 @@ function Editor({ profile, media, mediaId, initialAudio }: { profile: Profile; m
         <Link to={`/profiles/${pid}`} className="btn">← Back</Link>
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-lg font-semibold">{profile.name}</h1>
-          <p className="truncate text-xs text-mute">{media?.filename ?? `media #${mediaId}`}</p>
+          <p className="truncate text-xs text-mute">
+            {isMain ? '' : 'Idle track · '}
+            {loopLength != null ? `loops every ${loopLength} s` : media?.filename ?? `media #${mediaId}`}
+          </p>
         </div>
         {audition && <span className="rounded bg-blood px-1.5 py-0.5 text-xs font-semibold text-white">AUDITION LIVE</span>}
         {status}
@@ -474,28 +583,27 @@ function Editor({ profile, media, mediaId, initialAudio }: { profile: Profile; m
 
       <div className="flex flex-col gap-4 md:flex-row">
         <div className="min-w-0 flex-1 space-y-3">
-          <video
-            ref={videoRef}
-            src={api.media.fileUrl(mediaId)}
-            preload="auto"
-            playsInline
-            className="max-h-[38vh] w-full bg-black"
-            onClick={togglePlay}
-            onPlay={(e) => { setPlaying(true); if (audition) sendAudition(e.currentTarget.currentTime, true) }}
-            onPause={(e) => {
-              const t = e.currentTarget.currentTime
-              setPlaying(false)
-              setPlayhead(t)
-              if (audition) sendAudition(t, false)
-            }}
-            onSeeked={(e) => {
-              const t = e.currentTarget.currentTime
-              setPlayhead(t)
-              if (audition) sendAudition(t, !e.currentTarget.paused)
-            }}
-            onTimeUpdate={(e) => setPlayhead(e.currentTarget.currentTime)}
-            onLoadedMetadata={(e) => setVideoDur(Number.isFinite(e.currentTarget.duration) ? e.currentTarget.duration : 0)}
-          />
+          {mediaId != null ? (
+            <video
+              ref={(el) => { videoRef.current = el }}
+              src={api.media.fileUrl(mediaId)}
+              preload="auto"
+              playsInline
+              // The idle clip loops on the projector; its cue track wraps with it.
+              loop={!isMain}
+              className="max-h-[38vh] w-full bg-black"
+              onClick={togglePlay}
+              onPlay={(e) => onPlayEv(e.currentTarget.currentTime)}
+              onPause={(e) => onPauseEv(e.currentTarget.currentTime)}
+              onSeeked={(e) => onSeekedEv(e.currentTarget.currentTime, e.currentTarget.paused)}
+              onTimeUpdate={(e) => setPlayhead(e.currentTarget.currentTime)}
+              onLoadedMetadata={(e) => setVideoDur(Number.isFinite(e.currentTarget.duration) ? e.currentTarget.duration : 0)}
+            />
+          ) : (
+            <button type="button" className="flex h-24 w-full items-center justify-center rounded bg-black text-sm text-mute" onClick={togglePlay}>
+              No video: idle loop of {loopLength} s, {playing ? 'playing' : 'paused'}
+            </button>
+          )}
 
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" className="btn btn-primary w-20" onClick={togglePlay}>{playing ? 'Pause' : 'Play'}</button>
@@ -568,10 +676,16 @@ function Editor({ profile, media, mediaId, initialAudio }: { profile: Profile; m
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            <Toggle checked={audition} onChange={(v) => { setAuditionErr(null); setAudition(v) }} label="Live audition" />
-            <button type="button" className="btn" disabled={proj.busy} onClick={() => proj.run(() => api.profiles.playFrom(pid, now()))}>
-              Play on projector from here
-            </button>
+            {/* Audition and projector playback run the main track only. */}
+            {isMain && (
+              <>
+                <Toggle checked={audition} onChange={(v) => { setAuditionErr(null); setAudition(v) }} label="Live audition" />
+                <button type="button" className="btn" disabled={proj.busy} onClick={() => proj.run(() => api.profiles.playFrom(pid, now()))}>
+                  Play on projector from here
+                </button>
+              </>
+            )}
+            {!isMain && <span className="text-xs text-mute">Idle cues run on the boards whenever the profile is idle.</span>}
             {overlaps.size > 0 && <span className="text-sm text-pumpkin">⚠ {overlaps.size} overlapping cues</span>}
           </div>
           <ErrorText error={auditionErr} />

@@ -5,6 +5,7 @@ import { LightStateEditor } from './LightStateEditor'
 import { ErrorText } from './ui'
 import { useAction } from '../lib'
 import { CUE_TEMPLATES, resolveTemplate } from '../timeline/templates'
+import { trackOf } from '../timeline/tracks'
 
 interface Row { key: number; cue: Cue }
 
@@ -15,7 +16,9 @@ const strip = (c: Cue): Cue => ({
 const sortCues = (cues: Cue[]) => [...cues].sort((a, b) => a.start_s - b.start_s)
 
 let nextKey = 0
-const toRows = (cues: Cue[]): Row[] => sortCues(cues).map((c) => ({ key: nextKey++, cue: strip(c) }))
+// The quick list edits main-track light cues only; sound and idle cues are kept as they are on save.
+const listed = (c: Cue) => trackOf(c) === 'main' && c.kind !== 'sound'
+const toRows = (cues: Cue[]): Row[] => sortCues(cues.filter(listed)).map((c) => ({ key: nextKey++, cue: strip(c) }))
 
 function summary(s: LightState, boards: Board[]): string {
   if (s.preset != null) {
@@ -44,7 +47,7 @@ export function CueList({ profile, boards, onSaved }: { profile: Profile; boards
     setEditing(null)
   }
 
-  const original = useMemo(() => JSON.stringify(sortCues(profile.cues).map(strip)), [profile.cues])
+  const original = useMemo(() => JSON.stringify(sortCues(profile.cues.filter(listed)).map(strip)), [profile.cues])
   const dirty = JSON.stringify(rows.map((r) => r.cue)) !== original
 
   const allMacs = boards.map((b) => b.mac)
@@ -104,7 +107,7 @@ export function CueList({ profile, boards, onSaved }: { profile: Profile; boards
   }
 
   const save = async () => {
-    const cues = sortCues(rows.map((r) => strip(r.cue)))
+    const cues = [...sortCues(rows.map((r) => strip(r.cue))), ...profile.cues.filter((c) => !listed(c))]
     const p = await run(() => api.profiles.setCues(profile.id, cues))
     if (p) {
       setSaved(true)
