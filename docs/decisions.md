@@ -65,3 +65,6 @@ Choices made where the spec was open. Append new rows; mark replaced rows "super
 | Idle → main fade | Stepped mpv IPC: `brightness` (to -100) and `volume` every 20 ms over `fade_ms`. No filter rebuild. Ramp smoothness on the hub is an open spike. |
 | Scene skip | Skip re-picks the next item; it does not stop a playing item. Pin wins once, then the picked next stays queued. |
 | Moment light-only length | A light-only moment lasts its profile's `idle_length_s`, else 5 s. Video and sound parts: the longest wins. |
+| Moment interrupting a show | A moment with `busy=interrupt` ends a running show without setting the show profile's cooldown. |
+| Replacement ambience volume | The profile ambient's `volume` when the profile has an ambient, else 1.0. Not ducked. |
+| Profile type change to light | Main-track cues are deleted (info event with the count); idle cues stay. |

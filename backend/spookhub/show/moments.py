@@ -31,9 +31,10 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 OWNER = "moment"
+# Replacement ambience loop: its own owner so stops never hit the profile's ambient loop.
+AMBIENCE_OWNER = "moment-ambience"
 AMBIENT_FADE_MS = 400
 LIGHT_ONLY_S = 5.0
-PROGRESS_S = 0.25
 HISTORY = 20
 # mpv may never report the moment video's end (eof lost, player wedged): give up this long
 # after the longest known part.
@@ -56,6 +57,8 @@ class Snapshot:
     # An interrupted moment changed the picture / stopped the idle track.
     used_player: bool = False
     used_sched: bool = False
+    # An interrupted moment muted / replaced the ambient: a 'keep' successor resumes it.
+    amb_touched: bool = False
 
 
 @dataclass
@@ -87,7 +90,8 @@ class MomentRunner:
         self.rng: random.Random | None = None  # injectable for tests
         self._pickers: dict[int, Picker] = {}
         self._history: dict[int, list[int]] = {}
-        self._last_state: dict[str, Any] | None = None
+        # A replacement ambience loop is playing on the ambient player.
+        self._replacing = False
 
     # ----- state -----
 
@@ -103,15 +107,23 @@ class MomentRunner:
         return self.run.snap.active if self.run else None
 
     def state(self) -> dict[str, Any]:
+        """Sent on change only; the client advances progress from elapsed_s / duration_s."""
         now = time.monotonic()
         r = self.run
-        progress = 0.0
-        if r is not None and r.total > 0:
-            progress = min(1.0, (now - r.started) / r.total)
+        progress, elapsed = 0.0, 0.0
+        duration: float | None = None
+        if r is not None:
+            elapsed = now - r.started
+            # A video part without a known length: the end is whenever mpv reports it.
+            if r.total > 0 and not (r.owns_main and r.video_s <= 0):
+                duration = r.total
+                progress = min(1.0, elapsed / r.total)
         return {
             "playing_id": r.moment_id if r else None,
             "variant": r.variant if r else None,
             "progress": round(progress, 3),
+            "elapsed_s": round(elapsed, 2),
+            "duration_s": None if duration is None else round(duration, 2),
             "cooldown": {
                 str(mid): round(until - now, 1)
                 for mid, until in self.cooldown_until.items()
@@ -119,11 +131,8 @@ class MomentRunner:
             },
         }
 
-    def publish(self, force: bool = False) -> None:
-        st = self.state()
-        if force or st != self._last_state:
-            self._last_state = st
-            self.e.bus.publish("moment", st)
+    def publish(self) -> None:
+        self.e.bus.publish("moment", self.state())
 
     # ----- press -----
 
@@ -172,7 +181,7 @@ class MomentRunner:
             idx = variant if variant is not None else self._pick(moment_id, m)
             await self._start(moment_id, m, idx, variant is not None, snap)
         e._publish()
-        self.publish(force=True)
+        self.publish()
         return self.state()
 
     def _pick(self, moment_id: int, m: MomentIn) -> int:
@@ -203,7 +212,13 @@ class MomentRunner:
             r.snap.used_sched |= r.used_sched
             return r.snap
         if e.playing_main:
-            await e._end_show("interrupted by a moment")
+            # Not a normal show end: the show profile's cooldown stays untouched.
+            await e._stop_scheduler()
+            e.playing_main = False
+            e._scene_restore()
+            e._apply_base(critical=True)
+            e.bus.event("info", "Show interrupted by a moment, boards back to base")
+            await e._go_idle()
         elif e._scene_hold is not None:
             e._scene_cancel_hold()
             e._scene_restore()
@@ -252,6 +267,13 @@ class MomentRunner:
             # Only the idle track can run here (busy/blocker excluded show, audition, setup).
             await e._stop_scheduler()
             r.used_sched = True
+        if vp is None and snap.used_player and not e.blackout:
+            # An interrupted moment's video would keep playing (picture and sound) under a
+            # light/sound-only run: take it down; the restore reloads the idle clip.
+            fade = snap.active.fade_ms if snap.active and e.player.cfg.enabled else 0
+            await e._fade_out(fade)
+            await e._safe(e.player.black())
+            await e._reset_fade()
         adopted = e.boards.adopted_macs()
         vp_macs: set[str] = set()
         if vp is not None:
@@ -272,7 +294,11 @@ class MomentRunner:
             r.used_player = r.used_sched = True
             r.owns_main = bool(await e._play_main(0.0)) and e.playing_main
             if not r.owns_main:
+                # The video part failed: end the whole moment, back to the snapshot.
                 e.playing_main = False
+                r.cooldown_s = 0.0
+                await self._restore(r)
+                raise MomentRefused("video could not start (see event log)")
         if lp is not None:
             r.light_s = lp.idle_length_s or LIGHT_ONLY_S
             for mac in lp.macs(adopted):
@@ -288,9 +314,6 @@ class MomentRunner:
                 e.phase = _phase().lights
                 await e._start_idle_track()
                 r.used_sched = True
-        if vp is not None and not r.owns_main and lp is None and sound is None:
-            await self._restore(r)
-            raise MomentRefused("video could not start (see event log)")
         r.video_s = (vp.media_duration or 0.0) if r.owns_main and vp else 0.0
         r.total = max(r.video_s, r.sound_s) or r.light_s
         if sound is not None and v.sound is not None:
@@ -299,8 +322,9 @@ class MomentRunner:
                     sound[0], volume=v.sound.volume, fade_in_ms=v.sound.fade_in_ms, owner=OWNER
                 )
             )
-        if v.ambience != "keep" and e.ambient is not None:
+        if e.ambient is not None and (v.ambience != "keep" or snap.amb_touched):
             spawn(_quiet(self._ambience_start(r)))
+        snap.amb_touched |= v.ambience != "keep"
         e.bus.event("info", f"Moment '{m.name}' (variant {idx + 1})", kind="moment")
         r.task = asyncio.create_task(self._wait(r))
 
@@ -314,10 +338,7 @@ class MomentRunner:
             waits.append(asyncio.sleep(r.light_s))
         done = asyncio.ensure_future(asyncio.gather(*waits))
         try:
-            while not done.done():
-                await asyncio.wait({done}, timeout=PROGRESS_S)
-                if self.run is r:
-                    self.publish()
+            await done
         except asyncio.CancelledError:
             done.cancel()
             raise
@@ -326,7 +347,7 @@ class MomentRunner:
                 return
             await self._restore(r)
         self.e._publish()
-        self.publish(force=True)
+        self.publish()
         self.kick()
 
     async def _video_end(self, r: Run) -> None:
@@ -360,7 +381,7 @@ class MomentRunner:
             if r is not None:
                 await self._restore(r, stopped=True)
         self.e._publish()
-        self.publish(force=True)
+        self.publish()
         return self.state()
 
     async def _restore(self, r: Run, stopped: bool = False) -> None:
@@ -392,6 +413,8 @@ class MomentRunner:
         if r.used_sched:
             await e._start_idle_track()
         await _quiet(self._ambience_restore(r))
+        # Home profile edited during the moment: its ambient may have changed meanwhile.
+        await e._sync_ambient()
         if not r.test and r.cooldown_s > 0:
             self.cooldown_until[r.moment_id] = time.monotonic() + r.cooldown_s
             # The client counts down itself: one more message when the cooldown is over.
@@ -435,12 +458,12 @@ class MomentRunner:
         self._restore_boards(r.snap, critical=False)
         amb, cur = e.ambient, e._ambient_on
         if amb is not None:
-            if r.v.ambience == "replace":
-                spawn(_quiet(amb.stop(0, owner=OWNER)))
-            elif r.v.ambience == "mute" and cur is not None and amb.current == cur.path:
-                # Same loop stays on after re-activation (no restart): undo the mute.
+            if cur is not None and amb.current == cur.path:
+                # Same loop stays on after re-activation (no restart): undo a mute.
                 amb.ramp(e._ambient_level(cur), AMBIENT_FADE_MS)
-        self.publish(force=True)
+            if self._replacing:
+                spawn(_quiet(self._abort_ambience()))
+        self.publish()
 
     def kick(self) -> None:
         """Something ended: start the queued moment when nothing else plays."""
@@ -467,9 +490,28 @@ class MomentRunner:
         if self.e.fx is not None:
             await self.e.fx.stop(fade_ms, owner=OWNER)
 
+    async def stop_ambience(self, fade_ms: int = 0) -> None:
+        """Stop the replacement ambience loop, if one plays."""
+        amb = self.e.ambient
+        if not self._replacing or amb is None:
+            return
+        self._replacing = False
+        await amb.stop(fade_ms, owner=AMBIENCE_OWNER)
+
+    async def _abort_ambience(self) -> None:
+        await self.stop_ambience(0)
+        # Profile ambient back (it was replaced); blackout / deactivate make that a stop.
+        await self.e._sync_ambient()
+
     async def _ambience_start(self, r: Run) -> None:
         amb = self.e.ambient
         assert amb is not None
+        if r.v.ambience == "keep":
+            # An interrupted moment muted / replaced the ambient: this one keeps it as is.
+            await self._ambience_resume(r)
+            return
+        if r.v.ambience == "mute":
+            await self.stop_ambience(AMBIENT_FADE_MS)
         if amb.current:
             fade = amb.ramp(0.0, AMBIENT_FADE_MS)
             if asyncio.isfuture(fade):
@@ -477,19 +519,32 @@ class MomentRunner:
         if r.v.ambience == "replace" and r.v.ambience_media_id is not None:
             path = _media_path(r.v.ambience_media_id)
             if path and self.run is r:
-                await amb.play(path, fade_in_ms=AMBIENT_FADE_MS, loop=True, owner=OWNER)
+                cur = self.e._ambient_on
+                self._replacing = True
+                await amb.play(
+                    path,
+                    volume=cur.volume if cur is not None else 1.0,
+                    fade_in_ms=AMBIENT_FADE_MS,
+                    loop=True,
+                    owner=AMBIENCE_OWNER,
+                )
 
     async def _ambience_restore(self, r: Run) -> None:
         """Ambient back to the active profile's loop at its normal (unducked) level."""
         e = self.e
-        amb = e.ambient
-        if amb is None or e.blackout:
+        if e.ambient is None or e.blackout:
             return
         e._ducked = e.playing_main
+        await self._ambience_resume(r)
+
+    async def _ambience_resume(self, r: Run) -> None:
+        e = self.e
+        amb = e.ambient
+        assert amb is not None
         cur = e._ambient_on
+        if cur is None or amb.current != cur.path:
+            await self.stop_ambience(AMBIENT_FADE_MS if cur is None else 0)
         if cur is None:
-            if r.v.ambience == "replace":
-                await amb.stop(AMBIENT_FADE_MS, owner=OWNER)
             return
         level = e._ambient_level(cur)
         if amb.current == cur.path:

@@ -166,8 +166,15 @@ displayed, rotated frame), brightness/contrast/gamma/saturation (±100), corners
   not covered by the video, ambience keep/mute/replace); the run ends with the longest part
   (light only: `idle_length_s` or 5 s). Restore without re-activation: idle clip reloads at its
   saved position, idle track restarts, touched boards return to the home base, ambient back
-  unducked. Cooldown starts at the end. An interrupting moment inherits the first snapshot.
-  Blackout, activate, deactivate and test pattern abort a moment.
+  unducked. Cooldown starts at the end. An interrupting moment inherits the first snapshot; one
+  without a video part blacks an interrupted moment's video first. Interrupting a show sets no
+  profile cooldown. A failed video part ends the moment at once (restore, no cooldown). Replacement
+  ambience runs under owner `moment-ambience`; interrupt, restore, abort and `_sync_ambient` stop
+  it. Home profile edits during a moment go into the snapshot. Blackout, activate, deactivate and
+  test pattern abort a moment; the profile ambient resumes after. WS `moment` only on change.
+- **Player end without eof.** mpv `stop`/`load` raise no eof, so activate, deactivate, blackout,
+  test pattern and video setup clear `playing_main` themselves and un-duck the ambient. A restarted
+  ambient mpv triggers `ShowEngine.ambient_restarted()` (loop starts again).
 - **systemd watchdog.** Unit is `Type=notify`. The hub sends READY after start and WATCHDOG every
   15 s (half of `WatchdogSec=30`) from the event loop. A hung loop gets restarted.
 - **Show lock.** Middleware in front of the routes. Allowlist while locked: `POST /api/trigger`,

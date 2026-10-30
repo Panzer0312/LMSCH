@@ -199,12 +199,25 @@ def get(pid: int) -> ProfileOut:
 
 @router.put("/{pid}")
 async def update(pid: int, body: ProfileIn, hub: HubDep) -> ProfileOut:
+    dropped = 0
     with db.session() as s:
         p = _get(s, pid)
+        to_light = p.type != ProfileType.light and body.type == ProfileType.light
         _apply(p, body, s)
+        if to_light:
+            # A light profile only has an idle track; left-over main cues would make every
+            # later cue save fail, and no light editor shows them to delete.
+            for c in s.exec(select(Cue).where(Cue.profile_id == pid)).all():
+                if c.track != "idle":
+                    s.delete(c)
+                    dropped += 1
         s.add(p)
         s.commit()
         out = to_out(s, p)
+    if dropped:
+        hub.bus.event(
+            "info", f"Profile '{out.name}' is now a light profile: {dropped} main cues removed"
+        )
     await hub.engine.reload_if_active(pid)
     _changed(hub)
     return out

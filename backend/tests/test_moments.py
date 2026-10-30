@@ -39,8 +39,14 @@ class FakeAmbient(FakeFx):
         return self.pos
 
     async def play(self, path, start=0.0, volume=1.0, fade_in_ms=0, loop=False, owner=None):
-        self.current = path
+        self.current, self.owner = path, owner
         self.calls.append(("play", path, round(start, 2), round(volume, 3), loop, owner))
+
+    async def stop(self, fade_out_ms=0, owner=None):
+        # Owner-scoped like the real player: a stop for another owner does nothing.
+        self.calls.append(("stop", fade_out_ms, owner))
+        if owner is None or owner == getattr(self, "owner", None):
+            self.current = self.owner = None
 
     def ramp(self, volume, ms, then_stop=False):
         self.calls.append(("ramp", round(volume, 3), ms))
@@ -206,6 +212,8 @@ async def test_state_and_ws_snapshot(env):
         "playing_id": None,
         "variant": None,
         "progress": 0.0,
+        "elapsed_s": 0.0,
+        "duration_s": None,
         "cooldown": {},
     }
 
@@ -220,6 +228,8 @@ def test_ws_snapshot_has_moment(cfg):
         "playing_id": None,
         "variant": None,
         "progress": 0.0,
+        "elapsed_s": 0.0,
+        "duration_s": None,
         "cooldown": {},
     }
 
@@ -561,3 +571,156 @@ async def test_deleting_playing_moment_profile_restores(env):
     assert eng.active.id == lp
     assert (await c.delete(f"/api/profiles/{lp}")).status_code == 200
     assert not eng.moments.running and eng.active.id == home  # home kept, not deactivated
+
+
+# ---------- review fixes ----------
+
+
+def _events(c, q, kind="event"):
+    out = []
+    while not q.empty():
+        m = q.get_nowait()
+        if m["type"] == kind:
+            out.append(m["data"])
+    c.hub.bus.unsubscribe(q)
+    return out
+
+
+async def test_light_moment_interrupting_video_moment_blacks_picture(env):
+    c, eng = env.c, env.eng
+    home = await _video_home(env)
+    drac = env.media("drac.mp4", "video", 4)
+    vp = await env.profile(name="Dracula", type="video", media_id=drac)
+    lp = await env.profile(name="Flicker", base_state={"bri": 50})
+    video = await env.moment([_variant(video_profile_id=vp)], busy="interrupt")
+    light = await env.moment([_variant(light_profile_id=lp)], name="Flash", busy="interrupt")
+    await c.post(f"/api/profiles/{home}/activate")
+    assert (await c.post(f"/api/moments/{video}/play")).status_code == 200
+    assert eng.moments.owns_main()
+    blacks = []
+
+    async def black():
+        blacks.append(env.loads[-1][0])
+
+    eng.player.black = black
+    assert (await c.post(f"/api/moments/{light}/play")).status_code == 200
+    assert blacks == [env.path("drac.mp4")]  # the moment video is taken down
+    assert not eng.playing_main and eng.active.id == lp
+    await c.post("/api/moments/stop")
+    assert env.loads[-1] == (env.path("fog.mp4"), 12.0, True)
+
+
+async def test_interrupt_show_sets_no_cooldown(env):
+    c, eng = env.c, env.eng
+    home = await _video_home(env, cooldown_s=60)
+    lp = await env.profile(name="Flicker", base_state={"bri": 50})
+    mid = await env.moment([_variant(light_profile_id=lp)], busy="interrupt")
+    await c.post(f"/api/profiles/{home}/activate")
+    assert (await c.post("/api/show/trigger")).json()["ok"]
+    assert (await c.post(f"/api/moments/{mid}/play")).status_code == 200
+    assert eng.cooldown_until <= time.monotonic()
+    await c.post("/api/moments/stop")
+    assert (await c.post("/api/show/trigger")).json()["ok"]
+
+
+async def test_replace_then_keep_without_profile_ambient(env):
+    c, eng = env.c, env.eng
+    rain = env.media("rain.ogg", "audio", 60)
+    home = await env.profile(name="Dark", base_state={"bri": 3})
+    lp = await env.profile(name="Flicker", base_state={"bri": 50}, idle_length_s=30)
+    rep = await env.moment(
+        [_variant(light_profile_id=lp, ambience="replace", ambience_media_id=rain)],
+        busy="interrupt",
+    )
+    keep = await env.moment([_variant(light_profile_id=lp)], name="Keep", busy="interrupt")
+    await c.post(f"/api/profiles/{home}/activate")
+    assert (await c.post(f"/api/moments/{rep}/play")).status_code == 200
+    await _settle()
+    # No profile ambient: the replacement plays at full level, not ducked.
+    assert ("play", env.path("rain.ogg"), 0.0, 1.0, True, "moment-ambience") in env.amb.calls
+    assert (await c.post(f"/api/moments/{keep}/play")).status_code == 200
+    await _settle()
+    assert env.amb.current is None  # the replacement loop is gone
+    # Replace again, then deactivate: the loop stops too.
+    assert (await c.post(f"/api/moments/{rep}/play")).status_code == 200
+    await _settle()
+    assert env.amb.current == env.path("rain.ogg")
+    await eng.deactivate()
+    await _settle()
+    assert env.amb.current is None
+    assert not eng.moments._replacing
+
+
+async def test_replacement_volume_and_abort_resumes_ambient(env, tmp_path):
+    c, eng = env.c, env.eng
+    home = await _video_home(env)
+    rain = env.media("rain.ogg", "audio", 60)
+    lp = await env.profile(name="Flicker", base_state={"bri": 50}, idle_length_s=30)
+    mid = await env.moment(
+        [_variant(light_profile_id=lp, ambience="replace", ambience_media_id=rain)]
+    )
+    await c.post(f"/api/profiles/{home}/activate")
+    assert (await c.post(f"/api/moments/{mid}/play")).status_code == 200
+    await _settle()
+    assert ("play", env.path("rain.ogg"), 0.0, 0.8, True, "moment-ambience") in env.amb.calls
+    env.amb.calls.clear()
+    await eng.set_test_pattern(True, str(tmp_path / "grid.png"))
+    await wait_for(lambda: env.amb.current == env.path("wind.ogg"), timeout=2)
+    assert ("stop", 0, "moment-ambience") in env.amb.calls
+    assert env.amb.calls[-1][0] == "play" and env.amb.calls[-1][-1] == "ambient"
+
+
+async def test_home_edit_during_moment_survives_restore(env):
+    c, eng = env.c, env.eng
+    home = await _video_home(env)
+    lp = await env.profile(name="Flicker", base_state={"bri": 50}, idle_length_s=30)
+    mid = await env.moment([_variant(light_profile_id=lp)])
+    await c.post(f"/api/profiles/{home}/activate")
+    assert (await c.post(f"/api/moments/{mid}/play")).status_code == 200
+    body = (await c.get(f"/api/profiles/{home}")).json()
+    r = await c.put(f"/api/profiles/{home}", json={**body, "base_state": {"bri": 99}})
+    assert r.status_code == 200
+    assert eng.active.id == lp and env.last_bri() == 50  # the moment keeps the boards
+    await c.post("/api/moments/stop")
+    assert eng.active.id == home and eng.active.base.bri == 99 and env.last_bri() == 99
+
+
+async def test_moment_video_failure_restores_snapshot(env):
+    c, eng = env.c, env.eng
+    home = await _video_home(env, cooldown_s=0)
+    drac = env.media("drac.mp4", "video", 4)
+    lp = await env.profile(name="Flicker", base_state={"bri": 50})
+    vp = await env.profile(
+        name="Dracula", type="video", media_id=drac, idle_media_id=env.media("crypt.mp4", "video")
+    )
+    mid = await env.moment([_variant(video_profile_id=vp, light_profile_id=lp)], cooldown_s=30)
+    await c.post(f"/api/profiles/{home}/activate")
+    orig = eng.player.load
+
+    async def load(path, start=0.0, loop=False):
+        if path == env.path("drac.mp4"):
+            raise RuntimeError("mpv gone")
+        await orig(path, start=start, loop=loop)
+
+    eng.player.load = load
+    r = await c.post(f"/api/moments/{mid}/play")
+    assert r.status_code == 409 and "video could not start" in r.json()["detail"]
+    assert not eng.moments.running and eng.active.id == home and not eng.playing_main
+    assert env.path("crypt.mp4") not in [x[0] for x in env.loads]  # never the moment's idle
+    assert env.loads[-1] == (env.path("fog.mp4"), 12.0, True)
+    assert env.last_bri() == 7
+    assert str(mid) not in eng.moment_state()["cooldown"]
+
+
+async def test_moment_ws_only_on_change(env):
+    c, eng = env.c, env.eng
+    lp = await env.profile(name="Flicker", base_state={"bri": 50}, idle_length_s=0.8)
+    mid = await env.moment([_variant(light_profile_id=lp)])
+    q = c.hub.bus.subscribe()
+    r = await c.post(f"/api/moments/{mid}/play")
+    st = r.json()
+    assert st["duration_s"] == 0.8 and 0 <= st["elapsed_s"] < 0.5
+    await wait_for(lambda: not eng.moments.running, timeout=3)
+    msgs = _events(c, q, "moment")
+    assert [m["playing_id"] for m in msgs] == [mid, None]  # start + end, nothing in between
+    assert msgs[0]["duration_s"] == 0.8 and msgs[1]["duration_s"] is None

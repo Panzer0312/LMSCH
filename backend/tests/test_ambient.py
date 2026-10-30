@@ -365,3 +365,95 @@ async def test_trigger_fades_from_idle_clip(client, tmp_path):  # noqa: F811
         assert [v for n, v in ipc.log if n == "brightness"][-1] == 0
     finally:
         await eng.stop_show()
+
+
+async def test_type_change_to_light_drops_main_cues(client, tmp_path):  # noqa: F811
+    c = client
+    pid = await _video_idle_profile(c, tmp_path)
+    body = (await c.get(f"/api/profiles/{pid}")).json()
+    q = c.hub.bus.subscribe()
+    r = await c.put(f"/api/profiles/{pid}", json={**body, "type": "light", "media_id": None})
+    assert r.status_code == 200, r.text
+    assert {cue["track"] for cue in r.json()["cues"]} == {"idle"}
+    msgs = []
+    while not q.empty():
+        m = q.get_nowait()
+        if m["type"] == "event":
+            msgs.append(m["data"]["message"])
+    c.hub.bus.unsubscribe(q)
+    assert any("1 main cues removed" in m for m in msgs)
+    # The light editor saves its idle track again without a 422.
+    idle = [cue for cue in r.json()["cues"]]
+    assert (await c.put(f"/api/profiles/{pid}/cues", json=idle)).status_code == 200
+
+
+async def test_deactivate_mid_show_clears_main_play(client, tmp_path):  # noqa: F811
+    c = client
+    eng = c.hub.engine
+    Rec(eng)
+    vid = _media(tmp_path, "v.mp4", kind="video", duration=10.0)
+    aud = _media(tmp_path, "wind.wav")
+    r = await c.post(
+        "/api/profiles",
+        json={"name": "V", "type": "video", "media_id": vid, "playback_mode": "idle_trigger",
+              "ambient": {"media_id": aud, "volume": 0.8, "duck_to": 0.25}},
+    )  # fmt: skip
+    vp = r.json()["id"]
+    r = await c.post(
+        "/api/profiles",
+        json={"name": "L", "idle_length_s": 1, "ambient": {"media_id": aud, "volume": 0.8}},
+    )
+    lp = r.json()["id"]
+    idle = [{"start_s": 0, "duration_s": 0.5, "state": {"bri": 9}, "track": "idle"}]
+    assert (await c.put(f"/api/profiles/{lp}/cues", json=idle)).status_code == 200
+    amb = eng.ambient = FakeAmbient()
+    await c.post(f"/api/profiles/{vp}/activate")
+    assert (await c.post("/api/trigger")).json()["ok"] and eng.playing_main
+    await eng.deactivate()  # mpv stop raises no eof
+    assert not eng.playing_main and not eng._ducked
+    amb.calls.clear()
+    await c.post(f"/api/profiles/{lp}/activate")
+    assert eng._idle_track and eng.phase == Phase.lights
+    assert amb.calls[0] == ("play", load_active(lp).ambient.path, 0.8, True, "ambient")
+    # Activate straight over a playing show: same, the light idle loop runs.
+    await c.post(f"/api/profiles/{vp}/activate")
+    assert (await c.post("/api/trigger")).json()["ok"]
+    amb.calls.clear()
+    await c.post(f"/api/profiles/{lp}/activate")
+    assert not eng.playing_main and eng._idle_track
+    assert amb.calls == [("ramp", 0.8, 1000)]  # un-ducked, same loop
+
+
+async def test_test_pattern_unducks_ambient(client, tmp_path):  # noqa: F811
+    c = client
+    eng = c.hub.engine
+    vid = _media(tmp_path, "v.mp4", kind="video", duration=10.0)
+    aud = _media(tmp_path, "wind.wav")
+    r = await c.post(
+        "/api/profiles",
+        json={"name": "V", "type": "video", "media_id": vid, "playback_mode": "idle_trigger",
+              "ambient": {"media_id": aud, "volume": 0.8, "duck_to": 0.25}},
+    )  # fmt: skip
+    amb = eng.ambient = FakeAmbient()
+    await c.post(f"/api/profiles/{r.json()['id']}/activate")
+    assert (await c.post("/api/trigger")).json()["ok"]
+    amb.calls.clear()
+    await eng.set_test_pattern(True, str(tmp_path / "grid.png"))
+    assert amb.calls == [("ramp", 0.8, 1000)] and not eng._ducked
+
+
+async def test_ambient_player_restart_resumes_loop(client, tmp_path):  # noqa: F811
+    c = client
+    hub = c.hub
+    eng = hub.engine
+    assert hub.ambient.on_change == hub._on_ambient_change
+    aud = _media(tmp_path, "wind.wav")
+    r = await c.post("/api/profiles", json={"name": "L", "ambient": {"media_id": aud}})
+    amb = eng.ambient = FakeAmbient()
+    await c.post(f"/api/profiles/{r.json()['id']}/activate")
+    amb.current = None  # a restarted mpv plays nothing
+    amb.calls.clear()
+    hub._on_ambient_change("pause")  # other properties: nothing
+    hub._on_ambient_change("restart")
+    await wait_for(lambda: amb.calls, timeout=2)
+    assert amb.calls[0][0] == "play" and amb.current

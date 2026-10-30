@@ -36,8 +36,10 @@ Message `{type, data, ts}`. Types: `snapshot` (on connect), `board`, `board_remo
 `preflight` (`{checks, worst}`), `trigger_seen` (`last_trigger {ts, source, accepted, message}`),
 `display` (`{setup, source, live, resolved_profile_id, geometry, warp_supported}`, on change only),
 `display_profiles_changed`, `scene` (same payload as `GET /api/scene`, on change),
-`moment` (`{playing_id, variant, progress 0–1, cooldown: {id: seconds left}}`, every 0.25 s while
-playing when changed, once more when a cooldown ends), `moments_changed` (list edited).
+`moment` (`{playing_id, variant, progress 0–1, elapsed_s, duration_s, cooldown: {id: seconds left}}`,
+values at send time; sent on change only: start, end, variant change, cooldown end; the client
+advances progress from `elapsed_s` / `duration_s`, `null` = unknown length; `GET moments/state`
+returns the same), `moments_changed` (list edited).
 The snapshot also carries `version`, `preflight`, `display`, `scene` and `moment`.
 Show snapshot adds `calibrating`, `setup_busy`, `last_trigger`.
 Frontend reducer: `frontend/src/live.ts`. `display` has its own small store there (`useDisplay`), so ~30 Hz updates during drags only re-render video setup consumers.

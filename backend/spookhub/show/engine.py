@@ -402,6 +402,8 @@ class ShowEngine:
             if prof is None:
                 raise KeyError(profile_id)
             await self._stop_scheduler()
+            # mpv's stop/load raises no eof: a show that was playing ends here, not in _finish.
+            self.playing_main = False
             self.audition = None
             self.test_pattern = False
             self._clear_display_setup()
@@ -430,10 +432,36 @@ class ShowEngine:
 
     async def reload_if_active(self, profile_id: int) -> None:
         """Profile edited: refresh cues/base live without interrupting a running video."""
+        run = self.moments.run
         if self.scene is not None:
             # Item edits apply the next time the item plays.
             if self._scene_home and profile_id in (self.scene.profile_id, self._scene_home_idle()):
+                old = self._scene_home
                 await self._scene_reload()
+                if run is not None and run.snap.active is old and self._scene_home is not old:
+                    home = run.snap.active = self._scene_home
+                    if home is not None:
+                        run.snap.timeline = Timeline(home.cues, self.boards.adopted_macs())
+            return
+        if run is not None:
+            # Moment parts apply on the next press; the home profile goes into the snapshot,
+            # so the restore brings back the edited version.
+            snap = run.snap
+            if snap.active is None or snap.active.id != profile_id:
+                return
+            prof = load_active(profile_id)
+            if prof is None:
+                await self.deactivate()
+                return
+            home_on = self.active is snap.active  # sound-only moment: home still drives boards
+            snap.active = prof
+            snap.timeline = Timeline(prof.cues, self.boards.adopted_macs())
+            if home_on:
+                self.active, self.timeline = prof, snap.timeline
+                self._apply_base(critical=False)
+            await self._sync_ambient()
+            self.refresh_display()
+            self._publish()
             return
         if not self.active or self.active.id != profile_id:
             return
@@ -459,7 +487,9 @@ class ShowEngine:
         async with self._lock:
             await self._cancel_setup()
             self.moments.abort()
-            await self._stop_scheduler()
+            await self._stop_scheduler()  # also resets the fade and the sound lane
+            # mpv's stop raises no eof, so _finish never runs for a show playing now.
+            self.playing_main = False
             self._scene_setup(None)
             self.active = None
             self.timeline = None
@@ -604,7 +634,8 @@ class ShowEngine:
         assert a
         if not a.media_path:
             self.bus.event("error", f"Profile '{a.name}' has no playable video")
-            await self._go_idle()
+            if not self.moments.running:
+                await self._go_idle()
             return False
         home = self._scene_home or a
         # Fade only away from a visible idle clip; mpv off (tests, headless) has no picture.
@@ -629,6 +660,10 @@ class ShowEngine:
         ok = await self._safe(self.player.load(a.media_path, start=from_s, loop=loop))
         if not ok:
             self.bus.event("error", "Video player not ready")
+            if self.moments.running:
+                # A moment's video part: the moment restores its snapshot, not this idle.
+                await self._reset_fade()
+                return False
             await self._go_idle()
             return False
         if self.player.fade < 1.0:
@@ -1077,7 +1112,7 @@ class ShowEngine:
         if self.active is old:
             self.active = prof
             self.timeline = Timeline(prof.cues, self.boards.adopted_macs())
-            if self.audition is None and not self.blackout:
+            if self.audition is None and not self.blackout and not self.moments.running:
                 self._apply_base(critical=False)
                 if self.phase == Phase.idle and (old is None or old.idle_path != prof.idle_path):
                     await self._go_idle()
@@ -1259,11 +1294,16 @@ class ShowEngine:
         amb = self.ambient
         if amb is None:
             return
-        home = self._scene_home or self.active
+        run = self.moments.run
+        home = self._scene_home or (run.snap.active if run else self.active)
         want = None if self.blackout or home is None else home.ambient
         cur = self._ambient_on
-        self._ducked = self.playing_main
+        was_ducked, self._ducked = self._ducked, self.playing_main
         self._ambient_on = want
+        if run is not None and run.snap.amb_touched and not self.blackout:
+            return  # muted / replaced by the moment; its restore plays `want`
+        if run is None:
+            await self.moments.stop_ambience(0 if self.blackout else 300)
         if want is None:
             if cur is not None:
                 await self._safe(amb.stop(0 if self.blackout else 300, owner=AMBIENT_OWNER))
@@ -1279,8 +1319,13 @@ class ShowEngine:
                     owner=AMBIENT_OWNER,
                 )
             )
-        elif cur != want:
+        elif cur != want or was_ducked != self._ducked:
             amb.ramp(level, AMBIENT_FADE_MS)
+
+    async def ambient_restarted(self) -> None:
+        """The ambient mpv came back empty: start the loop again."""
+        async with self._lock:
+            await self._sync_ambient()
 
     def _duck_ambient(self, on: bool, ms: int) -> None:
         """Main video starts (on) / ends (off): ramp the ambient to duck_to*volume and back."""
@@ -1344,6 +1389,7 @@ class ShowEngine:
                 if self.playing_main:
                     self.playing_main = False
                     self._apply_base(critical=False)
+                self._duck_ambient(False, AMBIENT_FADE_MS)
                 self.audition = None
                 self.test_pattern = True
                 self.phase = Phase.test_pattern
@@ -1488,6 +1534,7 @@ class ShowEngine:
             if self.playing_main:
                 self.playing_main = False
                 self._apply_base(critical=False)
+            self._duck_ambient(False, AMBIENT_FADE_MS)
             self.audition = None
             self.test_pattern = True
             self.phase = Phase.test_pattern
@@ -1654,6 +1701,7 @@ class ShowEngine:
                 self.phase = Phase.lights
             else:
                 await self._go_idle()
+                await self._sync_ambient()
                 return
         else:
             # Profile deleted while the test ran.
@@ -1663,6 +1711,7 @@ class ShowEngine:
         await self._safe(self.player.black())
         if self.phase == Phase.lights:
             await self._start_idle_track()
+        await self._sync_ambient()
 
     async def play_test_sound(self, path: str, max_wait_s: float = 6.0) -> None:
         async def start() -> bool:

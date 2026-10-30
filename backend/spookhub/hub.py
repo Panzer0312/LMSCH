@@ -70,6 +70,9 @@ class Hub:
         )
         self.engine.fx = self.fx
         self.engine.ambient = self.ambient
+        # A restarted ambient mpv plays nothing: the engine starts the loop again. The fx lane
+        # re-issues its sound on the next tick by itself.
+        self.ambient.on_change = self._on_ambient_change
         self.preflight = Preflight(self)
         self.auth = AuthStore()
         self.version = load_version()
@@ -121,6 +124,10 @@ class Hub:
             self._watchdog = asyncio.create_task(sdnotify.watchdog_loop(interval))
         # Sent when startup work is done; uvicorn binds the port right after the lifespan.
         sdnotify.notify("READY=1")
+
+    def _on_ambient_change(self, prop: str) -> None:
+        if prop == "restart":
+            spawn(self.engine.ambient_restarted())
 
     def _media_rotation_changed(self) -> None:
         self.bus.publish("media_changed")
