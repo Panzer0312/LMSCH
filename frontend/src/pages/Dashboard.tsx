@@ -462,7 +462,10 @@ export default function Dashboard() {
       <ActiveProfile />
       <SceneCard />
       <Controls />
-      <Link to="/show" className="btn w-full">Show mode</Link>
+      <div className="grid grid-cols-2 gap-3">
+        <Link to="/show" className="btn w-full">Show mode</Link>
+        <Link to="/moments" className="btn w-full">🔔 Moments</Link>
+      </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <LevelSlider label="Master brightness" field="master_brightness" scale={100}
           max={(settings?.brightness_cap ?? 1) * 100} />
