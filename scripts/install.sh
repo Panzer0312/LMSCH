@@ -256,17 +256,97 @@ CONF
     echo "raspotify config unchanged; not restarting (music keeps playing)"
   fi
 }
+install_player() {
+  [[ "$(dpkg --print-architecture 2>/dev/null)" == amd64 ]] || return 2
+  CHANGED=0
+  timeout 300 apt-get install -y -qq --no-install-recommends xvfb xauth >/dev/null || return 1
+  if ! dpkg -s google-chrome-stable >/dev/null 2>&1; then
+    local deb
+    deb="$(mktemp --suffix=.deb)" || return 1
+    curl -fsSL --connect-timeout 10 --max-time 600 \
+      https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -o "$deb" \
+      || { rm -f "$deb"; return 1; }
+    chmod 0644 "$deb"
+    timeout 900 apt-get install -y -qq --no-install-recommends "$deb" >/dev/null \
+      || { rm -f "$deb"; return 1; }
+    rm -f "$deb"
+    CHANGED=1
+  fi
+  put_file /etc/systemd/system/spookhub-player.service <<UNIT || return 1
+# spookhub-managed (scripts/install.sh)
+[Unit]
+Description=Spookhub Spotify player (Spotify Web Playback SDK in Chrome)
+Wants=network-online.target
+After=network-online.target sound.target spookhub.service
+PartOf=spookhub.service
+
+[Service]
+User=${USER_NAME}
+Group=${USER_NAME}
+SupplementaryGroups=audio
+Environment=HOME=${DATA}
+ExecStart=${APP}/scripts/spotify-player.sh ${PORT}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  put_file /etc/systemd/system/spookhub-player-output.path <<'UNIT' || return 1
+# spookhub-managed (scripts/install.sh)
+[Unit]
+Description=Restart the Spookhub Spotify player when the audio output changes
+
+[Path]
+PathChanged=/var/lib/spookhub-audio/device
+Unit=spookhub-player-output.service
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  put_file /etc/systemd/system/spookhub-player-output.service <<'UNIT' || return 1
+# spookhub-managed (scripts/install.sh)
+[Unit]
+Description=Restart the Spookhub Spotify player
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl try-restart spookhub-player.service
+UNIT
+  systemctl daemon-reload || return 1
+  systemctl enable spookhub-player.service >/dev/null 2>&1 || return 1
+  systemctl enable --now spookhub-player-output.path >/dev/null 2>&1 || return 1
+  if [[ $CHANGED -eq 1 ]] || ! systemctl is-active --quiet spookhub-player.service; then
+    systemctl restart spookhub-player.service || return 1
+  else
+    echo "player config unchanged; not restarting (music keeps playing)"
+  fi
+}
 # Speaker name follows [jukebox] device_name so the backend finds the device by name.
 JUKEBOX_NAME="$(config_value jukebox device_name)"
 JUKEBOX_NAME="${JUKEBOX_NAME//[\"\\\$\`]/}"
 JUKEBOX_NAME="${JUKEBOX_NAME:-Spookhub}"
 if [[ "${SPOOKHUB_SPOTIFY:-1}" == 0 ]]; then
   echo "skipped (SPOOKHUB_SPOTIFY=0)"
-elif install_raspotify; then
-  echo "raspotify $(systemctl is-active raspotify 2>/dev/null || true)"
 else
-  rm -f "$RASPOTIFY_KEY.tmp"
-  warn "raspotify setup failed: Spookhub works, the jukebox has no speaker. Re-run install.sh later."
+  rc=0
+  install_player || rc=$?
+  if [[ $rc -eq 0 ]]; then
+    echo "spookhub-player $(systemctl is-active spookhub-player 2>/dev/null || true)"
+    if systemctl is-enabled --quiet raspotify.service 2>/dev/null \
+      || systemctl is-active --quiet raspotify.service 2>/dev/null; then
+      systemctl disable --now raspotify.service >/dev/null 2>&1 || true
+      echo "disabled raspotify (Spotify's own player replaces librespot)"
+    fi
+  else
+    [[ $rc -eq 2 ]] || warn "Spotify player setup failed; falling back to raspotify"
+    if install_raspotify; then
+      echo "raspotify $(systemctl is-active raspotify 2>/dev/null || true)"
+    else
+      rm -f "$RASPOTIFY_KEY.tmp"
+      warn "raspotify setup failed: Spookhub works, the jukebox has no speaker. Re-run install.sh later."
+    fi
+  fi
 fi
 
 log "Jukebox: port 80 forward"

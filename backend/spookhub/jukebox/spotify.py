@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 
 SCOPES = (
     "user-read-playback-state user-modify-playback-state user-read-currently-playing "
-    "user-read-private"
+    "user-read-private user-read-email streaming"
 )
 REFRESH_EARLY_S = 60.0
 RETRY_AFTER_CAP_S = 10.0
@@ -147,6 +147,7 @@ class SpotifyClient:
             # Spotify may or may not rotate the refresh token.
             "refresh_token": data.get("refresh_token") or old_refresh,
             "expires_at": time.time() + float(data.get("expires_in") or 3600),
+            "scope": data.get("scope") or (self.tokens or {}).get("scope"),
         }
         self.on_tokens(dict(self.tokens))
 
@@ -160,6 +161,14 @@ class SpotifyClient:
             msg = body.get("error_description") or body.get("error") or r.reason_phrase
             raise SpotifyError(r.status_code, str(msg))
         return body
+
+    async def access_token(self) -> str:
+        if not self.connected:
+            raise SpotifyError(401, "Spotify not connected")
+        assert self.tokens is not None
+        if self.tokens.get("expires_at", 0) < time.time() + REFRESH_EARLY_S:
+            await self._refresh(self.tokens.get("access_token"))
+        return str((self.tokens or {}).get("access_token") or "")
 
     # ----- API -----
 

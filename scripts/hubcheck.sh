@@ -48,12 +48,14 @@ fi
 
 section "jukebox"
 if have systemctl; then
+  printf 'spookhub-player: %s\n' "$(systemctl is-active spookhub-player 2>/dev/null || true)"
   printf 'raspotify: %s\n' "$(systemctl is-active raspotify 2>/dev/null || true)"
   printf 'spookhub-http.socket: %s\n' "$(systemctl is-active spookhub-http.socket 2>/dev/null || true)"
 fi
 printf 'music output: %s\n' "$(head -n 1 /var/lib/spookhub-audio/device 2>/dev/null || echo 'not written (hub not restarted?)')"
 printf 'raspotify sink: %s\n' "$(sed -nE 's/^LIBRESPOT_(BACKEND|DEVICE)=//p' /etc/raspotify/conf 2>/dev/null | paste -sd ' ' -)"
 if have journalctl; then
+  journalctl -u spookhub-player -n 300 --no-pager 2>/dev/null | grep -E 'spookhub-player' | tail -n 3 || true
   journalctl -u raspotify -n 200 --no-pager 2>/dev/null | grep -iE 'could not|error|panic' | tail -n 3 || true
 fi
 if have ss; then

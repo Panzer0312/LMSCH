@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 import re
 import secrets
 import time
@@ -126,6 +127,10 @@ class JukeboxService:
             or f"http://127.0.0.1:{cfg.server.port}/api/jukebox/spotify/callback"
         )
         self.spotify = SpotifyClient(http, self._on_tokens, self.jc.accounts_url, self.jc.api_url)
+        self.player_key_file = cfg.paths.data_dir / "player.key"
+        self.player_key: str | None = None
+        self._player_seen = False
+        self._player_error: str | None = None
         self.device_name = self.jc.device_name
         self.guests: dict[str, dict[str, Any]] = {}
         self._by_hash: dict[str, str] = {}
@@ -240,8 +245,59 @@ class JukeboxService:
 
     # ----- lifecycle -----
 
+    def _load_player_key(self) -> str | None:
+        path = self.player_key_file
+        try:
+            key = path.read_text().strip()
+            if key:
+                return key
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            log.warning("jukebox: player key unreadable: %s", exc)
+            return None
+        key = secrets.token_urlsafe(32)
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(key + "\n")
+        except OSError as exc:
+            log.warning("jukebox: player key not written to %s: %s", path, exc)
+            return None
+        return key
+
+    def player_auth(self, key: str | None) -> bool:
+        want = self.player_key
+        return bool(want and key and secrets.compare_digest(want.encode(), key.encode()))
+
+    async def player_token(self) -> dict[str, str]:
+        self._player_seen = True
+        self._require_spotify()
+        scope = (self.spotify.tokens or {}).get("scope")
+        if scope is not None and "streaming" not in str(scope).split():
+            self.player_status("Spotify login lacks playback rights: log out and connect again")
+            raise JukeboxError(409, "Spotify login lacks the streaming scope")
+        try:
+            tok = await self.spotify.access_token()
+        except SpotifyError as exc:
+            raise self._api_error(exc) from exc
+        return {"access_token": tok, "name": self.device_name}
+
+    def player_status(self, error: str | None) -> None:
+        self._player_seen = True
+        error = (error or "").strip()[:300] or None
+        if error is None:
+            self._reset_device()
+            self.wake()
+        if error == self._player_error:
+            return
+        self._player_error = error
+        if not self._lost:
+            self._set_error(error)
+
     async def start(self) -> None:
         self.load()
+        self.player_key = self._load_player_key()
         self.port80 = await probe_port80()
         if self.jc.enabled:
             self._tasks = [
@@ -717,6 +773,9 @@ class JukeboxService:
     async def set_audio_device(self, name: str | None) -> None:
         if not self.write_audio_device(name):
             return
+        if self._player_seen:
+            await self._player_output_changed()
+            return
         # The sink reads the file when it starts, and librespot stops it on pause: pause and
         # resume move a playing song to the new output now.
         async with self._op:
@@ -736,6 +795,26 @@ class JukeboxService:
                 if self.now:
                     self.now = {**self.now, "is_playing": False, "at": time.time()}
                 self._publish()
+
+    async def _player_output_changed(self) -> None:
+        async with self._op:
+            dev = self.device_id
+            if dev and self.spotify.connected and self.now and self.now.get("is_playing"):
+                try:
+                    await self._quiet_pause(dev)
+                except SpotifyError as exc:
+                    log.info("jukebox: pause before player restart failed: %s", exc.message)
+            cur = self.current
+            if cur is not None:
+                self.seq += 1
+                self.queue.append({**cur, "bumped_seq": self.seq})
+                if self.history and self.history[0].get("title") == cur.get("title"):
+                    self.history.pop(0)
+                self.current = None
+                self._dirty = True
+            self.now = None
+            self._reset_device()
+            self._publish()
 
     # ----- Spotify setup -----
 
@@ -946,7 +1025,7 @@ class JukeboxService:
         else:
             if not self.queue and self.current is None:
                 self._lost = 0  # the requeued song was removed: nothing to retry
-            self.error = self._lost_msg if self._lost else None
+            self.error = self._lost_msg if self._lost else self._player_error
         self._publish()
         return delay
 
