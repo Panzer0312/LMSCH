@@ -4,17 +4,17 @@
 
 | Route | Page | Does |
 |---|---|---|
-| `/` | Dashboard (phone-first) | Preflight banner, active profile + progress, scene card (scene active), Trigger, Play/Stop, Next, master brightness, board health strip, last 20 events, History, links to `/show` and `/moments` |
-| `/profiles[/:id]` | Profiles | List, create, edit, duplicate, delete, activate. Light, video or scene type, board selection or "All boards", base state + per-board overrides, playback mode, idle video, cooldown, ambience, fade, idle loop length, scene editor, cue list form |
+| `/` | Dashboard (phone-first) | Preflight banner, active profile + progress, scene card (scene active), Trigger, Play/Stop, Next, master brightness, board health strip (grouped by room with `n/m online`, rest under "Other"), last 20 events, History, links to `/show` and `/moments` |
+| `/profiles[/:id]` | Profiles | List, create, edit, duplicate, delete, activate. Light, video or scene type, board picker ("All boards", rooms as chips, single boards), base state + per-room and per-board overrides (board beats room), playback mode, idle video, cooldown, ambience, fade, idle loop length, scene editor, cue list form |
 | `/profiles/:id/timeline` | Timeline editor | See below. Desktop-first, read-only on phone |
-| `/boards` | Boards | Discovered vs adopted, status, RSSI, latency, firmware, LEDs, live state. Rename, identify, on/off, brightness, sync offset (ms), "Save fallback" per board and for all, open WLED UI, refresh, remove, scan, add by IP, "Check settings", new-board guide |
+| `/boards` | Boards | Discovered vs adopted, status, RSSI, latency, firmware, LEDs, live state. Rename, identify, on/off, brightness, sync offset (ms), "Save fallback" per board and for all, open WLED UI, refresh, remove, scan, add by IP, "Check settings", new-board guide. Rooms: create, rename, color, reorder, delete (refused with "used by"), room On/Off/brightness/Identify/Auto, room chips per board (tap to join/leave), filter list by room |
 | `/setup` | Setup | Five steps with status dots, see below. Phone-friendly |
 | `/show` | Show mode | Full-screen big buttons for the night, soundboard, Moments link, see below |
 | `/moments` | Moments | Button board for one-shot moments, see below. Phone and tablet |
 | `/media` | Media | Video and audio upload with progress, All/Video/Audio filter, probe info, transcode, used-by, delete (blocked if used), aspect badge, black check, per-video display profile |
 | `/video` | Video setup | Setup mode, source on projector, display profile editor (frame, keystone, mask, image), A/B compare. Works on a phone |
 | `/music` | Jukebox (guests, no PIN) | Join with a name, search Spotify, shared queue, vote skip. Host tab for the first device that joins. `/jukebox` redirects here. See below |
-| `/settings` | Settings | Sync offset, health interval, default transition, log level, mpv output, brightness and volume caps, show mode toggle, test pattern, PIN, trigger token, backup/restore. Jukebox: "Reset jukebox admin" (next device joining `/music` becomes host). Footer shows deployed commit and install time |
+| `/settings` | Settings | Sync offset, health interval, default transition, log level, mpv output, brightness and volume caps, show mode toggle, test pattern, PIN, trigger token, backup/restore. Jukebox: "Reset jukebox admin" (next device joining `/music` becomes host). Test presets (see below). Footer shows deployed commit and install time |
 
 Blackout button is in the header on every page. Stops video, blacks projector, boards off, held until released.
 A failed blackout request shows "FAILED – RETRY" on the button for 4 s.
@@ -99,11 +99,12 @@ Other pages:
 
 ## Preflight
 
-Twelve checks, each ok, warn or fail, with a fix link: boards online, latency (< 100 ms), WiFi sleep,
+Thirteen checks, each ok, warn or fail, with a fix link: boards online, latency (< 100 ms), WiFi sleep,
 mpv, keystone/mask (warn when the geometry needs the warp shader but `vo` is not `gpu-next`),
 audio device, active profile media, disk (> 2 GB), clock sync, mpv restarts last hour, recent
 trigger (warn only, `idle_trigger` profiles, 30 min, accepted external triggers only), no setup
-running (fail while calibration, a setup test or the test pattern is on). Re-run every 10 s, pushed on change. The
+running (fail while calibration, a setup test or the test pattern is on), board groups (warn when the
+active profile names an empty or deleted room). Re-run every 10 s, pushed on change. The
 Dashboard banner shows when any check fails.
 
 ## Show mode
@@ -114,7 +115,8 @@ Dashboard banner shows when any check fails.
   Turning the lock on stops calibration, test sound, test-all and the test pattern.
 - **`/show` page:** Trigger, Play/Stop, Next, Blackout, brightness and volume sliders (limited by
   the caps), current profile + progress, preflight dot, per-board Auto / Off / White buttons
-  (each board shows its own error and busy state).
+  (each board shows its own error and busy state). With rooms, boards are grouped by room and each
+  room header has its own Auto / Off / White; boards in no room are under "Other".
   "Auto" clears the manual override so the profile look returns. A red banner shows while
   calibration, a setup test or the test pattern runs (triggers are refused); its "Stop" turns
   calibration / test pattern off, also under the lock.
@@ -189,6 +191,22 @@ Mobile-first, works on a desktop for the host. Live over `/ws/jukebox`, reconnec
 - **Rules:** guests can add, explicit allowed (switch, instant), songs per guest, max length,
   skip vote %, fallback playlist (Save rules).
 - **Guests:** live list, pending count, last seen, Ban/Unban (drops their songs), Make host (you lose host).
+
+## Test presets (Settings)
+
+One tap builds `[Test]` items from the adopted boards. Applying again updates them in place;
+"Remove test items" deletes only `[Test]` profiles, rooms, scenes and moments.
+
+| Preset | Creates / sets |
+|---|---|
+| Basic looks | Light profiles Warm white, Rainbow, Candle flicker, Blood pulse |
+| Lightning storm | Light profile, dark blue, 10 s idle loop with 4 white flashes |
+| Board chase | Light profile, boards flash one after the other (0.5 s each) |
+| Two rooms | Rooms Room A / Room B (adopted boards split in half), profile Rooms yellow/red. Needs 2 boards |
+| Scene + moment | Looks + Lightning, Shuffle scene (idle Candle, 8 s hold), moment ⚡ Lightning strike |
+| Rehearsal caps | brightness cap 50 %, volume cap 60, volume 40 |
+| Silent check | volume 0, brightness 30 % |
+| Show night | caps and masters at 100 % |
 
 ## Profiles and playback
 

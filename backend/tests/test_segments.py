@@ -48,7 +48,7 @@ async def test_cue_segs_roundtrip_and_load(client, farm):  # noqa: F811
     ]
     pid = await _video_profile(client, cues)
     got = (await client.get(f"/api/profiles/{pid}")).json()["cues"]
-    assert got[0]["target"] == {"all": True, "macs": [], "segs": None}
+    assert got[0]["target"] == {"all": True, "macs": [], "groups": [], "segs": None}
     assert got[1]["target"]["segs"] == {mac: [1]}
     prof = load_active(pid)
     assert prof is not None

@@ -9,9 +9,12 @@ from sqlmodel import Session, col, select
 
 from spookhub import db
 from spookhub.api.deps import get_hub
+from spookhub.boards.groups import parse_group_key
 from spookhub.hub import Hub
 from spookhub.models import (
+    GROUP_KEY,
     AmbientSpec,
+    BoardGroup,
     Cue,
     CueIn,
     CueOut,
@@ -118,8 +121,20 @@ def _check_refs(s: Session, pid: int, new_type: ProfileType) -> None:
                 raise HTTPException(422, f"used as light by moment '{m.name}'")
 
 
+def _check_groups(s: Session, ids: Any) -> None:
+    """A typo'd or deleted room would light nothing on show night; refuse it at save time."""
+    for gid in ids:
+        if s.get(BoardGroup, gid) is None:
+            raise HTTPException(422, f"room {gid} not found")
+
+
 def _apply(p: Profile, body: ProfileIn, s: Session) -> None:
     _check_scene(body, s, p.id)
+    _check_groups(
+        s,
+        {*body.selection.groups}
+        | {g for k in body.overrides if (g := parse_group_key(k)) is not None},
+    )
     if p.id is not None and body.type != p.type:
         _check_refs(s, p.id, body.type)
     for mid in (body.media_id, body.idle_media_id):
@@ -336,6 +351,7 @@ async def replace_cues(pid: int, cues: list[CueIn], hub: HubDep) -> ProfileOut:
         for c in cues:
             if c.sound is not None and s.get(Media, c.sound.media_id) is None:
                 raise HTTPException(422, f"sound media {c.sound.media_id} not found")
+        _check_groups(s, {g for c in cues for g in c.target.groups})
         for c in s.exec(select(Cue).where(Cue.profile_id == pid)).all():
             s.delete(c)
         for c in cues:
@@ -373,8 +389,12 @@ def export_profile(pid: int) -> JSONResponse:
         dp = s.get(DisplayProfile, p.display_profile_id) if p.display_profile_id else None
         scene = _scene_export(s, p.scene) if p.scene else None
         amb = s.get(Media, p.ambient.media_id) if p.ambient else None
+        gids = set(p.selection.groups) | {
+            g for k in p.overrides if (g := parse_group_key(k)) is not None
+        }
         cues = []
         for c in p.cues:
+            gids |= set(c.target.groups)
             row = c.model_dump(exclude={"id"})
             if c.sound is not None:
                 # Media ids differ between hubs: the filename is the identity, like videos.
@@ -397,6 +417,8 @@ def export_profile(pid: int) -> JSONResponse:
             }
         ),
         "cues": cues,
+        # Group ids differ between hubs: the name is the identity.
+        "groups": {str(g): row.name for g in sorted(gids) if (row := s.get(BoardGroup, g))},
         "media_filename": media.filename if media else None,
         "idle_media_filename": idle.filename if idle else None,
         # Ids differ between hubs; the name is the identity, geometry recreates it if missing.
@@ -462,6 +484,22 @@ def _ambient_import(s: Session, data: Any) -> AmbientSpec | None:
         return None
 
 
+def _group_map(s: Session, data: Any) -> dict[int, int]:
+    """Exported group id -> this hub's group id, matched by name; unmatched ids are dropped."""
+    if not isinstance(data, dict):
+        return {}
+    by_name = {g.name: g.id for g in s.exec(select(BoardGroup)).all() if g.id is not None}
+    out: dict[int, int] = {}
+    for k, name in data.items():
+        try:
+            gid = int(k)
+        except ValueError:
+            continue
+        if isinstance(name, str) and name in by_name:
+            out[gid] = by_name[name]
+    return out
+
+
 class ImportIn(BaseModel):
     data: dict[str, Any]
     media_id: int | None = None  # overrides filename matching
@@ -525,8 +563,17 @@ def import_profile(body: ImportIn, hub: HubDep) -> ProfileOut:
             prof.display_profile_id = row.id
         # Board-specific targets only make sense on the same boards; unknown MACs are dropped.
         known = set(hub.boards.boards)
+        gmap = _group_map(s, d.get("groups"))
         prof.selection.macs = [m for m in prof.selection.macs if m in known]
-        prof.overrides = {k: v for k, v in prof.overrides.items() if k in known}
+        prof.selection.groups = [gmap[g] for g in prof.selection.groups if g in gmap]
+        overrides = {}
+        for k, v in prof.overrides.items():
+            g = parse_group_key(k)
+            if g is None and k in known:
+                overrides[k] = v
+            elif g is not None and g in gmap:
+                overrides[f"{GROUP_KEY}{gmap[g]}"] = v
+        prof.overrides = overrides
         last = s.exec(select(Profile).order_by(col(Profile.sort).desc())).first()
         p = Profile(name=prof.name, sort=(last.sort + 1) if last else 0)
         _apply(p, prof, s)
@@ -547,7 +594,8 @@ def import_profile(body: ImportIn, hub: HubDep) -> ProfileOut:
                 c.sound.media_id = mid
             if not c.target.all:
                 c.target.macs = [m for m in c.target.macs if m in known]
-                if not c.target.macs:
+                c.target.groups = [gmap[g] for g in c.target.groups if g in gmap]
+                if not c.target.macs and not c.target.groups:
                     continue
             s.add(_cue_row(p.id or 0, c))
         s.commit()

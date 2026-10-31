@@ -19,11 +19,12 @@ from typing import Any
 from sqlmodel import select
 
 from spookhub import db
+from spookhub.boards import groups
 from spookhub.boards.client import WledClient, WledError, build_payload
 from spookhub.boards.queue import Command, LatestWinsQueue
 from spookhub.config import TimingCfg
 from spookhub.events import EventBus
-from spookhub.models import OFF_STATE, Board, LightState
+from spookhub.models import OFF_STATE, Board, BoardGroupMember, LightState
 from spookhub.tasks import spawn
 
 log = logging.getLogger(__name__)
@@ -569,8 +570,11 @@ class BoardManager:
             row = s.get(Board, mac)
             if row:
                 s.delete(row)
-                s.commit()
+            for m in s.exec(select(BoardGroupMember).where(BoardGroupMember.mac == mac)).all():
+                s.delete(m)
+            s.commit()
         self.bus.publish("board_removed", {"mac": mac})
+        self.bus.publish("groups_changed", groups.snapshot())
         self.bus.publish("boards_changed")
 
     async def refresh_meta(self, mac: str) -> None:

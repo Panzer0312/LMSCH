@@ -3,6 +3,7 @@ import { api, ApiError } from '../api'
 import { useLive } from '../live'
 import type { Settings as SettingsT } from '../types'
 import { ErrorText, Section, Toggle } from '../components/ui'
+import { TestPresets } from '../components/TestPresets'
 import { confirmStopShow, useAction } from '../lib'
 
 const LOG_LEVELS = ['debug', 'info', 'warning', 'error']
@@ -318,6 +319,8 @@ export default function Settings() {
           <ErrorText error={juke.error} />
         </div>
       </Section>
+
+      <TestPresets />
 
       <Section title="Backup">
         <div className="card space-y-3">

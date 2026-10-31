@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
-import { useAdoptedBoards, useLive } from '../live'
-import type { EventRow, EventStats, Phase, Profile, ShowEvent } from '../types'
+import { useAdoptedBoards, useGroups, useLive } from '../live'
+import type { Board, EventRow, EventStats, Phase, Profile, ShowEvent } from '../types'
 import { BlackoutButton } from '../components/BlackoutButton'
 import { ErrorText, Section, StatusDot } from '../components/ui'
 import { confirmStopShow, fmtTime, useAction, useSettle } from '../lib'
@@ -315,25 +315,66 @@ function ProfileSwitcher() {
   )
 }
 
+function BoardChips({ boards }: { boards: Board[] }) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {boards.map((b) => (
+        <Link
+          key={b.mac}
+          to="/boards"
+          className="inline-flex items-center gap-2 rounded-full border border-line bg-panel px-3 py-1 text-sm"
+        >
+          <StatusDot status={b.status} />
+          <span className="max-w-32 truncate">{b.name}</span>
+          <span className="text-xs tabular-nums text-mute">{b.latency_ms != null ? `${Math.round(b.latency_ms)} ms` : '–'}</span>
+        </Link>
+      ))}
+    </div>
+  )
+}
+
+function GroupHeading({ name, color, boards }: { name: string; color?: string; boards: Board[] }) {
+  const online = boards.filter((b) => b.status === 'online').length
+  return (
+    <div className="flex items-center gap-2 text-sm">
+      <span
+        className={`h-2.5 w-2.5 shrink-0 rounded-full ${color ? '' : 'bg-mute'}`}
+        style={color ? { backgroundColor: color } : undefined}
+      />
+      <span className="min-w-0 truncate font-semibold">{name}</span>
+      <span className="shrink-0 text-xs tabular-nums text-mute">{online}/{boards.length} online</span>
+    </div>
+  )
+}
+
 function BoardStrip() {
   const boards = useAdoptedBoards()
+  const groups = useGroups()
+  const grouped = new Set(groups.flatMap((g) => g.macs))
+  const other = boards.filter((b) => !grouped.has(b.mac))
   return (
     <Section title="Boards" actions={<Link to="/boards" className="btn">All boards</Link>}>
       {boards.length === 0 ? (
         <p className="text-sm text-mute">No adopted boards.</p>
+      ) : groups.length === 0 ? (
+        <BoardChips boards={boards} />
       ) : (
-        <div className="flex flex-wrap gap-2">
-          {boards.map((b) => (
-            <Link
-              key={b.mac}
-              to="/boards"
-              className="inline-flex items-center gap-2 rounded-full border border-line bg-panel px-3 py-1 text-sm"
-            >
-              <StatusDot status={b.status} />
-              <span className="max-w-32 truncate">{b.name}</span>
-              <span className="text-xs tabular-nums text-mute">{b.latency_ms != null ? `${Math.round(b.latency_ms)} ms` : '–'}</span>
-            </Link>
-          ))}
+        <div className="space-y-3">
+          {groups.map((g) => {
+            const members = boards.filter((b) => g.macs.includes(b.mac))
+            return (
+              <div key={g.id} className="space-y-2">
+                <GroupHeading name={g.name} color={g.color} boards={members} />
+                {members.length > 0 && <BoardChips boards={members} />}
+              </div>
+            )
+          })}
+          {other.length > 0 && (
+            <div className="space-y-2">
+              <GroupHeading name="Other" boards={other} />
+              <BoardChips boards={other} />
+            </div>
+          )}
         </div>
       )}
     </Section>

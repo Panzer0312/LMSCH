@@ -1,6 +1,6 @@
 import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react'
-import type { Board, BoardStatus, Media, Waveform } from '../types'
+import type { Board, BoardGroup, BoardStatus, Media, Waveform } from '../types'
 import { MarkersLane, MARKERS_H } from './MarkersLane'
 import { Minimap } from './Minimap'
 import { MediaStrip } from './Strip'
@@ -9,8 +9,8 @@ import { Ribbon } from './Ribbon'
 import { lookAt, toSpecs } from './ribbon'
 import type { ResolveCtx } from './ribbon'
 import { Timeline } from './resolve'
-import { ALL_LANE, clamp, cueColor, isSound, lanesOf, parseLaneId, round3, snap, snapCandidates, soundEnd, stateLabel, setDragging } from './model'
-import type { TLCue, TimelineViewProps } from './model'
+import { ALL_LANE, clamp, cueColor, groupLaneId, isMacMuted, isSound, lanesOf, parseLaneId, round3, snap, snapCandidates, soundEnd, stateLabel, setDragging } from './model'
+import type { Lane, TLCue, TimelineViewProps } from './model'
 
 const RULER_H = 24
 const STRIP_H = 88
@@ -22,6 +22,7 @@ const NO_OVERRIDES = {}
 const NO_BOARDS: never[] = []
 const NO_LIST: never[] = []
 const NO_SET = new Set<string>()
+const NO_GROUPS: BoardGroup[] = []
 const NO_AUDIO = new Map<number, Media>()
 const NO_WAVES = new Map<number, Waveform>()
 const noop = () => {}
@@ -92,7 +93,7 @@ export function TimelineView(props: TimelineViewProps) {
     markers = NO_LIST, selectedMarkers = NO_SET, onMarkerSelect = noop, onMarkersChange = noop, onMarkerRename = noop,
     onsets = NO_LIST, snapExtra = NO_LIST, loop = null, fps = 25, muted = NO_SET, solo = NO_SET,
     onToggleMute, onToggleSolo, viewReq = null, expanded = NO_SET, onToggleExpand,
-    audio = NO_AUDIO, waves = NO_WAVES,
+    audio = NO_AUDIO, waves = NO_WAVES, groups = NO_GROUPS,
   } = props
   const editable = !readOnly
 
@@ -106,16 +107,18 @@ export function TimelineView(props: TimelineViewProps) {
 
   const contentW = Math.max(duration, 1) * pxPerSec + 40
   const lanesH = lanes.reduce((n, l) => n + laneHeight(l), 0)
-  const isMuted = (id: string) => muted.has(id) || (solo.size > 0 && !solo.has(id))
+  const isMuted = (l: Lane) => l.kind === 'group'
+    ? (l.macs ?? []).every((m) => isMacMuted(m, lanes, muted, solo))
+    : isMacMuted(l.id, lanes, muted, solo)
   const boardByMac = useMemo(() => new Map(boards.map((b) => [b.mac, b])), [boards])
   const boardsKey = boards.map((b) => b.mac).join(',')
   // Rebuilt on doc/base changes only (deferred so drags stay smooth); the playhead never invalidates it.
   const deferredCues = useDeferredValue(cues)
   const resolveCtx = useMemo<ResolveCtx>(() => ({
-    timeline: new Timeline(toSpecs(deferredCues), boardsKey ? boardsKey.split(',') : []),
+    timeline: new Timeline(toSpecs(deferredCues, groups), boardsKey ? boardsKey.split(',') : []),
     base: base ?? {},
     overrides,
-  }), [deferredCues, boardsKey, base, overrides])
+  }), [deferredCues, boardsKey, base, overrides, groups])
 
   const laneItems = useMemo(() => {
     const m = new Map<string, LaneItem[]>()
@@ -411,6 +414,7 @@ export function TimelineView(props: TimelineViewProps) {
             title={l.label}
           >
             {l.kind === 'board' && <span className={`h-2 w-2 shrink-0 rounded-full ${DOT[l.status ?? 'unknown']}`} />}
+            {l.kind === 'group' && <span className="h-2 w-2 shrink-0 rounded-sm" style={{ background: groups.find((g) => groupLaneId(g.id) === l.id)?.color }} />}
             {l.kind === 'segment' && <span className="w-3 shrink-0 text-mute">└</span>}
             {l.kind === 'sound' && <span className="shrink-0 text-mute">♪</span>}
             {l.kind === 'board' && onToggleExpand && (boardByMac.get(l.id)?.segments.length ?? 0) > 1 && (
@@ -423,7 +427,7 @@ export function TimelineView(props: TimelineViewProps) {
                 <LanePreview ctx={resolveCtx} board={boardByMac.get(l.id)!} t={playhead} />
               )}
             </div>
-            {l.kind === 'board' && onToggleMute && onToggleSolo && (
+            {(l.kind === 'board' || l.kind === 'group') && onToggleMute && onToggleSolo && (
               <div className="flex shrink-0 flex-col gap-0.5">
                 <button type="button" title="Mute in audition" onClick={() => onToggleMute(l.id)}
                   className={`rounded px-1 text-[9px] font-bold leading-tight ${muted.has(l.id) ? 'bg-blood text-white' : 'bg-panel-2 text-mute'}`}>M</button>
@@ -488,7 +492,7 @@ export function TimelineView(props: TimelineViewProps) {
               key={l.id}
               className={`relative border-b border-line ${
                 l.id === ALL_LANE ? 'bg-ghost/10' : i % 2 ? 'bg-panel-2' : 'bg-panel'
-              } ${l.kind === 'board' && isMuted(l.id) ? 'opacity-40' : ''}`}
+              } ${(l.kind === 'board' || l.kind === 'group') && isMuted(l) ? 'opacity-40' : ''}`}
               style={{ height: laneHeight(l) }}
               onClick={onLaneClick}
               onDoubleClick={(e) => onLaneDouble(e, l.id)}

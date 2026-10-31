@@ -35,6 +35,7 @@
 | `backup.py` | Zip of DB + config (jukebox tokens, token hashes, admin stripped, then VACUUM); restore staged, swapped at startup |
 | `boards/client.py` | WLED HTTP client (`/json/si`, `/json/state`, `/json/cfg`, presets) |
 | `boards/registry.py` | `BoardManager`: health loop, status, desired state layers, reconcile |
+| `boards/groups.py` | Board groups (rooms): `load_groups`, `resolve_selection`, `resolve_targets`, `resolve_overrides`, `snapshot()`. Used by `load_active`, so engine, moments, scenes, fallbacks and audition all see MACs only |
 | `boards/queue.py` | Per-board latest-wins mailbox, cue vs normal retry policy |
 | `boards/discovery.py` | mDNS `_wled._tcp` browse + subnet scan |
 | `boards/recommend.py` | Settings checks (today: WiFi sleep) + fixes via `/json/cfg`. Result cached on the board runtime (6 h) for preflight |
@@ -54,7 +55,7 @@
 | `show/testpattern.py` | ffmpeg-rendered alignment grid PNG, cached in data dir |
 | `show/sounds.py` | ffmpeg-rendered test sound WAV, cached in data dir |
 | `show/calibration.py` | Sync calibration clip (20 s, 50 fps, white flash + 1 kHz beep every 2 s) and its flash cues |
-| `show/preflight.py` | `Preflight` service: 12 checks (incl. `warp`: warn when geometry needs the shader but vo ≠ gpu-next), re-run every 10 s, publishes WS `preflight` on change only |
+| `show/preflight.py` | `Preflight` service: 13 checks (incl. `groups`: warn on an empty or deleted group used by the active profile) (incl. `warp`: warn when geometry needs the shader but vo ≠ gpu-next), re-run every 10 s, publishes WS `preflight` on change only |
 | `player/devices.py` | Pure parsing: DRM connectors/modes from sysfs, mpv `audio-device-list` |
 | `api/routes_setup.py` | `/api/setup/*` and `/api/preflight*` |
 | `api/routes_events.py` | `GET /api/events`, `/api/events/stats` |
@@ -64,6 +65,7 @@
 | `jukebox/service.py` | `JukeboxService` (`Hub.jukebox`): guests (token as sha256), admin role, add rules, skip votes, own queue, player loop, show pause. One `Setting` row `jukebox` |
 | `jukebox/spotify.py` | `SpotifyClient`: PKCE login, refresh 60 s early, 401 ⇒ refresh + retry once, 429 ⇒ `Retry-After` (≤ 10 s), else `SpotifyError` |
 | `jukebox/fairqueue.py` | Pure play order: bumped first (latest bump first), then round-robin by guest |
+| `presets.py` | Built-in `[Test]` presets (looks, lightning, chase, rooms, scene + moment, settings bundles). Upsert by name through the route functions |
 | `sdnotify.py` | `sd_notify` over `NOTIFY_SOCKET`: READY, WATCHDOG, STOPPING. No-op outside systemd |
 | `media/*` | Upload (video `.mp4 .m4v .mkv .mov .webm .avi`, audio `.mp3 .wav .ogg .flac .m4a .opus`), probe (no picture stream ⇒ `kind=audio`; cover art ignored), derive (`<id>.thumbs.jpg/.json` video only, `<id>.wave.json`, `<id>.onsets.json`), transcode (video only) |
 | `media/analyze.py` | Pure-Python onsets + BPM: 100 Hz RMS envelope, log-energy flux, median + 3·MAD peaks (≥ 80 ms apart), autocorrelation BPM. Output `{rate, onsets: [{t, strength}], bpm}` |
@@ -74,10 +76,11 @@
 | Table | Key fields |
 |---|---|
 | `Board` | `mac` (PK), ip, name, adopted, firmware, led_count, effects, palettes, `fxdata` (WLED effect metadata strings), presets, `segments` `[{id, name, start, stop}]` from `/json/state`, last_seen, `offset_ms` (per-board sync, -500..500) |
+| `BoardGroup` (`board_group`) | id, name, color, sort. Members in `board_group_member` (group_id, mac). Removing a board drops its memberships |
 | `Media` | id, filename, path, size, duration_s, width, height, codec, `kind` `video`/`audio`, display_profile_id? |
-| `Profile` | id, name, type `light`/`video`/`scene`, sort, selection `{all, macs}`, base_state, overrides `{mac: LightState}`, media_id, idle_media_id, playback_mode `once`/`loop`/`idle_trigger`, cooldown_s, `markers` JSON `[{id, t, label, color?}]` sorted by t, display_profile_id?, `scene` (SceneSpec, scenes only), `ambient` (AmbientSpec?), `fade_ms` (0–10000, default 400), `idle_length_s` (light only, 0.5–3600, null = no idle loop) |
+| `Profile` | id, name, type `light`/`video`/`scene`, sort, selection `{all, macs, groups}`, base_state, overrides `{mac \| group:<id>: LightState}`, media_id, idle_media_id, playback_mode `once`/`loop`/`idle_trigger`, cooldown_s, `markers` JSON `[{id, t, label, color?}]` sorted by t, display_profile_id?, `scene` (SceneSpec, scenes only), `ambient` (AmbientSpec?), `fade_ms` (0–10000, default 400), `idle_length_s` (light only, 0.5–3600, null = no idle loop) |
 | `DisplayProfile` | id, name (unique, 1–100), geometry JSON (`DisplayGeometry`) |
-| `Cue` | id, profile_id, start_s, duration_s?, target `{all, macs, segs?}`, state (LightState), transition_ms?, label? (≤200), color? (`#rrggbb`), `kind` `light`/`sound`, `sound` (SoundSpec, sound only), `track` `main`/`idle` |
+| `Cue` | id, profile_id, start_s, duration_s?, target `{all, macs, groups, segs?}`, state (LightState), transition_ms?, label? (≤200), color? (`#rrggbb`), `kind` `light`/`sound`, `sound` (SoundSpec, sound only), `track` `main`/`idle` |
 | `Moment` | id, name (1–100), icon (≤32), color, sort, cooldown_s (0–3600), busy `ignore`/`interrupt`/`queue`, order `shuffle`/`weighted`, variants JSON (1–50) |
 | `CueTemplate` | id, name, cues JSON `[{offset_s, duration_s?, lane all/first/same, state, transition_ms?, label?, color?}]` (1–500), created_at |
 | `EventLog` | id, ts, level, kind (`trigger`, `board`, `player`, …), message, data JSON. Kept 7 days |
@@ -94,7 +97,7 @@ while the main video plays). `SoundSpec`: media_id, volume (0–1.3), fade_in_ms
 `MomentVariant`: video_profile_id?, light_profile_id?, sound? `{media_id, volume, fade_in_ms,
 fade_out_ms}`, ambience `keep`/`mute`/`replace` (+ ambience_media_id), weight. At least one part.
 Revisions: `b1a0d4e5c601` (audio, sound cues) → `b2c3e4f5a602` (scenes) → `b3d4f5a6b703`
-(ambient, idle track, fade) → `b4e5a6b7c804` (moments).
+(ambient, idle track, fade) → `b4e5a6b7c804` (moments) → `b5f6a7b8c905` (board groups).
 `RuntimeSettings`: sync_offset_ms (±2000), master_brightness (0–1), health_interval_s,
 default_transition_ms, log_level, mpv_vo, mpv_gpu_context, mpv_drm_connector, mpv_drm_mode,
 mpv_audio_device, master_volume (0–130), volume_cap, brightness_cap, audio_delay_s (±5),
@@ -182,7 +185,7 @@ displayed, rotated frame), brightness/contrast/gamma/saturation (±100), corners
   15 s (half of `WatchdogSec=30`) from the event loop. A hung loop gets restarted.
 - **Show lock.** Middleware in front of the routes. Allowlist while locked: `POST /api/trigger`,
   `/api/blackout`, `/api/show_lock`, `/api/show/{trigger,play,stop,seek,pause,next,deactivate}`,
-  `/api/auth/login|logout`, `/api/boards/{mac}/state|identify`, `/api/scene/{skip,pin}`,
+  `/api/auth/login|logout`, `/api/boards/{mac}/state|identify`, `/api/groups/{id}/state|identify`, `/api/scene/{skip,pin}`,
   `/api/sounds/{play,stop}`, `/api/moments/{id}/play`, `/api/moments/stop`,
   `PUT /api/settings` with only `master_brightness`/`master_volume`, and the OFF-only calls
   `POST /api/setup/calibration` / `/api/show/test_pattern` / `/api/display/setup` with
@@ -206,6 +209,11 @@ displayed, rotated frame), brightness/contrast/gamma/saturation (±100), corners
   `seg: [{id, fx, pal, sx, ix, col}]`. `on`, `bri` and transition are board-wide in WLED and come
   from the board state.
 - Audition `muted` MACs are held at the profile base.
+- Groups: a selection or cue target's `groups` add their members to `macs` when the profile loads
+  (never saved resolved). Group edits reload the home profile live. Unknown or empty group ⇒ the
+  cue hits nothing. Group cues compete with board and "all" cues under the same latest-start rule.
+- Overrides: `group:<id>` keys expand to members in group sort order (later group merged on top),
+  then board keys are merged on top of those.
 - Light resolution skips `kind: sound` cues. Main and idle tracks resolve separately.
 
 - **Jukebox loop.** Never raises: errors land in `state.spotify.error`, back off 5 s → 60 s.

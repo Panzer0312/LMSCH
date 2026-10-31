@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, ApiError } from '../api'
-import { useAdoptedBoards, useLive } from '../live'
-import type { CheckStatus, LightState, Media, Settings } from '../types'
+import { useAdoptedBoards, useGroups, useLive } from '../live'
+import type { BoardGroup, CheckStatus, LightState, Media, Settings } from '../types'
 import { BlackoutButton } from '../components/BlackoutButton'
 import { ErrorText, StatusDot } from '../components/ui'
 import { fmtTime, useAction, useSettle } from '../lib'
@@ -357,15 +357,72 @@ function BoardRow({ board: b }: { board: ReturnType<typeof useAdoptedBoards>[num
   )
 }
 
+function GroupHeader({ group: g }: { group: BoardGroup }) {
+  const { busy, error, run } = useAction()
+  return (
+    <div className="space-y-1">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="inline-block size-4 shrink-0 rounded-full" style={{ backgroundColor: g.color }} />
+        <span className="min-w-0 flex-1 truncate font-semibold">{g.name}</span>
+        <div className="flex flex-wrap gap-2">
+          {([['Auto', null], ['Off', OFF], ['White', WHITE]] as const).map(([name, st]) => (
+            <button
+              key={name}
+              type="button"
+              className="btn h-11 px-4"
+              disabled={busy}
+              onClick={() => void run(() => (st ? api.groups.setState(g.id, st) : api.groups.clearState(g.id)))}
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+      </div>
+      <ErrorText error={error} />
+    </div>
+  )
+}
+
 function BoardPanel() {
   const boards = useAdoptedBoards()
+  const groups = useGroups()
   if (boards.length === 0) return null
+  if (groups.length === 0) {
+    return (
+      <div className="space-y-2">
+        <h2 className="text-lg font-semibold">Boards</h2>
+        {boards.map((b) => (
+          <BoardRow key={b.mac} board={b} />
+        ))}
+      </div>
+    )
+  }
+  const grouped = new Set(groups.flatMap((g) => g.macs))
+  const other = boards.filter((b) => !grouped.has(b.mac))
   return (
-    <div className="space-y-2">
+    <div className="space-y-4">
       <h2 className="text-lg font-semibold">Boards</h2>
-      {boards.map((b) => (
-        <BoardRow key={b.mac} board={b} />
-      ))}
+      {groups.map((g) => {
+        const members = boards.filter((b) => g.macs.includes(b.mac))
+        // A room with no adopted member has nothing to switch; hiding it avoids dead buttons mid-show.
+        if (members.length === 0) return null
+        return (
+          <div key={g.id} className="space-y-2">
+            <GroupHeader group={g} />
+            {members.map((b) => (
+              <BoardRow key={b.mac} board={b} />
+            ))}
+          </div>
+        )
+      })}
+      {other.length > 0 && (
+        <div className="space-y-2">
+          <div className="font-semibold text-mute">Other</div>
+          {other.map((b) => (
+            <BoardRow key={b.mac} board={b} />
+          ))}
+        </div>
+      )}
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import type { Board, Cue, Media, Profile, ProfileIn, Settings, LightState, ThumbsMeta, Waveform, Recommendation, ProfileExport, AppState, Preflight, DrmOutput, AudioDevice, EventRow, EventStats, FallbackResult, LastTrigger, Marker, Onsets, SavedTemplate, TemplateCue, SceneState, Moment, MomentIn, MomentState, DisplayGeometry, DisplayProfile, DisplaySource, DisplayState, PatternInfo, BlackCheck } from './types'
+import type { Board, BoardGroup, BoardGroupIn, Cue, Media, Profile, ProfileIn, Settings, LightState, ThumbsMeta, Waveform, Recommendation, ProfileExport, AppState, Preflight, DrmOutput, AudioDevice, EventRow, EventStats, FallbackResult, LastTrigger, Marker, Onsets, SavedTemplate, TemplateCue, SceneState, Moment, MomentIn, MomentState, DisplayGeometry, DisplayProfile, DisplaySource, DisplayState, PatternInfo, BlackCheck } from './types'
 
 export class ApiError extends Error {
   status: number
@@ -73,6 +73,25 @@ export const api = {
     recommendations: (mac: string) => req<Recommendation[]>('GET', `/api/boards/${mac}/recommendations`),
     /** Writes to the board's /json/cfg — confirm with the user first. */
     applyRecommendation: (mac: string, id: string) => post(`/api/boards/${mac}/recommendations/${id}/apply`),
+  },
+  presets: {
+    list: () => req<{ id: string; title: string; detail: string; kind: 'show' | 'settings' }[]>('GET', '/api/presets'),
+    apply: (id: string) => post<{ ok: boolean; notes: string[] }>(`/api/presets/${id}/apply`),
+    remove: () => post<{ ok: boolean; notes: string[] }>('/api/presets/remove'),
+  },
+  groups: {
+    list: () => req<BoardGroup[]>('GET', '/api/groups'),
+    create: (g: BoardGroupIn) => post<BoardGroup>('/api/groups', g),
+    update: (id: number, g: BoardGroupIn) => req<BoardGroup>('PUT', `/api/groups/${id}`, g),
+    /** 409 with "used by: …" when a profile or cue still names the group. */
+    remove: (id: number) => req<{ ok: boolean }>('DELETE', `/api/groups/${id}`),
+    reorder: (ids: number[]) => req<{ ok: boolean }>('PUT', '/api/groups/order', ids),
+    addMember: (id: number, mac: string) => req<BoardGroup>('PUT', `/api/groups/${id}/members/${mac}`),
+    removeMember: (id: number, mac: string) => req<BoardGroup>('DELETE', `/api/groups/${id}/members/${mac}`),
+    /** Manual override on every adopted member; clearState returns them to the show. */
+    setState: (id: number, s: LightState) => post<{ ok: boolean; macs: string[] }>(`/api/groups/${id}/state`, s),
+    clearState: (id: number) => req<{ ok: boolean; macs: string[] }>('DELETE', `/api/groups/${id}/state`),
+    identify: (id: number) => post<{ ok: boolean; macs: string[] }>(`/api/groups/${id}/identify`),
   },
   profiles: {
     list: () => req<Profile[]>('GET', '/api/profiles'),

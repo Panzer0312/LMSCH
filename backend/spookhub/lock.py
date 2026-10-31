@@ -30,6 +30,8 @@ ALLOWED_SHOW = {
 ALLOWED_PREFIX = "/api/jukebox/"
 MAX_BODY = 4096
 ALLOWED_BOARD = re.compile(r"^/api/boards/[^/]+/(state|identify)$")
+# Room-wide Auto / Off / White on /show, same as the per-board quick controls.
+ALLOWED_GROUP = re.compile(r"^/api/groups/\d+/(state|identify)$")
 # Pressing a moment is show-time; editing / reordering moments is not.
 ALLOWED_MOMENT = re.compile(r"^/api/moments/\d+/play$")
 LIVE_SETTINGS = {"master_brightness", "master_volume"}
@@ -57,6 +59,7 @@ class LockMiddleware(BaseHTTPMiddleware):
             path in ALLOWED_EXACT
             or path in ALLOWED_SHOW
             or ALLOWED_BOARD.match(path)
+            or ALLOWED_GROUP.match(path)
             or ALLOWED_MOMENT.match(path)
             or path.startswith(ALLOWED_PREFIX)
         ):

@@ -1,5 +1,6 @@
 /** Resolved-state helpers for the lane header preview and the ribbon under each board lane. */
-import type { Board, Cue, LightState } from '../types'
+import { targetMacs } from '../groups'
+import type { Board, BoardGroup, Cue, LightState } from '../types'
 import { Timeline, merged } from './resolve'
 import type { CueSpec, ResolveState } from './resolve'
 
@@ -19,12 +20,12 @@ export function boardBase(base: LightState, overrides: Record<string, LightState
 }
 
 /** Sound cues carry no light state and are dropped. */
-export function toSpecs(cues: Cue[] & { key?: string }[]): CueSpec[] {
+export function toSpecs(cues: Cue[] & { key?: string }[], groups: BoardGroup[] = []): CueSpec[] {
   return cues.filter((c) => c.kind !== 'sound').map((c, i) => ({
     id: i,
     start: c.start_s,
     duration: c.duration_s,
-    targets: c.target.all ? null : c.target.macs,
+    targets: targetMacs(c.target, groups),
     state: c.state,
     transition_ms: c.transition_ms,
   }))

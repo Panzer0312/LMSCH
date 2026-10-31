@@ -6,6 +6,7 @@ import contextlib
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from spookhub.auth import COOKIE
+from spookhub.boards import groups
 from spookhub.hub import Hub
 
 router = APIRouter()
@@ -26,6 +27,7 @@ async def ws(websocket: WebSocket) -> None:
                 "type": "snapshot",
                 "data": {
                     "boards": hub.boards.snapshot(),
+                    "groups": groups.snapshot(),
                     "show": hub.engine.snapshot(),
                     "display": hub.engine.display_state(),
                     "settings": hub.settings.value.model_dump(),

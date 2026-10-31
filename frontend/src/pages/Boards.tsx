@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { api, ApiError } from '../api'
-import { useLive } from '../live'
-import type { Board, BoardStatus, FallbackResult, Recommendation } from '../types'
+import { useGroups, useLive } from '../live'
+import type { Board, BoardGroup, BoardStatus, FallbackResult, Recommendation } from '../types'
 import { ErrorText, Section, SignalBars, StatusDot } from '../components/ui'
 import { ago, useAction } from '../lib'
 
@@ -22,6 +22,201 @@ function fmtErr(e: unknown): string {
   }
   if (e instanceof ApiError && e.status === 423) return 'Show lock is on'
   return e instanceof Error ? e.message : String(e)
+}
+
+type RoomFilter = 'all' | 'none' | number
+const FILTER_KEY = 'spookhub.boards.room'
+
+function loadFilter(): RoomFilter {
+  try {
+    const v = localStorage.getItem(FILTER_KEY)
+    if (v === 'all' || v === 'none') return v
+    const n = Number(v)
+    return v && Number.isInteger(n) ? n : 'all'
+  } catch {
+    return 'all'
+  }
+}
+
+// Hex + alpha suffix only works for #rrggbb; anything else gets no tint rather than a broken style.
+function tint(color: string, alpha: string): string | undefined {
+  return /^#[0-9a-f]{6}$/i.test(color) ? `${color}${alpha}` : undefined
+}
+
+function GroupRow({ group, ids, index }: { group: BoardGroup; ids: number[]; index: number }) {
+  const act = useAction()
+  const [editing, setEditing] = useState(false)
+  const [name, setName] = useState(group.name)
+  const [color, setColor] = useState(group.color)
+  // Groups have no live brightness of their own, so the slider starts mid-range.
+  const [bri, setBri] = useState(128)
+
+  const doSave = async (e: FormEvent) => {
+    e.preventDefault()
+    const n = name.trim()
+    if (!n) return
+    const r = await act.run(() => api.groups.update(group.id, { name: n, color, macs: group.macs }))
+    if (r) setEditing(false)
+  }
+
+  const move = (dir: -1 | 1) => {
+    const next = [...ids]
+    const j = index + dir
+    if (j < 0 || j >= next.length) return
+    ;[next[index], next[j]] = [next[j], next[index]]
+    void act.run(() => api.groups.reorder(next))
+  }
+
+  const doRemove = () => {
+    if (!window.confirm(`Delete room "${group.name}"? Boards stay, only the room goes.`)) return
+    void act.run(() => api.groups.remove(group.id))
+  }
+
+  const commitBri = (v: number) => act.run(() => api.groups.setState(group.id, { bri: v }))
+
+  return (
+    <li className="card flex min-w-0 flex-col gap-3">
+      {editing ? (
+        <form onSubmit={doSave} className="flex flex-wrap gap-2">
+          <input
+            type="color"
+            className="h-10 w-12 shrink-0 cursor-pointer rounded border border-line bg-transparent"
+            value={color}
+            onChange={(e) => setColor(e.target.value)}
+            aria-label="Room color"
+          />
+          <input
+            className="input min-w-0 flex-1"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            aria-label="Room name"
+            autoFocus
+          />
+          <button type="submit" className="btn btn-primary" disabled={act.busy || !name.trim()}>Save</button>
+          <button type="button" className="btn" onClick={() => setEditing(false)}>Cancel</button>
+        </form>
+      ) : (
+        <div className="flex items-center gap-2">
+          <span className="inline-block size-4 shrink-0 rounded border border-line" style={{ background: group.color }} />
+          <span className="min-w-0 flex-1 truncate font-semibold">{group.name}</span>
+          <span className="text-xs text-mute">{group.macs.length} board{group.macs.length === 1 ? '' : 's'}</span>
+          <button className="btn min-h-10 px-2" disabled={act.busy || index === 0} aria-label={`Move ${group.name} up`} onClick={() => move(-1)}>↑</button>
+          <button className="btn min-h-10 px-2" disabled={act.busy || index === ids.length - 1} aria-label={`Move ${group.name} down`} onClick={() => move(1)}>↓</button>
+        </div>
+      )}
+
+      <div className="flex items-center gap-3">
+        <input
+          type="range"
+          min={0}
+          max={255}
+          value={bri}
+          aria-label={`${group.name} brightness`}
+          className="min-w-0 flex-1 accent-pumpkin"
+          onChange={(e) => setBri(Number(e.currentTarget.value))}
+          onPointerUp={(e) => void commitBri(Number(e.currentTarget.value))}
+          onKeyUp={(e) => void commitBri(Number(e.currentTarget.value))}
+        />
+        <span className="w-8 text-right text-xs tabular-nums text-mute">{bri}</span>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <button className="btn" disabled={act.busy} onClick={() => act.run(() => api.groups.setState(group.id, { on: true }))}>On</button>
+        <button className="btn" disabled={act.busy} onClick={() => act.run(() => api.groups.setState(group.id, { on: false }))}>Off</button>
+        <button className="btn" disabled={act.busy} onClick={() => act.run(() => api.groups.identify(group.id))}>Identify</button>
+        <button className="btn" disabled={act.busy} title="Drop the manual override, back to show/profile" onClick={() => act.run(() => api.groups.clearState(group.id))}>Auto</button>
+        {!editing && (
+          <button className="btn" onClick={() => { setName(group.name); setColor(group.color); setEditing(true) }}>Edit</button>
+        )}
+        <button className="btn btn-danger" disabled={act.busy} onClick={doRemove}>Delete</button>
+      </div>
+      <ErrorText error={act.error} />
+    </li>
+  )
+}
+
+function Rooms() {
+  const groups = useGroups()
+  const act = useAction()
+  const [name, setName] = useState('')
+  const [color, setColor] = useState('#7c3aed')
+  const ids = groups.map((g) => g.id)
+
+  const doCreate = async (e: FormEvent) => {
+    e.preventDefault()
+    const n = name.trim()
+    if (!n) return
+    const r = await act.run(() => api.groups.create({ name: n, color, macs: [] }))
+    if (r) setName('')
+  }
+
+  return (
+    <Section title={`Rooms (${groups.length})`}>
+      <form onSubmit={doCreate} className="flex flex-wrap gap-2">
+        <input
+          type="color"
+          className="h-10 w-12 shrink-0 cursor-pointer rounded border border-line bg-transparent"
+          value={color}
+          onChange={(e) => setColor(e.target.value)}
+          aria-label="New room color"
+        />
+        <input
+          className="input min-w-0 flex-1 sm:w-44 sm:flex-none"
+          placeholder="Living room"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          aria-label="New room name"
+        />
+        <button type="submit" className="btn shrink-0" disabled={act.busy || !name.trim()}>
+          {act.busy ? 'Adding…' : 'Add room'}
+        </button>
+      </form>
+      <ErrorText error={act.error} />
+      {groups.length > 0 && (
+        <>
+          <p className="text-xs text-mute">Later rooms win when a board is in two rooms with different overrides.</p>
+          <ul className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {groups.map((g, i) => <GroupRow key={g.id} group={g} ids={ids} index={i} />)}
+          </ul>
+        </>
+      )}
+    </Section>
+  )
+}
+
+function GroupChips({ board }: { board: Board }) {
+  const groups = useGroups()
+  const act = useAction()
+  if (groups.length === 0) return null
+
+  const toggle = (g: BoardGroup) => {
+    // Per-member calls: a full macs list from props would undo a parallel tap on another board.
+    const member = g.macs.includes(board.mac)
+    void act.run(() => (member ? api.groups.removeMember(g.id, board.mac) : api.groups.addMember(g.id, board.mac)))
+  }
+
+  return (
+    <div className="space-y-1">
+      <div className="flex flex-wrap gap-2">
+        {groups.map((g) => {
+          const member = g.macs.includes(board.mac)
+          return (
+            <button
+              key={g.id}
+              className={`min-h-10 rounded-full border px-3 text-xs ${member ? 'font-semibold' : 'border-line text-mute'}`}
+              style={member ? { borderColor: g.color, background: tint(g.color, '33') } : undefined}
+              aria-pressed={member}
+              disabled={act.busy}
+              onClick={() => toggle(g)}
+            >
+              {g.name}
+            </button>
+          )
+        })}
+      </div>
+      <ErrorText error={act.error} />
+    </div>
+  )
 }
 
 function ResultList({ results }: { results: FallbackResult[] }) {
@@ -384,6 +579,8 @@ function BoardCard({ board, check, onCheck }: { board: Board; check: CheckResult
 
       <OffsetField board={board} />
 
+      <GroupChips board={board} />
+
       <div className="flex flex-wrap gap-2">
         <button className="btn" disabled={act.busy} onClick={() => act.run(() => api.boards.identify(board.mac))}>Identify</button>
         <button className="btn" disabled={fb.busy || locked} onClick={() => void fb.go()}>{fb.busy ? 'Saving…' : 'Save fallback'}</button>
@@ -430,8 +627,14 @@ function AddHelp() {
 }
 
 export default function Boards() {
-  const { boards } = useLive()
+  const { boards, groups } = useLive()
   const [, setTick] = useState(0)
+  const [filter, setFilterState] = useState<RoomFilter>(loadFilter)
+
+  const setFilter = (f: RoomFilter) => {
+    setFilterState(f)
+    try { localStorage.setItem(FILTER_KEY, String(f)) } catch { /* private mode: filter just won't persist */ }
+  }
 
   useEffect(() => {
     const t = window.setInterval(() => setTick((n) => n + 1), 5000)
@@ -455,6 +658,15 @@ export default function Boards() {
   const discovered = all.filter((b) => !b.adopted)
   const adopted = all.filter((b) => b.adopted)
   const onlineMacs = adopted.filter((b) => b.status === 'online').map((b) => b.mac)
+  // A stored room id may point at a deleted room; treat it as "All" instead of showing nothing.
+  const activeGroup = typeof filter === 'number' ? groups.find((g) => g.id === filter) : undefined
+  const effFilter: RoomFilter = typeof filter === 'number' && !activeGroup ? 'all' : filter
+  const grouped = new Set(groups.flatMap((g) => g.macs))
+  const shown = effFilter === 'all' ? adopted
+    : effFilter === 'none' ? adopted.filter((b) => !grouped.has(b.mac))
+    : adopted.filter((b) => activeGroup?.macs.includes(b.mac))
+  const chip = (active: boolean) =>
+    `min-h-10 rounded-full border px-3 text-xs ${active ? 'border-pumpkin bg-pumpkin/20 font-semibold' : 'border-line text-mute'}`
 
   const checkAll = async () => {
     setCheckedAll(onlineMacs)
@@ -502,15 +714,40 @@ export default function Boards() {
         </Section>
       )}
 
+      <Rooms />
+
       <Section title={`Adopted (${adopted.length})`}>
         {adopted.length === 0 ? (
           <p className="text-sm text-mute">No boards adopted yet. Scan the network or add one by IP.</p>
         ) : (
-          <ul className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {adopted.map((b) => (
-              <BoardCard key={b.mac} board={b} check={checks[b.mac]} onCheck={() => runCheck(b.mac)} />
-            ))}
-          </ul>
+          <>
+            {groups.length > 0 && (
+              <div className="flex flex-wrap gap-2" role="group" aria-label="Filter boards by room">
+                <button className={chip(effFilter === 'all')} aria-pressed={effFilter === 'all'} onClick={() => setFilter('all')}>All</button>
+                {groups.map((g) => (
+                  <button
+                    key={g.id}
+                    className={chip(effFilter === g.id)}
+                    style={effFilter === g.id ? { borderColor: g.color, background: tint(g.color, '33') } : undefined}
+                    aria-pressed={effFilter === g.id}
+                    onClick={() => setFilter(g.id)}
+                  >
+                    {g.name}
+                  </button>
+                ))}
+                <button className={chip(effFilter === 'none')} aria-pressed={effFilter === 'none'} onClick={() => setFilter('none')}>No room</button>
+              </div>
+            )}
+            {shown.length === 0 ? (
+              <p className="text-sm text-mute">No boards in this filter.</p>
+            ) : (
+              <ul className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                {shown.map((b) => (
+                  <BoardCard key={b.mac} board={b} check={checks[b.mac]} onCheck={() => runCheck(b.mac)} />
+                ))}
+              </ul>
+            )}
+          </>
         )}
       </Section>
 

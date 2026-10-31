@@ -62,8 +62,11 @@ class ProfileType(enum.StrEnum):
 
 
 class BoardSelection(BaseModel):
+    """macs and groups add up; groups resolve to their members when the profile loads."""
+
     all: bool = True
     macs: list[str] = []
+    groups: list[int] = []
 
 
 class CueTarget(BaseModel):
@@ -75,6 +78,7 @@ class CueTarget(BaseModel):
 
     all: bool = True
     macs: list[str] = []
+    groups: list[int] = []
     segs: dict[str, list[int]] | None = None
 
 
@@ -102,6 +106,23 @@ class Board(SQLModel, table=True):
     # Per-board fire-time trim in ms (positive = fire earlier), on top of measured latency.
     offset_ms: float = SQLField(default=0.0, sa_column_kwargs={"server_default": "0"})
     created_at: datetime = SQLField(default_factory=utcnow)
+
+
+class BoardGroup(SQLModel, table=True):
+    """A room: named set of boards. Members live in board_group_member."""
+
+    __tablename__ = "board_group"
+    id: int | None = SQLField(default=None, primary_key=True)
+    name: str
+    color: str = SQLField(default="#7c3aed", sa_column_kwargs={"server_default": "#7c3aed"})
+    sort: int = SQLField(default=0, sa_column_kwargs={"server_default": "0"})
+
+
+class BoardGroupMember(SQLModel, table=True):
+    __tablename__ = "board_group_member"
+    group_id: int = SQLField(foreign_key="board_group.id", primary_key=True)
+    # No FK to board: a removed board drops out of its groups in BoardManager.remove.
+    mac: str = SQLField(primary_key=True)
 
 
 class Media(SQLModel, table=True):
@@ -425,6 +446,23 @@ class RuntimeSettings(BaseModel):
     active_profile_id: int | None = None
     # Global default display profile ("Projector setup"); None = identity geometry.
     display_profile_id: int | None = None
+
+
+# ---------- Board groups ----------
+
+
+GROUP_KEY = "group:"
+
+
+class GroupIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    color: str = Field(default="#7c3aed", pattern=HEX_COLOR)
+    macs: list[str] = Field(default=[], max_length=500)
+
+
+class GroupOut(GroupIn):
+    id: int
+    sort: int
 
 
 # ---------- Moments ----------
