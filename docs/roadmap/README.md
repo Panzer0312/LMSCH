@@ -1,6 +1,6 @@
 # Roadmap
 
-Five phases after M1–M3. Each phase ships deployable, tested, documented (see `AGENTS.md`).
+Six phases after M1–M3. Each phase ships deployable, tested, documented (see `AGENTS.md`).
 
 | Phase | File | Theme | Status |
 |---|---|---|---|
@@ -9,6 +9,7 @@ Five phases after M1–M3. Each phase ships deployable, tested, documented (see 
 | 3 | [phase-3-video-setup.md](phase-3-video-setup.md) | Video setup page: geometry, keystone, display profiles, alignment patterns | built, hub spikes open |
 | 4 | [phase-4-scenes-audio-ambient.md](phase-4-scenes-audio-ambient.md) | Scenes/playlists, audio-only cues, ambient layer, moments page | built, hardware spikes open |
 | 5 | [phase-5-triggers-integrations.md](phase-5-triggers-integrations.md) | Named triggers, schedule, MQTT/HA, relays, DMX | **optional, out of scope** |
+| 6 | [phase-6-board-groups.md](phase-6-board-groups.md) | Board groups (rooms) selectable in profiles, cues, moments, timeline | todo |
 
 ## Order and dependencies
 
@@ -21,6 +22,7 @@ Five phases after M1–M3. Each phase ships deployable, tested, documented (see 
 - Phases 2 and 3 are independent (timeline vs player geometry) and can run in parallel.
 - Phase 4 needs phase 2's lane abstraction (task 2.1) and phase 3's per-load hook (task 3.2).
 - Phase 4.5 (moments page) builds on 4.1–4.3.
+- Phase 6 (board groups) needs phase 2's lane abstraction and phase 4's scenes/moments.
 - Phase 5 is optional and out of scope for now. If started, it reuses phase 4's lane abstraction.
 
 ## How to execute a phase
