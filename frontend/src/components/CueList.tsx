@@ -3,7 +3,10 @@ import { api } from '../api'
 import type { Board, Cue, LightState, Profile } from '../types'
 import { LightStateEditor } from './LightStateEditor'
 import { ErrorText } from './ui'
+import { BoardPicker } from './BoardPicker'
 import { useAction } from '../lib'
+import { useGroups } from '../live'
+import { targetMacs } from '../groups'
 import { CUE_TEMPLATES, resolveTemplate } from '../timeline/templates'
 import { trackOf } from '../timeline/tracks'
 
@@ -47,6 +50,7 @@ export function CueList({ profile, boards, onSaved, onDirtyChange }: {
   // State, not a ref: it is compared during render.
   const [sentJson, setSentJson] = useState<string | null>(null)
   const { busy, error, run } = useAction()
+  const groups = useGroups()
 
   const original = useMemo(() => canon(sortCues(profile.cues.filter(listed)).map(strip)), [profile.cues])
   const [prevOriginal, setPrevOriginal] = useState(original)
@@ -74,7 +78,10 @@ export function CueList({ profile, boards, onSaved, onDirtyChange }: {
   }, [dirty, onDirtyChange])
 
   const allMacs = boards.map((b) => b.mac)
-  const macsOf = (c: Cue) => (c.target.all ? allMacs : c.target.macs)
+  const macsOf = (c: Cue) => {
+    const m = targetMacs(c.target, groups)
+    return m == null ? allMacs : m
+  }
 
   const errors = new Map<number, string>()
   for (const r of rows) {
@@ -107,7 +114,7 @@ export function CueList({ profile, boards, onSaved, onDirtyChange }: {
     setSaved(false)
     const last = rows.reduce((m, r) => Math.max(m, isFinite(r.cue.start_s) ? r.cue.start_s : 0), -1)
     const cue: Cue = {
-      start_s: last < 0 ? 0 : last + 1, duration_s, target: { all: true, macs: [] },
+      start_s: last < 0 ? 0 : last + 1, duration_s, target: { all: true, macs: [], groups: [] },
       state, transition_ms: null,
     }
     setRows((rs) => [...rs, { key: nextKey++, cue }])
@@ -195,33 +202,15 @@ export function CueList({ profile, boards, onSaved, onDirtyChange }: {
                     value={c.transition_ms ?? ''}
                     onChange={(e) => update(r.key, { transition_ms: numOrNull(e.target.value) })} />
                 </div>
-                <div className="col-span-2 sm:col-span-1">
-                  <span className="label">Target</span>
-                  <label className="flex items-center gap-2 text-sm">
-                    <input type="checkbox" checked={c.target.all}
-                      onChange={(e) => update(r.key, { target: { ...c.target, all: e.target.checked } })} />
-                    All selected boards
-                  </label>
-                </div>
               </div>
 
-              {!c.target.all && (
-                <div className="flex flex-wrap gap-x-4 gap-y-1">
-                  {boards.length === 0 && <span className="text-sm text-mute">No boards selected in profile.</span>}
-                  {boards.map((b) => (
-                    <label key={b.mac} className="flex items-center gap-2 text-sm">
-                      <input type="checkbox" checked={c.target.macs.includes(b.mac)}
-                        onChange={(e) => update(r.key, {
-                          target: {
-                            ...c.target,
-                            macs: e.target.checked ? [...c.target.macs, b.mac] : c.target.macs.filter((m) => m !== b.mac),
-                          },
-                        })} />
-                      {b.name}
-                    </label>
-                  ))}
-                </div>
-              )}
+              <div>
+                <span className="label">Target</span>
+                <BoardPicker compact allLabel="All selected boards" value={c.target} boards={boards} groups={groups}
+                  onChange={(v) => update(r.key, {
+                    target: { ...c.target, all: v.all, macs: v.macs, groups: v.groups ?? [] },
+                  })} />
+              </div>
 
               <div className="flex flex-wrap items-center gap-2">
                 <span className="min-w-0 flex-1 truncate text-sm text-mute">{summary(c.state, boards)}</span>

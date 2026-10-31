@@ -2,8 +2,9 @@
  * Timeline editor model: client-side cue type, undo/redo history, snapping, overlap detection.
  * Pure logic, shared by TimelineView (rendering + pointer editing) and TimelineEditor (page).
  */
-import { useCallback, useState } from 'react'
-import type { Board, BoardStatus, Cue, CueTarget, LightState, Marker, Media, Onset, SoundSpec, Waveform } from '../types'
+import { useCallback, useMemo, useState } from 'react'
+import { GROUP_KEY, groupKey, parseGroupKey, targetMacs } from '../groups'
+import type { Board, BoardGroup, BoardStatus, Cue, CueTarget, LightState, Marker, Media, Onset, SoundSpec, Waveform } from '../types'
 
 /** Lane id of the "All selected boards" lane (always the first lane). */
 export const ALL_LANE = '__all__'
@@ -15,7 +16,15 @@ export const SOUND_LANE = '__sound__'
 export interface TLCue extends Cue { key: string }
 
 /** `device` (phase 5) kind extends this union. */
-export interface Lane { kind: 'all' | 'board' | 'segment' | 'sound'; id: string; label: string; status?: BoardStatus; mac?: string; seg?: number }
+export interface Lane {
+  kind: 'all' | 'group' | 'board' | 'segment' | 'sound'; id: string; label: string; status?: BoardStatus; mac?: string; seg?: number
+  /** Group lanes: member MACs within the profile's boards (mute/solo, header hint). */
+  macs?: string[]
+}
+
+/** Group lanes are keyed `group:<id>`, the same key profile overrides use. */
+export const groupLaneId = groupKey
+export const isGroupLane = (id: string) => id.startsWith(GROUP_KEY)
 
 /** Segment lanes are keyed `mac#seg` so lane ids stay plain strings everywhere else. */
 export const segLaneId = (mac: string, seg: number) => `${mac}#${seg}`
@@ -52,12 +61,26 @@ export function targetFromLanes(lanes: string[]): CueTarget {
   lanes = lanes.filter((l) => l !== SOUND_LANE)
   if (!lanes.length || lanes.includes(ALL_LANE)) return { all: true, macs: [] }
   const macs: string[] = []
+  const groups: number[] = []
   const segs: Record<string, number[]> = {}
   for (const id of lanes) {
+    const gid = parseGroupKey(id)
+    if (gid != null) { if (!groups.includes(gid)) groups.push(gid); continue }
     const { mac, seg } = parseLaneId(id)
     if (seg == null) { if (!macs.includes(mac)) macs.push(mac) } else if (!(segs[mac] ?? []).includes(seg)) segs[mac] = [...(segs[mac] ?? []), seg]
   }
-  return Object.keys(segs).length ? { all: false, macs, segs } : { all: false, macs }
+  const t: CueTarget = Object.keys(segs).length ? { all: false, macs, segs } : { all: false, macs }
+  return groups.length ? { ...t, groups } : t
+}
+
+/**
+ * Mute/solo on board and group lanes: a board is muted when its lane or a group lane holding it
+ * is muted, or when anything is soloed and neither its lane nor one of its groups is.
+ */
+export function isMacMuted(mac: string, lanes: Lane[], muted: Set<string>, solo: Set<string>): boolean {
+  const ids = [mac, ...lanes.filter((l) => l.kind === 'group' && l.macs?.includes(mac)).map((l) => l.id)]
+  if (ids.some((id) => muted.has(id))) return true
+  return solo.size > 0 && !ids.some((id) => solo.has(id))
 }
 
 let seq = 0
@@ -75,35 +98,44 @@ export const round3 = (n: number) => Math.round(n * 1000) / 1000
 export const lanesOf = (c: Pick<Cue, 'target' | 'kind'>): string[] => {
   if (isSound(c)) return [SOUND_LANE]
   if (c.target.all) return [ALL_LANE]
+  const gl = (c.target.groups ?? []).map(groupLaneId)
   const segs = c.target.segs
-  if (!segs) return c.target.macs
-  return [...c.target.macs.filter((m) => !(m in segs)), ...Object.entries(segs).flatMap(([m, ids]) => ids.map((i) => segLaneId(m, i)))]
+  if (!segs) return [...gl, ...c.target.macs]
+  return [...gl, ...c.target.macs.filter((m) => !(m in segs)), ...Object.entries(segs).flatMap(([m, ids]) => ids.map((i) => segLaneId(m, i)))]
 }
 
-/** Boards a cue affects (for overlap checks), given the profile's selected boards. */
-const boardsOf = (c: Cue, macs: string[]) => (c.target.all ? macs : c.target.macs.filter((m) => macs.includes(m)))
+/** Boards a cue affects (for overlap checks), given the profile's selected boards; groups count by membership. */
+const boardsOf = (c: Cue, macs: string[], groups: BoardGroup[]) => {
+  const hit = targetMacs(c.target, groups)
+  return hit == null ? macs : hit.filter((m) => macs.includes(m))
+}
 
 /**
  * Keys of cues that overlap another cue on at least one board. Same rule as the backend:
  * a cue with a duration overlaps any cue starting on a shared board inside its window.
  */
-export function overlapKeys(cues: TLCue[], macs: string[]): Set<string> {
+export function overlapKeys(cues: TLCue[], macs: string[], groups: BoardGroup[] = []): Set<string> {
   const out = new Set<string>()
   const sorted = lightCues(cues).sort((a, b) => a.start_s - b.start_s)
   for (let i = 0; i < sorted.length; i++) {
     const a = sorted[i]
     if (a.duration_s == null) continue
     const end = a.start_s + a.duration_s
-    const aBoards = boardsOf(a, macs)
+    const aBoards = boardsOf(a, macs, groups)
     for (let j = i + 1; j < sorted.length && sorted[j].start_s < end; j++) {
       const b = sorted[j]
-      if (boardsOf(b, macs).some((m) => aBoards.includes(m))) {
+      if (boardsOf(b, macs, groups).some((m) => aBoards.includes(m))) {
         out.add(a.key)
         out.add(b.key)
       }
     }
   }
   return out
+}
+
+/** Memoized overlapKeys; its own hook so the editor's many uses of `groups` don't defeat the memo. */
+export function useOverlaps(cues: TLCue[], macsKey: string, groups: BoardGroup[]): Set<string> {
+  return useMemo(() => overlapKeys(cues, macsKey ? macsKey.split(',') : [], groups), [cues, macsKey, groups])
 }
 
 /** Snap targets: starts/ends of other cues plus the playhead. */
@@ -198,7 +230,10 @@ export interface TimelineViewProps {
   /** Boards, profile base and overrides drive the lane preview and ribbon. */
   boards?: Board[]
   base?: LightState
+  /** Already resolved to MAC keys (groups expanded). */
   overrides?: Record<string, LightState>
+  /** Groups for resolving group-targeted cues in the lane preview and ribbon. */
+  groups?: BoardGroup[]
   overlaps: Set<string>
   readOnly?: boolean
   snapEnabled: boolean

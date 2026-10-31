@@ -15,6 +15,12 @@ from typing import Any, Protocol
 from sqlmodel import Session, select
 
 from spookhub import db
+from spookhub.boards.groups import (
+    load_groups,
+    resolve_overrides,
+    resolve_selection,
+    resolve_targets,
+)
 from spookhub.boards.registry import BoardManager
 from spookhub.events import EventBus
 from spookhub.models import (
@@ -143,6 +149,7 @@ def load_active(profile_id: int) -> ActiveProfile | None:
         media = s.get(Media, p.media_id) if p.media_id else None
         idle = s.get(Media, p.idle_media_id) if p.idle_media_id else None
         cues = s.exec(select(Cue).where(Cue.profile_id == profile_id)).all()
+        groups = load_groups(s)
         main = [c for c in cues if c.track != "idle"]
         idle_rows = [c for c in cues if c.track == "idle"]
         specs: list[CueSpec] = []
@@ -156,7 +163,7 @@ def load_active(profile_id: int) -> ActiveProfile | None:
                     id=c.id or 0,
                     start=c.start_s,
                     duration=c.duration_s,
-                    targets=None if tgt.all else frozenset(tgt.macs),
+                    targets=resolve_targets(tgt, groups),
                     state=LightState.model_validate(c.state or {}),
                     transition_ms=c.transition_ms,
                     segs=(
@@ -170,9 +177,9 @@ def load_active(profile_id: int) -> ActiveProfile | None:
             id=profile_id,
             name=p.name,
             type=ProfileType(p.type),
-            selection=BoardSelection.model_validate(p.selection or {}),
+            selection=resolve_selection(BoardSelection.model_validate(p.selection or {}), groups),
             base=LightState.model_validate(p.base_state or {}),
-            overrides={k: LightState.model_validate(v) for k, v in (p.overrides or {}).items()},
+            overrides=resolve_overrides(p.overrides or {}, groups),
             mode=PlaybackMode(p.playback_mode),
             cooldown_s=p.cooldown_s,
             media_path=media.path if media and Path(media.path).exists() else None,
@@ -213,15 +220,16 @@ def _load_scene(p: Profile) -> ActiveProfile:
     video = idle is not None and idle.type == ProfileType.video
     with db.session() as s:
         own_ambient = _load_ambient(s, p)
+        groups = load_groups(s)
     return ActiveProfile(
         id=p.id or 0,
         name=p.name,
         type=ProfileType.scene,
-        selection=idle.selection if idle else BoardSelection.model_validate(p.selection or {}),
-        base=idle.base if idle else LightState.model_validate(p.base_state or {}),
-        overrides=idle.overrides
+        selection=idle.selection
         if idle
-        else {k: LightState.model_validate(v) for k, v in (p.overrides or {}).items()},
+        else resolve_selection(BoardSelection.model_validate(p.selection or {}), groups),
+        base=idle.base if idle else LightState.model_validate(p.base_state or {}),
+        overrides=idle.overrides if idle else resolve_overrides(p.overrides or {}, groups),
         mode=PlaybackMode.idle_trigger,
         cooldown_s=p.cooldown_s,
         media_path=None,
@@ -499,6 +507,12 @@ class ShowEngine:
             await self._stop_fx()
             await self._sync_ambient()
             self._publish()
+
+    async def groups_changed(self) -> None:
+        """Membership or group delete: profiles resolve groups at load, so reload the home one."""
+        home = self.home_id()
+        if home is not None:
+            await self.reload_if_active(home)
 
     def boards_changed(self) -> None:
         """Adoption/removal: 'All boards' selections pick up new boards immediately."""

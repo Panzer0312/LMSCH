@@ -8,9 +8,10 @@ desktop browser.
 calibration, show mode, run log, watchdog and fallbacks) and phase 2 (timeline editing: markers,
 onsets, templates, time editing, clipboard, effect picker, WLED segments) and phase 3 (video setup
 page, display profiles, keystone/mask shader, alignment patterns) and phase 4 (scenes, sound cues,
-soundboard, ambient layer, idle track, idle → main fade, moments page) built and tested against the
+soundboard, ambient layer, idle track, idle → main fade, moments page) and phase 6 (board groups /
+rooms) built and tested against the
 simulator.
-Not yet run on real hardware. Next work: [`docs/roadmap/`](docs/roadmap/README.md).
+Not yet run on real hardware. Start here: [`docs/tutorial/`](docs/tutorial/README.md). Next work: [`docs/roadmap/`](docs/roadmap/README.md).
 
 ## Quick start (dev)
 

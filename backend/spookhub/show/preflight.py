@@ -12,10 +12,20 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
+from sqlmodel import select
 
 from spookhub import db
+from spookhub.boards.groups import load_groups, parse_group_key
 from spookhub.boards.registry import BoardStatus
-from spookhub.models import DisplayGeometry, Media, PlaybackMode, Profile, ProfileType
+from spookhub.models import (
+    Cue,
+    CueTarget,
+    DisplayGeometry,
+    Media,
+    PlaybackMode,
+    Profile,
+    ProfileType,
+)
 from spookhub.player.geometry import needs_warp
 
 if TYPE_CHECKING:
@@ -126,6 +136,7 @@ class Preflight:
             self._mpv_restarts,
             self._trigger_recent,
             self._setup_idle,
+            self._groups,
         ):
             try:
                 checks.append(await fn())
@@ -333,3 +344,25 @@ class Preflight:
         if busy:
             return _c("setup_idle", label, "fail", "running: " + ", ".join(busy), "/setup")
         return _c("setup_idle", label, "ok", "idle")
+
+    async def _groups(self) -> Check:
+        # A cue on a deleted or empty room silently does nothing during the show.
+        label = "Board groups"
+        home = self.hub.engine.home_id()
+        if home is None:
+            return _c("groups", label, "ok", "no profile active")
+        with db.session() as s:
+            p = s.get(Profile, home)
+            if p is None:
+                return _c("groups", label, "ok", "no profile active")
+            ids = set((p.selection or {}).get("groups") or [])
+            ids |= {g for k in (p.overrides or {}) if (g := parse_group_key(k)) is not None}
+            for c in s.exec(select(Cue).where(Cue.profile_id == home)).all():
+                ids |= set(CueTarget.model_validate(c.target or {}).groups)
+            groups = load_groups(s)
+        adopted = set(self.hub.boards.adopted_macs())
+        bad = sorted(g for g in ids if not adopted & set(groups.get(g, ())))
+        if bad:
+            what = ", ".join(f"#{g}" if g not in groups else f"#{g} (no boards)" for g in bad)
+            return _c("groups", label, "warn", f"empty or unknown: {what}", "/boards")
+        return _c("groups", label, "ok", f"{len(ids)} in use" if ids else "none in use")

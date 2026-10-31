@@ -35,6 +35,9 @@ async def test_lock_blocks_edits_allows_show_actions(client):
     assert r.status_code == 404  # reached the route (unknown board), not the lock
     r = await client.post("/api/boards/aa/state", json={"on": True})
     assert r.status_code == 404
+    assert (await client.post("/api/groups/9/state", json={"on": False})).status_code == 404
+    assert (await client.delete("/api/groups/9/state")).status_code == 404
+    assert (await client.post("/api/groups", json={"name": "x"})).status_code == 423
     assert (await client.post("/api/setup/test_sound")).status_code == 423
     assert (await client.post("/api/show/test_pattern", json={"on": True})).status_code == 423
     assert (await client.put("/api/auth/pin", json={"pin": "1"})).status_code == 423

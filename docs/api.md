@@ -8,7 +8,9 @@ REST under `/api` (OpenAPI at `/docs`). Routers in `api/routes_*.py`:
 |---|---|
 | auth | `GET status`, `POST login/logout`, `PUT pin`, `GET/PUT trigger_token` |
 | boards | list, `scan`, `add`, `{mac}/adopt`, PATCH (`name`, `offset_ms`), DELETE, `identify`, `POST state`, `DELETE state` (clear manual override), `refresh`, `capture`, `recommendations[/{id}/apply]`, `POST fallback`, `POST {mac}/fallback` |
-| profiles | CRUD, `duplicate`, `activate`, `PUT {pid}/cues` (scene ⇒ 422; light profile accepts only `track: idle` cues), `PUT {pid}/markers` (replace all, ids unique), `export` (adds `display_profile {name, geometry}`, scene items by profile name, ambient by `media_filename`), `import` (display profile matched by name, created if missing; scene items and ambient matched by name, missing ones dropped) |
+| groups | `GET/POST groups`, `PUT/DELETE groups/{id}` (409 `used by: …` when a profile, override or cue names it; 422 unknown MAC), `PUT groups/order [ids]` (every id once), `POST groups/{id}/state` (manual override on adopted members), `DELETE groups/{id}/state`, `POST groups/{id}/identify`. Group actions return `{ok, macs}` |
+| presets | `GET presets` (`[{id, title, detail, kind show/settings}]`), `POST presets/{id}/apply` ⇒ `{ok, notes}` (404 unknown), `POST presets/remove` (deletes `[Test]` moments, profiles, rooms) |
+| profiles | CRUD, `duplicate`, `activate`, `PUT {pid}/cues` (scene ⇒ 422; light profile accepts only `track: idle` cues), `PUT {pid}/markers` (replace all, ids unique), `export` (adds `groups {id: name}` for referenced groups, `display_profile {name, geometry}`, scene items by profile name, ambient by `media_filename`), `import` (groups matched by name, unmatched group refs dropped, a cue left with no target dropped; display profile matched by name, created if missing; scene items and ambient matched by name, missing ones dropped) |
 | templates | `GET templates`, `POST templates {name, cues}`, `DELETE templates/{tid}` |
 | media | list (adds `kind`, `rotation`, `aspect` = displayed w/h), upload (video or audio), `transcode`, `thumbs`, `thumbs.jpg`, `waveform`, `{mid}/onsets` (empty list if not derived), `{mid}/black_check` (cached, 422 on ffmpeg failure, 504 after 120 s), `file` (range), `PATCH {mid} {display_profile_id}`, DELETE. Audio: `transcode`/`black_check` ⇒ 422, `thumbs*` ⇒ 404 |
 | display | `GET/POST profiles`, `PUT/DELETE profiles/{pid}` (409 on duplicate name), `GET state`, `POST setup {on, source?: pattern/media/idle}`, `POST live {geometry}`, `POST seek {t}` (media/idle source only), `GET patterns`, `GET patterns/{pid}/file` (PNG or mp4, 503 on render failure) |
@@ -65,7 +67,7 @@ query values are redacted from logs.
 ## WebSocket `/ws`
 
 Message `{type, data, ts}`. Types: `snapshot` (on connect), `board`, `board_removed`,
-`boards_changed`, `show`, `settings`, `event`, `profiles_changed`, `media_changed`, `transcode`,
+`boards_changed`, `groups_changed` (full group list `[{id, name, color, sort, macs}]`), `show`, `settings`, `event`, `profiles_changed`, `media_changed`, `transcode`,
 `preflight` (`{checks, worst}`), `trigger_seen` (`last_trigger {ts, source, accepted, message}`),
 `display` (`{setup, source, live, resolved_profile_id, geometry, warp_supported}`, on change only),
 `display_profiles_changed`, `scene` (same payload as `GET /api/scene`, on change),
@@ -73,6 +75,6 @@ Message `{type, data, ts}`. Types: `snapshot` (on connect), `board`, `board_remo
 values at send time; sent on change only: start, end, variant change, cooldown end; the client
 advances progress from `elapsed_s` / `duration_s`, `null` = unknown length; `GET moments/state`
 returns the same), `moments_changed` (list edited), `jukebox` (state), `jukebox_guests`.
-The snapshot also carries `version`, `preflight`, `display`, `scene`, `moment` and `jukebox`.
+The snapshot also carries `groups`, `version`, `preflight`, `display`, `scene`, `moment` and `jukebox`.
 Show snapshot adds `calibrating`, `setup_busy`, `last_trigger`.
 Frontend reducer: `frontend/src/live.ts`. `display` has its own small store there (`useDisplay`), so ~30 Hz updates during drags only re-render video setup consumers.

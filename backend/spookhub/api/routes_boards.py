@@ -117,18 +117,21 @@ async def remove(mac: str, hub: HubDep) -> dict[str, bool]:
     _board(hub, mac)
     await hub.boards.remove(mac)
     hub.engine.boards_changed()
+    # Its room memberships are gone; resolved group MACs must not linger in the live profile.
+    await hub.engine.groups_changed()
     return {"ok": True}
 
 
 @router.post("/{mac}/identify")
-def identify(mac: str, hub: HubDep) -> dict[str, bool]:
+async def identify(mac: str, hub: HubDep) -> dict[str, bool]:
     _board(hub, mac)
     spawn(hub.boards.identify(mac))
     return {"ok": True}
 
 
+# async: BoardManager pushes wake asyncio.Events, which must be set on the loop thread.
 @router.post("/{mac}/state")
-def manual_state(mac: str, body: LightState, hub: HubDep) -> dict[str, bool]:
+async def manual_state(mac: str, body: LightState, hub: HubDep) -> dict[str, bool]:
     """Manual override (quick on/off, brightness). Cleared on next profile activation."""
     b = _board(hub, mac)
     if not b.adopted:
@@ -138,7 +141,7 @@ def manual_state(mac: str, body: LightState, hub: HubDep) -> dict[str, bool]:
 
 
 @router.delete("/{mac}/state")
-def clear_manual_state(mac: str, hub: HubDep) -> dict[str, bool]:
+async def clear_manual_state(mac: str, hub: HubDep) -> dict[str, bool]:
     """Drop the manual override so the board returns to show/base state."""
     _board(hub, mac)
     hub.boards.clear_manual(mac)

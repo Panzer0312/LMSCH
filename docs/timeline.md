@@ -6,7 +6,10 @@ Route `/profiles/:id/timeline`. Desktop-first, read-only on phone.
   with the idle video, or every "Idle loop length" for light profiles (no video; a stand-in
   playhead loops). Light profiles open on Idle; Main is disabled. Without an idle video or loop
   length the Idle tab says how to get one. Both tracks save together.
-- **Lanes:** "All selected" on top, one lane per board in the profile, then the Sound lane. Board lane header shows the
+- **Lanes:** "All selected" on top, then one lane per room that has boards in the profile
+  (`Name (n)`), one lane per board, then the Sound lane. A cue on a room lane targets the room, so
+  later membership changes apply without editing it. Mute/solo on a room lane covers its boards.
+  Overlap badges, ribbons and generators/templates count room membership; paste remap lists rooms as targets. Board lane header shows the
   resolved color + effect at the playhead; a ribbon under the lane shows the resolved color over time.
 - **Overview bar** above the lanes: cues, markers, playhead, visible window. Click or drag to scroll.
 - **Ruler:** m:ss; zoomed in far enough it switches to `mm:ss.ff` frame ticks (25 fps).

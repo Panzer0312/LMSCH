@@ -3,11 +3,12 @@ import { Link, useParams } from 'react-router-dom'
 import { api, ApiError } from '../api'
 import { ErrorText, Toggle } from '../components/ui'
 import { fmtTime, useAction } from '../lib'
-import { useAdoptedBoards } from '../live'
+import { useAdoptedBoards, useGroups } from '../live'
+import { parseGroupKey, selectionMacs, useResolvedOverrides } from '../groups'
 import { CuePanel, MultiPanel } from '../timeline/CuePanel'
 import { GenerateDialog } from '../timeline/GenerateDialog'
 import type { GenCue } from '../timeline/generators'
-import { ALL_LANE, clamp, type HState, fromServer, newKey, overlapKeys, round3, toServer, useHistory, lanesOf, segLaneId, targetFromLanes, type Doc, type Lane, type SetMode, type TLCue, isDragging, isSound, lightLanes, newSoundCue, SOUND_LANE, SOUND_LANE_DEF } from '../timeline/model'
+import { ALL_LANE, clamp, groupLaneId, isMacMuted, useOverlaps, type HState, fromServer, newKey, round3, toServer, useHistory, lanesOf, segLaneId, targetFromLanes, type Doc, type Lane, type SetMode, type TLCue, isDragging, isSound, lightLanes, newSoundCue, SOUND_LANE, SOUND_LANE_DEF } from '../timeline/model'
 import { RemapDialog } from '../timeline/RemapDialog'
 import { SoundPickDialog } from '../timeline/SoundPickDialog'
 import { TemplateDialog } from '../timeline/TemplateDialog'
@@ -167,10 +168,19 @@ interface EditorProps {
 function Editor({ profile, media, mediaId, initialAudio, track, getLatest, setLatest, getHistory, setHistory, getSync, loopLength }: EditorProps) {
   const pid = profile.id
   const adopted = useAdoptedBoards()
-  const boards = profile.selection.all ? adopted : adopted.filter((b) => profile.selection.macs.includes(b.mac))
+  const groups = useGroups()
+  const selMacs = selectionMacs(profile.selection, groups, adopted.map((b) => b.mac))
+  const boards = adopted.filter((b) => selMacs.includes(b.mac))
   const macsKey = boards.map((b) => b.mac).join(',')
+  const overrides = useResolvedOverrides(profile.overrides, groups)
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const lanes: Lane[] = [{ kind: 'all', id: ALL_LANE, label: 'All selected' }]
+  // Group lanes above board lanes; a cue there follows the room's membership, not a board copy.
+  for (const g of groups) {
+    const macs = g.macs.filter((m) => selMacs.includes(m))
+    if (!macs.length) continue
+    lanes.push({ kind: 'group', id: groupLaneId(g.id), label: `${g.name} (${macs.length})`, macs })
+  }
   for (const b of boards) {
     lanes.push({ kind: 'board', id: b.mac, label: b.name, status: b.status })
     // Segment sub-lanes only make sense when the strip is actually split.
@@ -217,7 +227,7 @@ function Editor({ profile, media, mediaId, initialAudio, track, getLatest, setLa
   const videoRef = useRef<Playable | null>(null)
   const [clock] = useState(() => (loopLength != null ? new LoopClock(loopLength) : null))
   const isMain = track === 'main'
-  const overlaps = useMemo(() => overlapKeys(cues, macsKey ? macsKey.split(',') : []), [cues, macsKey])
+  const overlaps = useOverlaps(cues, macsKey, groups)
   const [audio, setAudio] = useState<Media[]>(initialAudio)
   const audioById = useMemo(() => new Map(audio.map((m) => [m.id, m])), [audio])
   const [waves, setWaves] = useState<Map<number, Waveform>>(() => new Map())
@@ -327,7 +337,7 @@ function Editor({ profile, media, mediaId, initialAudio, track, getLatest, setLa
   // --- live audition ---
   const [audition, setAudition] = useState(false)
   const [auditionErr, setAuditionErr] = useState<string | null>(null)
-  const mutedKey = macsKey.split(',').filter((m) => m && (muted.has(m) || (solo.size > 0 && !solo.has(m)))).join(',')
+  const mutedKey = macsKey.split(',').filter((m) => m && isMacMuted(m, lanes, muted, solo)).join(',')
   const mutedRef = useRef<string[]>([])
   useEffect(() => { mutedRef.current = mutedKey ? mutedKey.split(',') : [] }, [mutedKey])
   const sendAudition = useCallback((t: number, isPlaying: boolean) => {
@@ -336,7 +346,7 @@ function Editor({ profile, media, mediaId, initialAudio, track, getLatest, setLa
       // 409 = backend refused (show playing, blackout). Network blips just retry on next beat.
       if (e instanceof ApiError && e.status === 409) setAudition(false)
     })
-  }, [pid])
+  }, [pid, setAudition, setAuditionErr])
   useEffect(() => {
     if (!audition) return
     const beat = () => { const v = videoRef.current; if (v) sendAudition(v.currentTime, !v.paused) }
@@ -599,7 +609,11 @@ function Editor({ profile, media, mediaId, initialAudio, track, getLatest, setLa
   )
 
   const laneOpts = lightLanes(lanes).map((l) => ({ id: l.id, label: l.label }))
-  const boardName = (mac: string) => adopted.find((b) => b.mac === mac)?.name ?? mac
+  const boardName = (id: string) => {
+    const gid = parseGroupKey(id)
+    if (gid != null) return `Room: ${groups.find((g) => g.id === gid)?.name ?? id}`
+    return adopted.find((b) => b.mac === id)?.name ?? id
+  }
   const toggler = (set: (f: (s: Set<string>) => Set<string>) => void) => (id: string) =>
     set((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
   const pt = playheadTarget()
@@ -747,7 +761,8 @@ function Editor({ profile, media, mediaId, initialAudio, track, getLatest, setLa
         waves={waves}
         boards={boards}
         base={profile.base_state}
-        overrides={profile.overrides}
+        overrides={overrides}
+        groups={groups}
         overlaps={overlaps}
         readOnly={mobile}
         snapEnabled={snapOn}

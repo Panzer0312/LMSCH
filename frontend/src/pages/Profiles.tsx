@@ -1,12 +1,14 @@
 import { type ChangeEvent, useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api, ApiError } from '../api'
+import { BoardPicker } from '../components/BoardPicker'
 import { CueList } from '../components/CueList'
 import { LightStateEditor } from '../components/LightStateEditor'
 import { SceneEditor } from '../components/SceneEditor'
 import { ErrorText, Section, Toggle } from '../components/ui'
 import { confirmStopShow, fmtTime, useAction } from '../lib'
-import { useAdoptedBoards, useLive } from '../live'
+import { groupKey, selectionMacs } from '../groups'
+import { useAdoptedBoards, useGroups, useLive } from '../live'
 import type { DisplayProfile, LightState, Media, PlaybackMode, Profile, ProfileExport, ProfileIn, ProfileType, SceneSpec } from '../types'
 
 const modeLabel: Record<PlaybackMode, string> = { once: 'Play once', loop: 'Loop', idle_trigger: 'Idle + trigger' }
@@ -16,13 +18,13 @@ const typeBadge: Record<ProfileType, string> = { light: 'border-slime text-slime
 const emptyScene = (): SceneSpec => ({ items: [], order: 'shuffle', idle_profile_id: null, chain: false, light_hold_s: 10 })
 
 const emptyDraft = (): ProfileIn => ({
-  name: '', type: 'light', selection: { all: true, macs: [] }, base_state: { on: true, bri: 255 },
+  name: '', type: 'light', selection: { all: true, macs: [], groups: [] }, base_state: { on: true, bri: 255 },
   overrides: {}, media_id: null, idle_media_id: null, playback_mode: 'once', cooldown_s: 0, display_profile_id: null,
   scene: null, ambient: null, fade_ms: 400, idle_length_s: null,
 })
 
 const toDraft = (p: Profile): ProfileIn => ({
-  name: p.name, type: p.type, selection: p.selection, base_state: p.base_state, overrides: p.overrides,
+  name: p.name, type: p.type, selection: { all: p.selection.all, macs: p.selection.macs, groups: p.selection.groups ?? [] }, base_state: p.base_state, overrides: p.overrides,
   media_id: p.media_id, idle_media_id: p.idle_media_id, playback_mode: p.playback_mode, cooldown_s: p.cooldown_s,
   // PUT without it clears the per-show display profile.
   display_profile_id: p.display_profile_id ?? null,
@@ -160,6 +162,7 @@ function ProfileEditor({ id }: { id: string }) {
   const navigate = useNavigate()
   const live = useLive()
   const adopted = useAdoptedBoards()
+  const groups = useGroups()
   const [profile, setProfile] = useState<Profile | null>(null)
   const [draft, setDraft] = useState<ProfileIn | null>(isNew ? emptyDraft() : null)
   const [media, setMedia] = useState<Media[]>([])
@@ -212,11 +215,8 @@ function ProfileEditor({ id }: { id: string }) {
   }
 
   const set = (patch: Partial<ProfileIn>) => { setSaved(false); setDraft({ ...draft, ...patch }) }
-  const selected = draft.selection.all ? adopted : adopted.filter((b) => draft.selection.macs.includes(b.mac))
-
-  const toggleMac = (mac: string, on: boolean) => set({
-    selection: { ...draft.selection, macs: on ? [...draft.selection.macs, mac] : draft.selection.macs.filter((m) => m !== mac) },
-  })
+  const selectedMacs = selectionMacs(draft.selection, groups, adopted.map((b) => b.mac))
+  const selected = adopted.filter((b) => selectedMacs.includes(b.mac))
 
   const setOverride = (mac: string, s: LightState | null) => {
     const o = { ...draft.overrides }
@@ -226,8 +226,9 @@ function ProfileEditor({ id }: { id: string }) {
   }
 
   const submit = async () => {
-    if (draft.type !== 'scene' && !draft.selection.all && draft.selection.macs.length === 0) {
-      save.setError('Select at least one board or turn on "All boards".')
+    if (draft.type !== 'scene' && !draft.selection.all && draft.selection.macs.length === 0
+      && (draft.selection.groups ?? []).length === 0) {
+      save.setError('Select at least one board or room, or turn on "All boards".')
       return
     }
     const body = toPayload(draft)
@@ -279,19 +280,9 @@ function ProfileEditor({ id }: { id: string }) {
           {draft.type !== 'scene' && (<>
           <div className="space-y-2">
             <span className="label">Boards</span>
-            <Toggle checked={draft.selection.all} label="All boards"
-              onChange={(v) => set({ selection: { ...draft.selection, all: v } })} />
-            {!draft.selection.all && (
-              <div className="flex flex-wrap gap-x-4 gap-y-1">
-                {adopted.length === 0 && <span className="text-sm text-mute">No adopted boards.</span>}
-                {adopted.map((b) => (
-                  <label key={b.mac} className="flex items-center gap-2 text-sm">
-                    <input type="checkbox" checked={draft.selection.macs.includes(b.mac)} onChange={(e) => toggleMac(b.mac, e.target.checked)} />
-                    {b.name}
-                  </label>
-                ))}
-              </div>
-            )}
+            <BoardPicker value={draft.selection}
+              onChange={(v) => set({ selection: { all: v.all, macs: v.macs, groups: v.groups ?? [] } })}
+              boards={adopted} groups={groups} />
           </div>
 
           <div>
@@ -300,6 +291,33 @@ function ProfileEditor({ id }: { id: string }) {
               <LightStateEditor boards={selected} value={draft.base_state} onChange={(s) => set({ base_state: s })} />
             </div>
           </div>
+
+          {groups.length > 0 && (
+            <div className="space-y-2">
+              <span className="label">Per-room overrides</span>
+              <p className="text-xs text-mute">Board overrides beat room overrides.</p>
+              {groups.map((g) => {
+                const key = groupKey(g.id)
+                const ov = draft.overrides[key]
+                const members = adopted.filter((b) => g.macs.includes(b.mac))
+                return (
+                  <details key={key} className="rounded-lg border border-line bg-panel-2 p-3">
+                    <summary className="cursor-pointer text-sm">
+                      Override for {g.name}{ov != null && <span className="ml-2 text-pumpkin">●</span>}
+                    </summary>
+                    <div className="mt-3 space-y-3">
+                      <label className="flex items-center gap-2 text-sm">
+                        <input type="checkbox" checked={ov != null}
+                          onChange={(e) => setOverride(key, e.target.checked ? structuredClone(draft.base_state) : null)} />
+                        use override
+                      </label>
+                      {ov != null && <LightStateEditor boards={members} value={ov} onChange={(s) => setOverride(key, s)} />}
+                    </div>
+                  </details>
+                )
+              })}
+            </div>
+          )}
 
           {selected.length > 0 && (
             <div className="space-y-2">

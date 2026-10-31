@@ -1,9 +1,11 @@
 import { createContext, useContext, useSyncExternalStore } from 'react'
-import type { Board, DisplayState, Preflight, MomentState, SceneState, Settings, ShowEvent, ShowState, Version } from './types'
+import type { Board, BoardGroup, DisplayState, Preflight, MomentState, SceneState, Settings, ShowEvent, ShowState, Version } from './types'
 
 export interface Live {
   connected: boolean
   boards: Record<string, Board>
+  /** Board groups (rooms) in sort order, pushed on WS `groups_changed`. */
+  groups: BoardGroup[]
   show: ShowState | null
   settings: Settings | null
   events: ShowEvent[]
@@ -24,7 +26,7 @@ export interface Live {
 }
 
 export const initial: Live = {
-  connected: false, boards: {}, show: null, settings: null, events: [],
+  connected: false, boards: {}, groups: [], show: null, settings: null, events: [],
   profilesRev: 0, mediaRev: 0, boardsRev: 0, displayProfilesRev: 0, transcodes: {},
   preflight: null, version: null, scene: null, moment: null, momentsRev: 0,
 }
@@ -38,6 +40,7 @@ export function reduce(s: Live, m: Msg): Live {
       return {
         ...s,
         boards: Object.fromEntries((m.data.boards as Board[]).map((b) => [b.mac, b])),
+        groups: m.data.groups ?? [],
         show: m.data.show, settings: m.data.settings, events: m.data.events.slice(-20),
         preflight: m.data.preflight, version: m.data.version, scene: m.data.scene ?? null, moment: m.data.moment ?? null,
       }
@@ -49,6 +52,7 @@ export function reduce(s: Live, m: Msg): Live {
       return { ...s, boards: b }
     }
     case 'boards_changed': return { ...s, boardsRev: s.boardsRev + 1 }
+    case 'groups_changed': return { ...s, groups: m.data ?? [] }
     case 'show': return { ...s, show: m.data }
     case 'settings': return { ...s, settings: m.data }
     case 'preflight': return { ...s, preflight: m.data }
@@ -66,6 +70,7 @@ export function reduce(s: Live, m: Msg): Live {
 }
 
 export const useLive = () => useContext(Ctx)
+export const useGroups = () => useLive().groups
 export const useAdoptedBoards = () =>
   Object.values(useLive().boards).filter((b) => b.adopted).sort((a, b) => a.name.localeCompare(b.name))
 

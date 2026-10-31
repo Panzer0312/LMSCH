@@ -39,9 +39,13 @@ export interface Board {
 export type ProfileType = 'light' | 'video' | 'scene'
 export type PlaybackMode = 'once' | 'loop' | 'idle_trigger'
 
-export interface BoardSelection { all: boolean; macs: string[] }
+/** groups: board group (room) ids; members are added to macs when the hub loads the profile. */
+export interface BoardSelection { all: boolean; macs: string[]; groups?: number[] }
 /** segs: per-board WLED segment ids; a mac listed there is hit only on those segments. */
-export interface CueTarget { all: boolean; macs: string[]; segs?: Record<string, number[]> | null }
+export interface CueTarget { all: boolean; macs: string[]; groups?: number[]; segs?: Record<string, number[]> | null }
+/** A room: named set of boards. Order decides which group override wins on a shared board. */
+export interface BoardGroup { id: number; name: string; color: string; sort: number; macs: string[] }
+export interface BoardGroupIn { name: string; color: string; macs: string[] }
 export interface Segment { id: number; name: string; start: number; stop: number }
 
 export interface Cue {

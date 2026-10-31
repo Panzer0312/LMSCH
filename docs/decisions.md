@@ -78,3 +78,9 @@ Choices made where the spec was open. Append new rows; mark replaced rows "super
 | Jukebox guest list | Sent on `/ws/jukebox` to the admin token only. |
 | Jukebox skips | Vote and host skips name their target track; a skip whose track already changed is a no-op. Host skip without a target is debounced 1.5 s. |
 | Backups vs jukebox | Backups drop Spotify tokens, guest token hashes and the admin. A restore keeps settings and queue; host and guests join or log in again. |
+| Board groups resolve | Groups resolve to MACs when a profile loads, never on save. Group edits reload the home profile. |
+| Board group overlap | Group cues follow the existing latest-start rule, not "segment > board > group > all" from the phase file: a priority rule would let an old open-ended board cue beat a later "all" blackout cue. |
+| Group override order | Later group (sort order) merges on top of earlier ones; board keys merge on top of all group keys. |
+| Moments, scenes and groups | No own board picker: moments and scenes reuse light/video profiles, which carry the room selection. |
+| Test presets | Built in (`presets.py`), applied from Settings. Everything named `[Test] …`, upserted by name, removed by prefix only. |
+| Group edits during a show | Allowed and applied live, like profile edits. Show lock is the guard. |

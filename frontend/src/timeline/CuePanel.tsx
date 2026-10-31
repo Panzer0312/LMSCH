@@ -39,7 +39,7 @@ function NumField({ value, onCommit, step, min = 0, placeholder, disabled }: {
 
 const MIN_DUR = 0.05
 
-export function CuePanel({ cue, boards, audio = [], onChange, onDelete, onDuplicate, readOnly, fps = 25 }: {
+export function CuePanel({ cue, boards, audio = [], lanes = [], onChange, onDelete, onDuplicate, readOnly, fps = 25 }: {
   cue: TLCue
   boards: Board[]
   /** Audio media for the sound cue picker. */
@@ -53,7 +53,8 @@ export function CuePanel({ cue, boards, audio = [], onChange, onDelete, onDuplic
 }) {
   const [capSel, setCapSel] = useState('')
   const { busy, error, run } = useAction()
-  const nameOf = (mac: string) => boards.find((b) => b.mac === mac)?.name ?? mac
+  const nameOf = (mac: string) => lanes.find((l) => l.id === mac)?.label ?? boards.find((b) => b.mac === mac)?.name ?? mac
+  const groupLanes = lanes.filter((l) => l.kind === 'group')
   const extraMacs = cue.target.macs.filter((m) => !boards.some((b) => b.mac === m))
   const capMac = boards.some((b) => b.mac === capSel)
     ? capSel
@@ -94,6 +95,7 @@ export function CuePanel({ cue, boards, audio = [], onChange, onDelete, onDuplic
     const rest = cur.filter((id) => parseLaneId(id).mac !== mac)
     setLanes(on ? [...rest, mac] : rest)
   }
+  const toggleLane = (id: string, on: boolean) => setLanes(on ? [...cur, id] : cur.filter((x) => x !== id))
   const toggleSeg = (mac: string, seg: number, on: boolean) => {
     const id = segLaneId(mac, seg)
     const rest = cur.filter((x) => x !== id && x !== mac)
@@ -168,6 +170,16 @@ export function CuePanel({ cue, boards, audio = [], onChange, onDelete, onDuplic
         </label>
         {!cue.target.all && (
           <div className="space-y-1 pl-5">
+            {groupLanes.map((l) => {
+              const on = cur.includes(l.id)
+              return (
+                <label key={l.id} className="flex items-center gap-2" title={l.macs?.map(nameOf).join(', ')}>
+                  <input type="checkbox" checked={on} disabled={on && cur.length === 1}
+                    onChange={(e) => toggleLane(l.id, e.target.checked)} />
+                  Room: {l.label}
+                </label>
+              )
+            })}
             {boards.map((b) => {
               const on = cur.includes(b.mac)
               return (
