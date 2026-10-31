@@ -166,6 +166,7 @@ function ProfileEditor({ id }: { id: string }) {
   const [displays, setDisplays] = useState<DisplayProfile[]>([])
   const [allProfiles, setAllProfiles] = useState<Profile[]>([])
   const [saved, setSaved] = useState(false)
+  const [cuesDirty, setCuesDirty] = useState(false)
   const load = useAction()
   const save = useAction()
   const loadRun = load.run
@@ -185,14 +186,15 @@ function ProfileEditor({ id }: { id: string }) {
 
   const dirty = draft != null
     && JSON.stringify(toPayload(draft)) !== JSON.stringify(toPayload(profile ? toDraft(profile) : emptyDraft()))
-  const confirmLeave = () => !dirty || window.confirm('Unsaved profile changes, leave anyway?')
+  const anyDirty = dirty || cuesDirty
+  const confirmLeave = () => !anyDirty || window.confirm('Unsaved changes, leave anyway?')
 
   useEffect(() => {
-    if (!dirty) return
+    if (!anyDirty) return
     const onBeforeUnload = (e: BeforeUnloadEvent) => { e.preventDefault() }
     window.addEventListener('beforeunload', onBeforeUnload)
     return () => window.removeEventListener('beforeunload', onBeforeUnload)
-  }, [dirty])
+  }, [anyDirty])
 
   const back = (
     <Link to="/profiles" className="text-sm text-ghost hover:underline"
@@ -430,7 +432,7 @@ function ProfileEditor({ id }: { id: string }) {
             <p className="text-sm text-mute">Edit cues visually on the timeline (desktop), or use the quick list below.</p>
             <button type="button" className="btn btn-primary" onClick={() => confirmLeave() && navigate(`/profiles/${profile.id}/timeline`)}>Open timeline editor</button>
           </div>
-          <CueList profile={profile} boards={selected} onSaved={(p) => setProfile(p)} />
+          <CueList profile={profile} boards={selected} onSaved={(p) => setProfile(p)} onDirtyChange={setCuesDirty} />
         </>
       )}
 

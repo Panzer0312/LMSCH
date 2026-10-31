@@ -115,8 +115,14 @@ export function NowPlaying({ c, showVote = true, children }: { c: JukeCtx; showV
 
 export const Explicit = () => <span title="explicit" className="ml-1.5 inline-block rounded bg-mute/30 px-1 align-middle text-[10px] font-bold text-mute">E</span>
 
+// The vote lives in the server set, but the button state would reset on reload or tab switch.
+const VOTE_STORE = 'juke.voted'
+function readVoted(): string | null {
+  try { return sessionStorage.getItem(VOTE_STORE) } catch { return null }
+}
+
 function VoteSkip({ c, now }: { c: JukeCtx; now: JukeNow }) {
-  const [voted, setVoted] = useState<string | null>(null)
+  const [voted, setVoted] = useState<string | null>(readVoted)
   const [busy, setBusy] = useState(false)
   const key = voteKey(now)
   const mine = now.requested_by?.id === c.me.id
@@ -128,6 +134,10 @@ function VoteSkip({ c, now }: { c: JukeCtx; now: JukeNow }) {
     setBusy(false)
     if (!r) return
     setVoted(key)
+    // Radio tracks have no entry id, so their key would also match a later replay of the same song.
+    if (now.entry_id != null) {
+      try { sessionStorage.setItem(VOTE_STORE, key) } catch { /* private mode: in-memory state still works */ }
+    }
     if (r.skipped) c.toast(mine ? 'Skipped your song' : 'Skipped 💀')
     else c.toast(`Vote counted (${r.votes}/${r.votes_needed})`)
   }

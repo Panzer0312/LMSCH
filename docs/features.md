@@ -27,10 +27,11 @@ A failed blackout request shows "FAILED – RETRY" on the button for 4 s.
   while its play request runs and 1 s after,
   so a double tap can't repeat the action.
 - Unsaved profile form, timeline cues, video geometry or a running upload ⇒ browser warns on
-  reload/close. "Back" and "Open timeline editor" ask when the profile form is unsaved.
+  reload/close. "Back" and "Open timeline editor" ask when the profile form or quick-list cues are unsaved.
 - A light or video profile without "All boards" and without any board can't be saved.
 - Failed master brightness/volume update ⇒ slider snaps back to the hub value.
-- Template delete, jukebox song remove ask for confirm.
+- Template delete, jukebox song remove, moment variant remove ask for confirm. The moment editor
+  asks before Close/Cancel/Escape discard unsaved edits.
 
 ## Setup page
 
@@ -112,11 +113,12 @@ Dashboard banner shows when any check fails.
   chips are disabled. Show controls stay open. Unlocking needs the PIN when one is set.
   Turning the lock on stops calibration, test sound, test-all and the test pattern.
 - **`/show` page:** Trigger, Play/Stop, Next, Blackout, brightness and volume sliders (limited by
-  the caps), current profile + progress, preflight dot, per-board Auto / Off / White buttons.
+  the caps), current profile + progress, preflight dot, per-board Auto / Off / White buttons
+  (each board shows its own error and busy state).
   "Auto" clears the manual override so the profile look returns. A red banner shows while
   calibration, a setup test or the test pattern runs (triggers are refused); its "Stop" turns
   calibration / test pattern off, also under the lock.
-- **Soundboard** (on `/show`, shown when audio media exists, collapsible): one button per audio
+- **Soundboard** (on `/show`, shown when audio media exists, collapsible; a failed load shows Retry): one button per audio
   file, "Sound volume" slider (0–130 %), "Stop sounds". One sound at a time on the effects player;
   a new press replaces the last. Works under the lock, refused in blackout.
 - **🔔 Moments** button opens `/moments`. Also in the nav.
@@ -160,7 +162,7 @@ Mobile-first, works on a desktop for the host. Live over `/ws/jukebox`, reconnec
   (401) goes back to the join screen with the name filled in.
 - **Now playing:** art, title, artist, "added by X" (or "Spookhub radio" for the fallback
   playlist), progress bar that runs client-side between updates.
-- **Skip:** "Vote skip · votes/needed", disabled after voting. The requester sees "Skip my song",
+- **Skip:** "Vote skip · votes/needed", disabled after voting (remembered for the browser tab, survives reload). The requester sees "Skip my song",
   the host "Skip"; both skip at once.
 - **Search:** debounced 350 ms; pasting a Spotify track link works. "Add" shows a toast; server
   errors (limit, duplicate, closed, banned, too long) show as red toasts. Buttons read "Closed" (guests,

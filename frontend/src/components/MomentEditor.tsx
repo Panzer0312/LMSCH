@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import { useAction } from '../lib'
 import type { Media, Moment, MomentAmbience, MomentBusy, MomentIn, MomentVariant, Profile } from '../types'
@@ -50,7 +50,7 @@ function VariantRow({ v, index, videos, lights, sounds, weighted, canTest, onCha
         <span className="font-semibold">Variant {index + 1}</span>
         <div className="flex gap-2">
           <button type="button" className="btn" disabled={!canTest} title={canTest ? '' : 'Save first'} onClick={onTest}>Test</button>
-          <button type="button" className="btn" onClick={onRemove}>Remove</button>
+          <button type="button" className="btn" onClick={() => { if (window.confirm('Remove this variant?')) onRemove() }}>Remove</button>
         </div>
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
@@ -153,7 +153,8 @@ export function MomentEditor({ moment, onClose, onSaved }: {
   onClose: () => void
   onSaved: (m: Moment) => void
 }) {
-  const [draft, setDraft] = useState<MomentIn>(() => (moment ? toIn(moment) : blank()))
+  const [initial] = useState(() => JSON.stringify(moment ? toIn(moment) : blank()))
+  const [draft, setDraft] = useState<MomentIn>(() => JSON.parse(initial) as MomentIn)
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [sounds, setSounds] = useState<Media[]>([])
   const [invalid, setInvalid] = useState<string | null>(null)
@@ -172,6 +173,25 @@ export function MomentEditor({ moment, onClose, onSaved }: {
   // Test plays the saved variant by index, so any unsaved variant edit would hit the wrong one.
   const variantsDirty = moment == null || JSON.stringify(toIn(moment).variants) !== JSON.stringify(draft.variants)
 
+  const dirty = JSON.stringify(draft) !== initial
+  const requestClose = () => {
+    if (dirty && !window.confirm('Discard unsaved changes to this moment?')) return
+    onClose()
+  }
+  // Ref keeps the window listener registered once while still seeing the latest dirty state.
+  const requestCloseRef = useRef(requestClose)
+  useEffect(() => { requestCloseRef.current = requestClose })
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      // Native controls (e.g. an open select) may consume Escape themselves.
+      if (e.key !== 'Escape' || e.defaultPrevented) return
+      requestCloseRef.current()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   const save = async () => {
     const msg = validate(draft)
     setInvalid(msg)
@@ -186,7 +206,7 @@ export function MomentEditor({ moment, onClose, onSaved }: {
       <div className="card w-full max-w-2xl space-y-4">
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-lg font-semibold">{moment ? 'Edit moment' : 'New moment'}</h2>
-          <button type="button" className="btn" onClick={onClose}>Close</button>
+          <button type="button" className="btn" onClick={requestClose}>Close</button>
         </div>
         <div className="grid grid-cols-[4rem_1fr_4rem] gap-3">
           <label className="block">
@@ -249,7 +269,7 @@ export function MomentEditor({ moment, onClose, onSaved }: {
         <ErrorText error={test.error} />
         <ErrorText error={invalid ?? error} />
         <div className="flex justify-end gap-2">
-          <button type="button" className="btn" onClick={onClose}>Cancel</button>
+          <button type="button" className="btn" onClick={requestClose}>Cancel</button>
           <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void save()}>Save</button>
         </div>
       </div>

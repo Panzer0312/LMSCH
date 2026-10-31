@@ -7,7 +7,7 @@ import { useAdoptedBoards } from '../live'
 import { CuePanel, MultiPanel } from '../timeline/CuePanel'
 import { GenerateDialog } from '../timeline/GenerateDialog'
 import type { GenCue } from '../timeline/generators'
-import { ALL_LANE, clamp, fromServer, newKey, overlapKeys, round3, toServer, useHistory, lanesOf, segLaneId, targetFromLanes, type Doc, type Lane, type SetMode, type TLCue, isDragging, isSound, lightLanes, newSoundCue, SOUND_LANE, SOUND_LANE_DEF } from '../timeline/model'
+import { ALL_LANE, clamp, type HState, fromServer, newKey, overlapKeys, round3, toServer, useHistory, lanesOf, segLaneId, targetFromLanes, type Doc, type Lane, type SetMode, type TLCue, isDragging, isSound, lightLanes, newSoundCue, SOUND_LANE, SOUND_LANE_DEF } from '../timeline/model'
 import { RemapDialog } from '../timeline/RemapDialog'
 import { SoundPickDialog } from '../timeline/SoundPickDialog'
 import { TemplateDialog } from '../timeline/TemplateDialog'
@@ -27,6 +27,7 @@ const laneTarget = (laneId: string): CueTarget => targetFromLanes([laneId])
 
 /** Latest cues of both tracks + markers, shared by the tab editors so a tab switch never loses edits. */
 interface Latest { cues: Cue[]; markers: Marker[] }
+interface Sync { chain: Promise<void>; markers: Marker[]; flushFailed: boolean }
 
 export default function TimelineEditor() {
   const { id } = useParams<{ id: string }>()
@@ -37,6 +38,14 @@ export default function TimelineEditor() {
   // Stable: the editor's save callbacks depend on them.
   const getLatest = useCallback(() => latest.current, [])
   const setLatest = useCallback((l: Latest) => { latest.current = l }, [])
+  // Per track, so switching Main/Idle keeps undo. Keyed by profile: the page is reused across ids.
+  const histories = useRef(new Map<string, HState<Doc>>())
+  // Shared by both tab editors: one save chain so PUTs (each replacing all cues) land in order,
+  // the server's markers as baseline, and whether a tab's unmount flush failed.
+  const sync = useRef<Sync>({ chain: Promise.resolve(), markers: [], flushFailed: false })
+  const getSync = useCallback(() => sync.current, [])
+  const getHistory = useCallback((k: string) => histories.current.get(k) ?? null, [])
+  const setHistory = useCallback((k: string, h: HState<Doc>) => { histories.current.set(k, h) }, [])
   const { error, run } = useAction()
   const len = useAction()
 
@@ -44,6 +53,7 @@ export default function TimelineEditor() {
     run(async () => {
       const [profile, list] = await Promise.all([api.profiles.get(pid), api.media.list()])
       latest.current = { cues: profile.cues, markers: profile.markers ?? [] }
+      sync.current.markers = latest.current.markers
       setData({
         profile,
         media: list.find((m) => m.id === profile.media_id) ?? null,
@@ -126,7 +136,7 @@ export default function TimelineEditor() {
     <div className="space-y-3">
       {tabs}
       <Editor key={`${profile.id}:${track}`} profile={profile} media={shown} mediaId={shown?.id ?? null} initialAudio={audio}
-        track={track} getLatest={getLatest} setLatest={setLatest} loopLength={isLight ? profile.idle_length_s ?? null : null} />
+        track={track} getLatest={getLatest} setLatest={setLatest} getHistory={getHistory} setHistory={setHistory} getSync={getSync} loopLength={isLight ? profile.idle_length_s ?? null : null} />
     </div>
   )
 }
@@ -148,10 +158,13 @@ interface EditorProps {
   track: CueTrack
   getLatest: () => Latest
   setLatest: (l: Latest) => void
+  getHistory: (key: string) => HState<Doc> | null
+  setHistory: (key: string, h: HState<Doc>) => void
+  getSync: () => Sync
   loopLength: number | null
 }
 
-function Editor({ profile, media, mediaId, initialAudio, track, getLatest, setLatest, loopLength }: EditorProps) {
+function Editor({ profile, media, mediaId, initialAudio, track, getLatest, setLatest, getHistory, setHistory, getSync, loopLength }: EditorProps) {
   const pid = profile.id
   const adopted = useAdoptedBoards()
   const boards = profile.selection.all ? adopted : adopted.filter((b) => profile.selection.macs.includes(b.mac))
@@ -170,8 +183,15 @@ function Editor({ profile, media, mediaId, initialAudio, track, getLatest, setLa
   lanes.push(SOUND_LANE_DEF)
   const effects = boards.find((b) => b.effects.length > 0)?.effects ?? NO_EFFECTS
 
-  const [initial] = useState<Doc>(() => ({ cues: fromServer(cuesOfTrack(getLatest().cues, track)), markers: getLatest().markers }))
-  const { doc, set: setDoc, undo: undoDoc, redo: redoDoc, canUndo, canRedo } = useHistory<Doc>(initial)
+  const histKey = `${profile.id}:${track}`
+  // Markers are shared by both tracks: an old stack is only valid if the other tab left them alone.
+  const [restored] = useState(() => {
+    const h = getHistory(histKey)
+    return h && h.present.markers === getLatest().markers ? h : null
+  })
+  const [initial] = useState<Doc>(() => restored?.present ?? { cues: fromServer(cuesOfTrack(getLatest().cues, track)), markers: getLatest().markers })
+  const { doc, set: setDoc, undo: undoDoc, redo: redoDoc, canUndo, canRedo, state: histState } = useHistory<Doc>(initial, restored)
+  useEffect(() => { setHistory(histKey, histState) }, [histKey, histState, setHistory])
   const cues = doc.cues
   const [rev, setRev] = useState(0)
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
@@ -249,7 +269,7 @@ function Editor({ profile, media, mediaId, initialAudio, track, getLatest, setLa
   // --- autosave (only committed changes bump rev) ---
   const [savedRev, setSavedRev] = useState(0)
   const [saveErr, setSaveErr] = useState<string | null>(null)
-  const saver = useRef({ doc: initial, pending: false, markers: initial.markers, chain: Promise.resolve() })
+  const saver = useRef({ doc: initial, pending: false })
   useEffect(() => {
     saver.current.doc = doc
     // The other tab mounts from here, edits included, even before they are saved.
@@ -261,22 +281,26 @@ function Editor({ profile, media, mediaId, initialAudio, track, getLatest, setLa
     // PUT replaces every cue: send this track as edited plus the other one as last known.
     await api.profiles.setCues(pid, mergeTrack(getLatest().cues, track, toServer(d.cues)))
     // Markers have their own endpoint; skip it when untouched to avoid a redundant profiles_changed.
-    if (d.markers !== s.markers) {
+    const sy = getSync()
+    if (d.markers !== sy.markers) {
       await api.profiles.setMarkers(pid, d.markers)
-      s.markers = d.markers
+      sy.markers = d.markers
     }
-  }, [pid, getLatest, track])
+    // Every PUT carries both tracks, so a later success also covers a failed flush.
+    sy.flushFailed = false
+  }, [pid, getLatest, track, getSync])
   const save = useCallback((r: number) => {
     const s = saver.current
     s.pending = false
     // Serialized so an older PUT can never land after a newer one; each run sends the latest doc.
-    const run = s.chain.then(persist)
-    s.chain = run.catch(() => {})
+    const sy = getSync()
+    const run = sy.chain.then(persist)
+    sy.chain = run.catch(() => {})
     run.then(
       () => { setSaveErr(null); setSavedRev((x) => Math.max(x, r)) },
       (e) => { s.pending = true; setSaveErr(errMsg(e)) },
     )
-  }, [persist])
+  }, [persist, getSync])
   useEffect(() => {
     if (rev === 0) return
     saver.current.pending = true
@@ -285,17 +309,20 @@ function Editor({ profile, media, mediaId, initialAudio, track, getLatest, setLa
   }, [rev, save])
   useEffect(() => {
     const s = saver.current
-    return () => { if (s.pending) persist().catch(() => {}) }
-  }, [persist])
+    return () => {
+      const sy = getSync()
+      if (s.pending) sy.chain = sy.chain.then(persist).catch(() => { sy.flushFailed = true })
+    }
+  }, [persist, getSync])
   const unsaved = rev > savedRev || saveErr != null
   const unsavedRef = useRef(unsaved)
   useEffect(() => { unsavedRef.current = unsaved }, [unsaved])
   useEffect(() => {
     // The unmount flush cannot finish once the page itself unloads.
-    const h = (e: BeforeUnloadEvent) => { if (unsavedRef.current) { e.preventDefault(); e.returnValue = '' } }
+    const h = (e: BeforeUnloadEvent) => { if (unsavedRef.current || getSync().flushFailed) { e.preventDefault(); e.returnValue = '' } }
     window.addEventListener('beforeunload', h)
     return () => window.removeEventListener('beforeunload', h)
-  }, [])
+  }, [getSync])
 
   // --- live audition ---
   const [audition, setAudition] = useState(false)
@@ -581,7 +608,7 @@ function Editor({ profile, media, mediaId, initialAudio, track, getLatest, setLa
     <div className="space-y-4">
       <header className="flex flex-wrap items-center gap-3">
         <Link to={`/profiles/${pid}`} className="btn"
-          onClick={(e) => { if (unsaved && !window.confirm('Unsaved cue changes, leave anyway?')) e.preventDefault() }}>← Back</Link>
+          onClick={(e) => { if ((unsaved || getSync().flushFailed) && !window.confirm('Unsaved cue changes, leave anyway?')) e.preventDefault() }}>← Back</Link>
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-lg font-semibold">{profile.name}</h1>
           <p className="truncate text-xs text-mute">

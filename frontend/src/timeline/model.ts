@@ -148,13 +148,15 @@ export interface History<T> {
   reset: (doc: T) => void
   canUndo: boolean
   canRedo: boolean
+  /** Whole stack, so a remounted editor can pick up where it left off. */
+  state: HState<T>
 }
 
-interface HState<T> { past: T[]; base: T; present: T; future: T[] }
+export interface HState<T> { past: T[]; base: T; present: T; future: T[] }
 const LIMIT = 200
 
-export function useHistory<T>(initial: T): History<T> {
-  const [h, setH] = useState<HState<T>>({ past: [], base: initial, present: initial, future: [] })
+export function useHistory<T>(initial: T, restore?: HState<T> | null): History<T> {
+  const [h, setH] = useState<HState<T>>(() => restore ?? { past: [], base: initial, present: initial, future: [] })
   const set = useCallback((doc: T, mode: SetMode = false) => {
     setH((s) => {
       if (mode === true) return { ...s, present: doc }
@@ -177,7 +179,7 @@ export function useHistory<T>(initial: T): History<T> {
     })
   }, [])
   const reset = useCallback((doc: T) => setH({ past: [], base: doc, present: doc, future: [] }), [])
-  return { doc: h.present, set, undo, redo, reset, canUndo: h.past.length > 0, canRedo: h.future.length > 0 }
+  return { doc: h.present, set, undo, redo, reset, canUndo: h.past.length > 0, canRedo: h.future.length > 0, state: h }
 }
 
 /** Props contract for the timeline canvas component. */

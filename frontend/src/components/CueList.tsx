@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 import type { Board, Cue, LightState, Profile } from '../types'
 import { LightStateEditor } from './LightStateEditor'
@@ -12,6 +12,9 @@ interface Row { key: number; cue: Cue }
 const strip = (c: Cue): Cue => ({
   start_s: c.start_s, duration_s: c.duration_s, target: c.target, state: c.state, transition_ms: c.transition_ms,
 })
+
+// The server echoes unset fields as null while the form omits them; compare without them.
+const canon = (v: unknown) => JSON.stringify(v, (_k, x: unknown) => (x === null ? undefined : x))
 
 const sortCues = (cues: Cue[]) => [...cues].sort((a, b) => a.start_s - b.start_s)
 
@@ -34,14 +37,18 @@ function summary(s: LightState, boards: Board[]): string {
   return parts.length ? parts.join(' · ') : '(no change)'
 }
 
-export function CueList({ profile, boards, onSaved }: { profile: Profile; boards: Board[]; onSaved: (p: Profile) => void }) {
+export function CueList({ profile, boards, onSaved, onDirtyChange }: {
+  profile: Profile; boards: Board[]; onSaved: (p: Profile) => void; onDirtyChange?: (dirty: boolean) => void
+}) {
   const [rows, setRows] = useState<Row[]>(() => toRows(profile.cues))
   const [prevCues, setPrevCues] = useState(profile.cues)
   const [editing, setEditing] = useState<number | null>(null)
   const [saved, setSaved] = useState(false)
+  // State, not a ref: it is compared during render.
+  const [sentJson, setSentJson] = useState<string | null>(null)
   const { busy, error, run } = useAction()
 
-  const original = useMemo(() => JSON.stringify(sortCues(profile.cues.filter(listed)).map(strip)), [profile.cues])
+  const original = useMemo(() => canon(sortCues(profile.cues.filter(listed)).map(strip)), [profile.cues])
   const [prevOriginal, setPrevOriginal] = useState(original)
 
   // Saving the profile form returns a fresh cues array with equal content; resetting then would drop unsaved row edits.
@@ -49,11 +56,22 @@ export function CueList({ profile, boards, onSaved }: { profile: Profile; boards
     setPrevCues(profile.cues)
     if (original !== prevOriginal) {
       setPrevOriginal(original)
-      setRows(toRows(profile.cues))
-      setEditing(null)
+      // Our own save echoing back must not overwrite rows typed while it was in flight.
+      if (original === sentJson) {
+        setSentJson(null)
+      } else {
+        setRows(toRows(profile.cues))
+        setEditing(null)
+      }
     }
   }
-  const dirty = JSON.stringify(rows.map((r) => r.cue)) !== original
+  // Sorted like the saved payload, so rows kept after our own save compare equal to the new baseline.
+  const dirty = canon(sortCues(rows.map((r) => strip(r.cue)))) !== original
+
+  useEffect(() => {
+    onDirtyChange?.(dirty)
+    return () => onDirtyChange?.(false)
+  }, [dirty, onDirtyChange])
 
   const allMacs = boards.map((b) => b.mac)
   const macsOf = (c: Cue) => (c.target.all ? allMacs : c.target.macs)
@@ -112,11 +130,15 @@ export function CueList({ profile, boards, onSaved }: { profile: Profile; boards
   }
 
   const save = async () => {
-    const cues = [...sortCues(rows.map((r) => strip(r.cue))), ...profile.cues.filter((c) => !listed(c))]
+    const main = sortCues(rows.map((r) => strip(r.cue)))
+    const cues = [...main, ...profile.cues.filter((c) => !listed(c))]
+    setSentJson(canon(main))
     const p = await run(() => api.profiles.setCues(profile.id, cues))
     if (p) {
       setSaved(true)
       onSaved(p)
+    } else {
+      setSentJson(null)
     }
   }
 

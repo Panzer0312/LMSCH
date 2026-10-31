@@ -56,6 +56,7 @@ Route `/profiles/:id/timeline`. Desktop-first, read-only on phone.
 - **Capture from board:** pull a board's live WLED state into the selected cue.
 - **Play on projector from here:** real show from the playhead.
 - **Autosave** 0.8 s after last edit, with indicator. Reload/close with unsaved or failed saves warns; "← Back" asks.
+  Undo history is kept per track across Main/Idle tab switches (dropped if markers changed in the other tab).
   Enter in "Loop length" saves it.
 - **Templates:** Flicker, Strobe, Blackout, Blood red, Lightning flash. Add more in
   `frontend/src/timeline/templates.ts`.

@@ -245,12 +245,36 @@ function Soundboard() {
   const [sounds, setSounds] = useState<Media[]>([])
   const [open, setOpen] = useState(true)
   const [volume, setVolume] = useState(1)
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [reload, setReload] = useState(0)
   const { busy, error, run } = useAction()
+  const stop = useAction()
 
   useEffect(() => {
-    api.media.list().then((ms) => setSounds(ms.filter((m) => m.kind === 'audio')), () => undefined)
-  }, [mediaRev])
+    api.media.list().then(
+      (ms) => {
+        setSounds(ms.filter((m) => m.kind === 'audio'))
+        setLoadFailed(false)
+      },
+      () => setLoadFailed(true),
+    )
+  }, [mediaRev, reload])
 
+  // A failed load must stay visible; vanishing silently looks like "no sounds" mid-show.
+  const retry = (
+    <div className="flex items-center gap-3">
+      <ErrorText error="Couldn't load sounds" />
+      <button type="button" className="btn" onClick={() => setReload((n) => n + 1)}>Retry</button>
+    </div>
+  )
+  if (loadFailed && sounds.length === 0) {
+    return (
+      <div className="card space-y-2">
+        <h2 className="text-lg font-semibold">Soundboard</h2>
+        {retry}
+      </div>
+    )
+  }
   if (sounds.length === 0) return null
   return (
     <div className="space-y-2">
@@ -263,6 +287,7 @@ function Soundboard() {
         <span>Soundboard</span>
         <span className="text-sm text-mute">{open ? 'Hide' : 'Show'}</span>
       </button>
+      {loadFailed && retry}
       {open && (
         <div className="card space-y-3">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
@@ -291,10 +316,11 @@ function Soundboard() {
             onChange={(e) => setVolume(Number(e.target.value))}
             className="h-10 w-full accent-pumpkin"
           />
-          <button type="button" className="btn h-14 w-full text-base" disabled={busy} onClick={() => void run(() => api.sounds.stop())}>
+          <button type="button" className="btn h-14 w-full text-base" disabled={stop.busy} onClick={() => void stop.run(() => api.sounds.stop())}>
             Stop sounds
           </button>
           <ErrorText error={error} />
+          <ErrorText error={stop.error} />
         </div>
       )}
     </div>
@@ -304,35 +330,42 @@ function Soundboard() {
 const OFF: LightState = { on: false }
 const WHITE: LightState = { on: true, bri: 255, colors: [[255, 255, 255]], fx: 0 }
 
+// Own action per board so one slow or failing board neither blocks nor mislabels the others.
+function BoardRow({ board: b }: { board: ReturnType<typeof useAdoptedBoards>[number] }) {
+  const { busy, error, run } = useAction()
+  return (
+    <div className="card space-y-2">
+      <div className="flex items-center gap-2">
+        <StatusDot status={b.status} />
+        <span className="truncate font-semibold">{b.name}</span>
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        {([['Auto', null], ['Off', OFF], ['White', WHITE]] as const).map(([name, st]) => (
+          <button
+            key={name}
+            type="button"
+            className="btn h-14 text-base"
+            disabled={busy}
+            onClick={() => void run(() => (st ? api.boards.setState(b.mac, st) : api.boards.clearManual(b.mac)))}
+          >
+            {name}
+          </button>
+        ))}
+      </div>
+      <ErrorText error={error} />
+    </div>
+  )
+}
+
 function BoardPanel() {
   const boards = useAdoptedBoards()
-  const { busy, error, run } = useAction()
   if (boards.length === 0) return null
   return (
     <div className="space-y-2">
       <h2 className="text-lg font-semibold">Boards</h2>
       {boards.map((b) => (
-        <div key={b.mac} className="card space-y-2">
-          <div className="flex items-center gap-2">
-            <StatusDot status={b.status} />
-            <span className="truncate font-semibold">{b.name}</span>
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            {([['Auto', null], ['Off', OFF], ['White', WHITE]] as const).map(([name, st]) => (
-              <button
-                key={name}
-                type="button"
-                className="btn h-14 text-base"
-                disabled={busy}
-                onClick={() => void run(() => (st ? api.boards.setState(b.mac, st) : api.boards.clearManual(b.mac)))}
-              >
-                {name}
-              </button>
-            ))}
-          </div>
-        </div>
+        <BoardRow key={b.mac} board={b} />
       ))}
-      <ErrorText error={error} />
     </div>
   )
 }
