@@ -10,6 +10,7 @@ Read this first. Then read only the docs your task touches.
 - `docs/timeline.md`: timeline editor behavior and keys.
 - `docs/decisions.md`: open-spec decisions. Append, never silently change.
 - `docs/development.md`: dev setup, simulator, checks.
+- `docs/tutorial/`: user walk-through (setup, build a show, show night). Update when a flow changes.
 - `docs/operations.md`: deploy, paths, hardware, troubleshooting.
 - `docs/roadmap/`: phase plans. Each task has a status checkbox.
 - `docs/spec-v1.md`: frozen. Never edit.

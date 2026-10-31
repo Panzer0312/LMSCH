@@ -1,6 +1,6 @@
 # Roadmap
 
-Six phases after M1–M3. Each phase ships deployable, tested, documented (see `AGENTS.md`).
+Seven phases after M1–M3. Each phase ships deployable, tested, documented (see `AGENTS.md`).
 
 | Phase | File | Theme | Status |
 |---|---|---|---|
@@ -9,7 +9,8 @@ Six phases after M1–M3. Each phase ships deployable, tested, documented (see `
 | 3 | [phase-3-video-setup.md](phase-3-video-setup.md) | Video setup page: geometry, keystone, display profiles, alignment patterns | built, hub spikes open |
 | 4 | [phase-4-scenes-audio-ambient.md](phase-4-scenes-audio-ambient.md) | Scenes/playlists, audio-only cues, ambient layer, moments page | built, hardware spikes open |
 | 5 | [phase-5-triggers-integrations.md](phase-5-triggers-integrations.md) | Named triggers, schedule, MQTT/HA, relays, DMX | **optional, out of scope** |
-| 6 | [phase-6-board-groups.md](phase-6-board-groups.md) | Board groups (rooms) selectable in profiles, cues, moments, timeline | todo |
+| 6 | [phase-6-board-groups.md](phase-6-board-groups.md) | Board groups (rooms) selectable in profiles, cues, moments, timeline | built, hardware untested |
+| 7 | [phase-7-qol.md](phase-7-qol.md) | Quality of life: moment triggers, offline alarm, in-app help, show bundle | todo |
 
 ## Order and dependencies
 
