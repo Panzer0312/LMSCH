@@ -20,7 +20,7 @@ function fmtErr(e: unknown): string {
   if (e instanceof ApiError && e.status === 409) {
     return `${e.message} (refused: show playing, blackout or setup busy)`
   }
-  if (e instanceof ApiError && e.status === 423) return 'Show mode is on'
+  if (e instanceof ApiError && e.status === 423) return 'Show lock is on'
   return e instanceof Error ? e.message : String(e)
 }
 
@@ -72,7 +72,7 @@ function FallbackAll() {
         <button className="btn" disabled={fb.busy || locked} onClick={() => void fb.go()}>
           {fb.busy ? 'Saving…' : 'Save fallback to boards'}
         </button>
-        {locked && <span className="text-xs text-mute">Show mode is on</span>}
+        {locked && <span className="text-xs text-mute">Show lock is on</span>}
         <span className="text-xs text-mute">Boards run this if the Pi dies. Needs an active profile.</span>
       </div>
       <ErrorText error={fb.error} />
@@ -127,7 +127,7 @@ function OffsetField({ board }: { board: Board }) {
           onBlur={() => void commit()}
           onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
         />
-        {locked && <span className="text-mute">Show mode is on</span>}
+        {locked && <span className="text-mute">Show lock is on</span>}
       </label>
       <ErrorText error={error} />
     </div>
@@ -362,10 +362,11 @@ function BoardCard({ board, check, onCheck }: { board: Board; check: CheckResult
       <div className="flex items-center gap-3">
         <button
           className={`btn shrink-0 ${live.on ? 'btn-primary' : ''}`}
+          aria-pressed={live.on}
           disabled={act.busy}
           onClick={() => act.run(() => api.boards.setState(board.mac, { on: !live.on }))}
         >
-          {live.on ? 'On' : 'Off'}
+          {live.on ? 'Power: on' : 'Power: off'}
         </button>
         <input
           type="range"
@@ -386,7 +387,7 @@ function BoardCard({ board, check, onCheck }: { board: Board; check: CheckResult
       <div className="flex flex-wrap gap-2">
         <button className="btn" disabled={act.busy} onClick={() => act.run(() => api.boards.identify(board.mac))}>Identify</button>
         <button className="btn" disabled={fb.busy || locked} onClick={() => void fb.go()}>{fb.busy ? 'Saving…' : 'Save fallback'}</button>
-        {locked && <span className="self-center text-xs text-mute">Show mode is on</span>}
+        {locked && <span className="self-center text-xs text-mute">Show lock is on</span>}
         <a className="btn" href={`http://${board.ip}`} target="_blank" rel="noreferrer">WLED UI</a>
         <button className="btn" disabled={act.busy} onClick={() => act.run(() => api.boards.refresh(board.mac))}>Refresh</button>
         {!renaming && (

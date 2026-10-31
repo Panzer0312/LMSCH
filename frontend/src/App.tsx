@@ -29,11 +29,17 @@ export default function App() {
   const items = locked ? nav.filter(([to]) => to !== '/profiles' && to !== '/media' && to !== '/video') : nav
   return (
     <div className="mx-auto flex min-h-full max-w-6xl flex-col">
+      {/* Above the moments kiosk overlay (z-40): stale state there is as dangerous as anywhere. */}
+      {!connected && (
+        <div className="fixed inset-x-0 top-0 z-50 bg-blood px-4 py-1 text-center text-sm font-semibold text-white">
+          Offline – reconnecting. Shown state may be stale.
+        </div>
+      )}
       <header className="sticky top-0 z-20 border-b border-line bg-bg/95 backdrop-blur">
-        <div className="flex items-center gap-3 px-4 py-2">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2">
           <span className="text-lg font-bold tracking-tight">🎃 Spook<span className="text-pumpkin">hub</span></span>
           <span className={`text-xs ${connected ? 'text-slime' : 'text-blood'}`}>{connected ? '● live' : '● offline'}</span>
-          {locked && <span className="rounded-full bg-pumpkin/20 px-2 py-0.5 text-xs font-semibold text-pumpkin">Show mode on</span>}
+          {locked && <span className="rounded-full bg-pumpkin/20 px-2 py-0.5 text-xs font-semibold text-pumpkin">Locked</span>}
           <div className="ml-auto"><BlackoutButton /></div>
         </div>
         <nav className="flex gap-1 overflow-x-auto px-2 pb-2 text-sm">

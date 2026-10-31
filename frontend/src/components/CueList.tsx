@@ -41,13 +41,18 @@ export function CueList({ profile, boards, onSaved }: { profile: Profile; boards
   const [saved, setSaved] = useState(false)
   const { busy, error, run } = useAction()
 
+  const original = useMemo(() => JSON.stringify(sortCues(profile.cues.filter(listed)).map(strip)), [profile.cues])
+  const [prevOriginal, setPrevOriginal] = useState(original)
+
+  // Saving the profile form returns a fresh cues array with equal content; resetting then would drop unsaved row edits.
   if (profile.cues !== prevCues) {
     setPrevCues(profile.cues)
-    setRows(toRows(profile.cues))
-    setEditing(null)
+    if (original !== prevOriginal) {
+      setPrevOriginal(original)
+      setRows(toRows(profile.cues))
+      setEditing(null)
+    }
   }
-
-  const original = useMemo(() => JSON.stringify(sortCues(profile.cues.filter(listed)).map(strip)), [profile.cues])
   const dirty = JSON.stringify(rows.map((r) => r.cue)) !== original
 
   const allMacs = boards.map((b) => b.mac)

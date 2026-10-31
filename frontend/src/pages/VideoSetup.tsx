@@ -3,7 +3,7 @@ import { api } from '../api'
 import { useLive } from '../live'
 import type { DisplayGeometry, DisplayProfile, DisplaySource, Media, PatternInfo, Profile } from '../types'
 import { ErrorText } from '../components/ui'
-import { fmtTime, useAction } from '../lib'
+import { confirmStopShow, fmtTime, useAction } from '../lib'
 import { Controls } from '../video/Controls'
 import { ProfileBar } from '../video/ProfileBar'
 import { Preview, type PreviewSource } from '../video/Preview'
@@ -62,6 +62,12 @@ export default function VideoSetup() {
   const edited = edit ?? saved
   const dirty = edit !== null && !sameGeometry(edit, saved)
   const shown = ab === 'A' && dirty ? saved : edited
+  useEffect(() => {
+    if (!dirty) return
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault() }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [dirty])
 
   const { setError: setLiveError } = live
   const postLive = useSerialSender((g: DisplayGeometry) =>
@@ -84,9 +90,12 @@ export default function VideoSetup() {
     : source.kind === 'pattern' ? { kind: 'pattern', id: source.id }
       : mediaSrc ? { kind: 'video', url: api.media.fileUrl(mediaSrc.id), w: mediaSrc.width, h: mediaSrc.height } : null
 
-  const enter = (src: DisplaySource) => act.run(async () => {
-    if (await session.enter(src)) setScrubT(null)
-  })
+  const enter = (src: DisplaySource) => {
+    if (!confirmStopShow(show?.phase, 'Video setup mode')) return
+    return act.run(async () => {
+      if (await session.enter(src)) setScrubT(null)
+    })
+  }
   const leave = () => act.run(session.leave)
 
   const select = (id: number | null) => {
@@ -154,12 +163,12 @@ export default function VideoSetup() {
             <button className="btn btn-danger" disabled={act.busy} onClick={() => void leave()}>Leave setup mode</button>
           ) : (
             <button className="btn btn-primary" disabled={act.busy || locked || blackout}
-              title={blackout ? 'Blackout is on' : locked ? 'Show mode is on' : 'Stops any running show'}
+              title={blackout ? 'Blackout is on' : locked ? 'Show lock is on' : 'Stops any running show'}
               onClick={() => void enter(DEFAULT_SOURCE)}>Start setup mode</button>
           )}
         </div>
       </div>
-      {locked && <p className="text-sm text-pumpkin">Show mode is on. Turn it off in Settings to adjust the projector.</p>}
+      {locked && <p className="text-sm text-pumpkin">Show lock is on. Turn it off in Settings to adjust the projector.</p>}
       {!setupOn && !locked && <p className="text-sm text-mute">Starting setup mode stops any show. Leaving restores the idle state. Edits and saving work without it, but only setup mode shows them live.</p>}
       <ErrorText error={act.error ?? live.error ?? stateError} />
       {display && !display.warp_supported && needsWarp(edited) && (

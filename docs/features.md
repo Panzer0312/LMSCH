@@ -17,6 +17,20 @@
 | `/settings` | Settings | Sync offset, health interval, default transition, log level, mpv output, brightness and volume caps, show mode toggle, test pattern, PIN, trigger token, backup/restore. Jukebox: "Reset jukebox admin" (next device joining `/music` becomes host). Footer shows deployed commit and install time |
 
 Blackout button is in the header on every page. Stops video, blacks projector, boards off, held until released.
+A failed blackout request shows "FAILED – RETRY" on the button for 4 s.
+
+**Operator guards (all pages):**
+- WS down ⇒ red "Offline – reconnecting" bar on top, also over the moments kiosk.
+- Actions that stop a running show ask first: Activate (Profiles, Dashboard chips), Test pattern
+  on, Video setup mode / source on projector.
+- Play/Stop stays disabled until the hub confirms over WS (max 3 s); a moment button ignores taps
+  while its play request runs and 1 s after,
+  so a double tap can't repeat the action.
+- Unsaved profile form, timeline cues, video geometry or a running upload ⇒ browser warns on
+  reload/close. "Back" and "Open timeline editor" ask when the profile form is unsaved.
+- A light or video profile without "All boards" and without any board can't be saved.
+- Failed master brightness/volume update ⇒ slider snaps back to the hub value.
+- Template delete, jukebox song remove ask for confirm.
 
 ## Setup page
 
@@ -94,11 +108,12 @@ Dashboard banner shows when any check fails.
 ## Show mode
 
 - **Lock** (`show_lock`, toggle on `/show` or Settings): editing endpoints return 423 and the UI
-  shows "Show mode is on". Show controls stay open. Unlocking needs the PIN when one is set.
+  shows "Show lock is on"; the header badge reads "Locked", the button "Unlock". Dashboard profile
+  chips are disabled. Show controls stay open. Unlocking needs the PIN when one is set.
   Turning the lock on stops calibration, test sound, test-all and the test pattern.
 - **`/show` page:** Trigger, Play/Stop, Next, Blackout, brightness and volume sliders (limited by
-  the caps), current profile + progress, preflight dot, per-board Base / Off / White buttons.
-  "Base" clears the manual override so the profile look returns. A red banner shows while
+  the caps), current profile + progress, preflight dot, per-board Auto / Off / White buttons.
+  "Auto" clears the manual override so the profile look returns. A red banner shows while
   calibration, a setup test or the test pattern runs (triggers are refused); its "Stop" turns
   calibration / test pattern off, also under the lock.
 - **Soundboard** (on `/show`, shown when audio media exists, collapsible): one button per audio
@@ -148,8 +163,9 @@ Mobile-first, works on a desktop for the host. Live over `/ws/jukebox`, reconnec
 - **Skip:** "Vote skip · votes/needed", disabled after voting. The requester sees "Skip my song",
   the host "Skip"; both skip at once.
 - **Search:** debounced 350 ms; pasting a Spotify track link works. "Add" shows a toast; server
-  errors (limit, duplicate, closed, banned, too long) show as red toasts. Buttons read "Queued ✓",
-  "Playing", "Explicit off" or "Too long" when adding can't work. Spotify not connected ⇒ search
+  errors (limit, duplicate, closed, banned, too long) show as red toasts. Buttons read "Closed" (guests,
+  requests closed), "Queued ✓" (from the live queue), "Playing", "Explicit off" or "Too long" when
+  adding can't work. Socket down ⇒ "Reconnecting…" under the header; no state after 5 s ⇒ WiFi hint. Spotify not connected ⇒ search
   is disabled with a hint.
 - **My songs:** `n / limit` (host: ∞). **Up next:** play order, position, requester, own songs
   marked "yours" with remove. **Recently played:** collapsible, last 20.

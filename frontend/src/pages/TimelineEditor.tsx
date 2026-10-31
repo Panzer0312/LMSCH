@@ -96,7 +96,8 @@ export default function TimelineEditor() {
             onBlur={(e) => {
               const v = e.target.value === '' ? null : Math.max(0.5, Number(e.target.value) || 0.5)
               if (v !== profile.idle_length_s) setLength(v)
-            }} />
+            }}
+            onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }} />
         </label>
       )}
       <ErrorText error={len.error} />
@@ -286,6 +287,15 @@ function Editor({ profile, media, mediaId, initialAudio, track, getLatest, setLa
     const s = saver.current
     return () => { if (s.pending) persist().catch(() => {}) }
   }, [persist])
+  const unsaved = rev > savedRev || saveErr != null
+  const unsavedRef = useRef(unsaved)
+  useEffect(() => { unsavedRef.current = unsaved }, [unsaved])
+  useEffect(() => {
+    // The unmount flush cannot finish once the page itself unloads.
+    const h = (e: BeforeUnloadEvent) => { if (unsavedRef.current) { e.preventDefault(); e.returnValue = '' } }
+    window.addEventListener('beforeunload', h)
+    return () => window.removeEventListener('beforeunload', h)
+  }, [])
 
   // --- live audition ---
   const [audition, setAudition] = useState(false)
@@ -570,7 +580,8 @@ function Editor({ profile, media, mediaId, initialAudio, track, getLatest, setLa
   return (
     <div className="space-y-4">
       <header className="flex flex-wrap items-center gap-3">
-        <Link to={`/profiles/${pid}`} className="btn">← Back</Link>
+        <Link to={`/profiles/${pid}`} className="btn"
+          onClick={(e) => { if (unsaved && !window.confirm('Unsaved cue changes, leave anyway?')) e.preventDefault() }}>← Back</Link>
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-lg font-semibold">{profile.name}</h1>
           <p className="truncate text-xs text-mute">

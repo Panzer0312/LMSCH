@@ -5,7 +5,7 @@ import { useAdoptedBoards, useLive } from '../live'
 import type { EventRow, EventStats, Phase, Profile, ShowEvent } from '../types'
 import { BlackoutButton } from '../components/BlackoutButton'
 import { ErrorText, Section, StatusDot } from '../components/ui'
-import { fmtTime, useAction } from '../lib'
+import { confirmStopShow, fmtTime, useAction, useSettle } from '../lib'
 
 const phaseStyle: Record<Phase, string> = {
   none: 'border-line text-mute',
@@ -67,6 +67,7 @@ function Controls() {
   useEffect(() => () => window.clearTimeout(msgTimer.current), [])
 
   const playing = show?.phase === 'playing' || show?.phase === 'paused'
+  const settle = useSettle(playing, 3000)
   const isVideo = show?.profile?.type === 'video'
 
   const trigger = async () => {
@@ -87,8 +88,8 @@ function Controls() {
         <button
           type="button"
           className="btn h-20 text-lg"
-          disabled={busy || !isVideo}
-          onClick={() => run(() => (playing ? api.show.stop() : api.show.play(0)))}
+          disabled={busy || settle.pending || !isVideo}
+          onClick={() => { settle.arm(); void run(() => (playing ? api.show.stop() : api.show.play(0))) }}
         >
           {playing ? 'Stop' : 'Play'}
         </button>
@@ -196,6 +197,8 @@ function LevelSlider({ label, field, scale, max }: {
   const timer = useRef<number | undefined>(undefined)
   const pending = useRef<number | null>(null)
   const { error, run } = useAction()
+  const liveRef = useRef(live)
+  useEffect(() => { liveRef.current = live }, [live])
 
   useEffect(() => {
     if (!dragging.current && live != null) setVal(Math.round(live * scale))
@@ -213,7 +216,10 @@ function LevelSlider({ label, field, scale, max }: {
     if (v == null) return
     pending.current = null
     lastSent.current = Date.now()
-    void run(() => api.settings.update({ [field]: v / scale }))
+    void run(() => api.settings.update({ [field]: v / scale })).then((r) => {
+      // A refused update must not leave the slider showing a level the hub never applied.
+      if (r === undefined && !dragging.current && liveRef.current != null) setVal(Math.round(liveRef.current * scale))
+    })
   }
 
   const onInput = (v: number) => {
@@ -260,7 +266,9 @@ function LevelSlider({ label, field, scale, max }: {
 }
 
 function ProfileSwitcher() {
-  const { profilesRev, show } = useLive()
+  const { profilesRev, show, settings } = useLive()
+  // Activate is not on the show-lock allowlist; a tap would only earn a 423.
+  const locked = !!settings?.show_lock
   const activeId = show?.profile?.id ?? null
   const [profiles, setProfiles] = useState<Profile[]>([])
   const load = useAction()
@@ -287,8 +295,12 @@ function ProfileSwitcher() {
               <button
                 key={p.id}
                 type="button"
-                disabled={act.busy}
-                onClick={() => void act.run(() => api.profiles.activate(p.id))}
+                disabled={act.busy || locked}
+                title={locked ? 'Unlock to switch profiles' : undefined}
+                onClick={() => {
+                  if (active || !confirmStopShow(show?.phase, `Switching to "${p.name}"`)) return
+                  void act.run(() => api.profiles.activate(p.id))
+                }}
                 className={`btn h-14 shrink-0 snap-start flex-col gap-0 px-4 ${active ? 'border-pumpkin bg-pumpkin/15 text-pumpkin' : ''}`}
               >
                 <span className="max-w-40 truncate">{p.name}</span>

@@ -22,6 +22,7 @@ export function LightStateEditor({ value, onChange, boards, fxdata }: {
   const effects = ref?.effects ?? []
   const palettes = ref?.palettes ?? []
   const presets = boards.find((b) => Object.keys(b.presets).length)?.presets ?? {}
+  const hasPresets = Object.keys(presets).length > 0
   const usePreset = value.preset != null
   const set = (patch: Partial<LightState>) => onChange({ ...value, ...patch })
   const colors = value.colors ?? []
@@ -30,7 +31,8 @@ export function LightStateEditor({ value, onChange, boards, fxdata }: {
     <div className="space-y-3">
       <div className="flex gap-2 text-sm">
         <button type="button" className={`btn ${!usePreset ? 'border-ghost' : ''}`} onClick={() => set({ preset: null })}>Explicit</button>
-        <button type="button" className={`btn ${usePreset ? 'border-ghost' : ''}`} onClick={() => set({ preset: Number(Object.keys(presets)[0] ?? 1) })}>Preset</button>
+        <button type="button" className={`btn ${usePreset ? 'border-ghost' : ''}`} disabled={!hasPresets}
+          title={hasPresets ? undefined : 'No presets on the selected boards'} onClick={() => set({ preset: Number(Object.keys(presets)[0] ?? 1) })}>Preset</button>
       </div>
 
       {usePreset ? (

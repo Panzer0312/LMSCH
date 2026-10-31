@@ -123,8 +123,9 @@ function Search({ c, full }: { c: JukeCtx; full: boolean }) {
       {results && results.length > 0 && (
         <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line bg-panel">
           {results.map((t) => {
-            const isQueued = t.queued || queued.has(t.uri)
-            const blocked = isQueued ? 'Queued ✓'
+            const isQueued = queued.has(t.uri)
+            const blocked = !c.isAdmin && state.settings.accepting === false ? 'Closed'
+              : isQueued ? 'Queued ✓'
               : t.uri === playing ? 'Playing'
               : t.explicit && !state.settings.allow_explicit ? 'Explicit off'
               : t.duration_ms > maxMs ? 'Too long'
@@ -156,6 +157,7 @@ export function UpNext({ c, admin = false }: { c: JukeCtx; admin?: boolean }) {
   const { state, me } = c
   const [busy, setBusy] = useState<number | null>(null)
   const act = async (e: JukeEntry, kind: 'remove' | 'bump') => {
+    if (kind === 'remove' && !window.confirm(`Remove "${e.title}"?`)) return
     setBusy(e.id)
     await c.call(() => (kind === 'remove' ? jukeApi.remove(e.id) : jukeApi.admin.bump(e.id)),
       kind === 'remove' ? 'Removed' : `“${e.title}” plays next`)
@@ -184,10 +186,10 @@ export function UpNext({ c, admin = false }: { c: JukeCtx; admin?: boolean }) {
                   </p>
                 </div>
                 {admin && i > 0 && (
-                  <button className="btn min-h-10 px-2.5" title="Play next" disabled={busy === e.id} onClick={() => void act(e, 'bump')}>⤒</button>
+                  <button className="btn min-h-11 min-w-11 px-2.5" title="Play next" disabled={busy === e.id} onClick={() => void act(e, 'bump')}>⤒</button>
                 )}
                 {(yours || admin) && (
-                  <button className="btn min-h-10 px-2.5" title="Remove" aria-label={`Remove ${e.title}`} disabled={busy === e.id}
+                  <button className="btn min-h-11 min-w-11 px-2.5" title="Remove" aria-label={`Remove ${e.title}`} disabled={busy === e.id}
                     onClick={() => void act(e, 'remove')}>✕</button>
                 )}
               </li>

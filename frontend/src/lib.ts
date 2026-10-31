@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 export function ago(ts: number | null): string {
   if (!ts) return 'never'
@@ -33,5 +33,27 @@ export function useAction() {
     }
   }, [])
   return { busy, error, run, setError }
+}
+
+/**
+ * The POST returns before the WS state changes, so a toggle button would re-enable showing its
+ * old label and a second tap repeats the action. `pending` holds until `value` changes or `ms` pass.
+ */
+export function useSettle(value: unknown, ms = 1500) {
+  const [armed, setArmed] = useState<{ v: unknown } | null>(null)
+  const timer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(timer.current), [])
+  const arm = useCallback(() => {
+    setArmed({ v: value })
+    window.clearTimeout(timer.current)
+    timer.current = window.setTimeout(() => setArmed(null), ms)
+  }, [value, ms])
+  return { pending: armed != null && Object.is(armed.v, value), arm }
+}
+
+/** One tap on these controls stops the show, so ask first while one is running. */
+export function confirmStopShow(phase: string | null | undefined, what: string): boolean {
+  if (phase !== 'playing' && phase !== 'paused') return true
+  return window.confirm(`A show is running. ${what} stops it. Continue?`)
 }
 

@@ -221,6 +221,14 @@ export default function Media() {
 
   const uploading = progress !== null
   const processing = uploading && progress >= 1
+
+  // Leaving mid-upload aborts the XHR and loses a possibly multi-GB transfer.
+  useEffect(() => {
+    if (!uploading) return
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = '' }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [uploading])
   const shown = items?.filter((m) => filter === 'all' || (m.kind ?? 'video') === filter) ?? null
 
   return (
@@ -265,7 +273,11 @@ export default function Media() {
         </div>
 
         {items === null || shown === null ? (
-          <p className="text-sm text-mute">Loading…</p>
+          list.error && !list.busy ? (
+            <button className="btn" onClick={() => void load()}>Retry</button>
+          ) : (
+            <p className="text-sm text-mute">Loading…</p>
+          )
         ) : items.length === 0 ? (
           <p className="text-sm text-mute">No media yet. Upload a video or audio file to get started.</p>
         ) : shown.length === 0 ? (

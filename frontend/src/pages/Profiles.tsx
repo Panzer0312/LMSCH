@@ -5,7 +5,7 @@ import { CueList } from '../components/CueList'
 import { LightStateEditor } from '../components/LightStateEditor'
 import { SceneEditor } from '../components/SceneEditor'
 import { ErrorText, Section, Toggle } from '../components/ui'
-import { fmtTime, useAction } from '../lib'
+import { confirmStopShow, fmtTime, useAction } from '../lib'
 import { useAdoptedBoards, useLive } from '../live'
 import type { DisplayProfile, LightState, Media, PlaybackMode, Profile, ProfileExport, ProfileIn, ProfileType, SceneSpec } from '../types'
 
@@ -140,7 +140,7 @@ function ProfileList() {
                 : `${p.type === 'video' ? modeLabel[p.playback_mode] : 'static'} · ${p.cues.length} cue${p.cues.length === 1 ? '' : 's'}`}
             </div>
             <div className="flex flex-wrap gap-2">
-              <button className="btn btn-primary" disabled={busy || p.id === activeId} onClick={() => act(() => api.profiles.activate(p.id))}>Activate</button>
+              <button className="btn btn-primary" disabled={busy || p.id === activeId} onClick={() => confirmStopShow(live.show?.phase, `Activating "${p.name}"`) && act(() => api.profiles.activate(p.id))}>Activate</button>
               <button className="btn" onClick={() => navigate(`/profiles/${p.id}`)}>Edit</button>
               {(p.type === 'video' || (p.type === 'light' && p.idle_length_s != null)) && <button className="btn" onClick={() => navigate(`/profiles/${p.id}/timeline`)}>Timeline</button>}
               <button className="btn" disabled={busy} onClick={() => act(() => api.profiles.duplicate(p.id))}>Duplicate</button>
@@ -183,7 +183,21 @@ function ProfileEditor({ id }: { id: string }) {
   useEffect(() => { api.display.profiles().then(setDisplays).catch(() => setDisplays([])) }, [live.displayProfilesRev])
   useEffect(() => { api.profiles.list().then(setAllProfiles).catch(() => setAllProfiles([])) }, [live.profilesRev])
 
-  const back = <Link to="/profiles" className="text-sm text-ghost hover:underline">← Back to profiles</Link>
+  const dirty = draft != null
+    && JSON.stringify(toPayload(draft)) !== JSON.stringify(toPayload(profile ? toDraft(profile) : emptyDraft()))
+  const confirmLeave = () => !dirty || window.confirm('Unsaved profile changes, leave anyway?')
+
+  useEffect(() => {
+    if (!dirty) return
+    const onBeforeUnload = (e: BeforeUnloadEvent) => { e.preventDefault() }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [dirty])
+
+  const back = (
+    <Link to="/profiles" className="text-sm text-ghost hover:underline"
+      onClick={(e) => { if (!confirmLeave()) e.preventDefault() }}>← Back to profiles</Link>
+  )
 
   if (!draft) {
     return (
@@ -210,6 +224,10 @@ function ProfileEditor({ id }: { id: string }) {
   }
 
   const submit = async () => {
+    if (draft.type !== 'scene' && !draft.selection.all && draft.selection.macs.length === 0) {
+      save.setError('Select at least one board or turn on "All boards".')
+      return
+    }
     const body = toPayload(draft)
     const p = await save.run(() => (isNew ? api.profiles.create(body) : api.profiles.update(Number(id), body)))
     if (!p) return
@@ -410,7 +428,7 @@ function ProfileEditor({ id }: { id: string }) {
         <>
           <div className="card flex flex-wrap items-center justify-between gap-3">
             <p className="text-sm text-mute">Edit cues visually on the timeline (desktop), or use the quick list below.</p>
-            <button type="button" className="btn btn-primary" onClick={() => navigate(`/profiles/${profile.id}/timeline`)}>Open timeline editor</button>
+            <button type="button" className="btn btn-primary" onClick={() => confirmLeave() && navigate(`/profiles/${profile.id}/timeline`)}>Open timeline editor</button>
           </div>
           <CueList profile={profile} boards={selected} onSaved={(p) => setProfile(p)} />
         </>
@@ -419,7 +437,7 @@ function ProfileEditor({ id }: { id: string }) {
       {!isNew && profile && profile.type === 'light' && profile.idle_length_s != null && (
         <div className="card flex flex-wrap items-center justify-between gap-3">
           <p className="text-sm text-mute">Edit idle cues in the timeline's Idle tab.</p>
-          <button type="button" className="btn btn-primary" onClick={() => navigate(`/profiles/${profile.id}/timeline`)}>Open timeline editor</button>
+          <button type="button" className="btn btn-primary" onClick={() => confirmLeave() && navigate(`/profiles/${profile.id}/timeline`)}>Open timeline editor</button>
         </div>
       )}
     </div>

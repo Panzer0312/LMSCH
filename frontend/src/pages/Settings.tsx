@@ -3,7 +3,7 @@ import { api, ApiError } from '../api'
 import { useLive } from '../live'
 import type { Settings as SettingsT } from '../types'
 import { ErrorText, Section, Toggle } from '../components/ui'
-import { useAction } from '../lib'
+import { confirmStopShow, useAction } from '../lib'
 
 const LOG_LEVELS = ['debug', 'info', 'warning', 'error']
 
@@ -247,7 +247,7 @@ export default function Settings() {
       <Section title="Projector">
         <div className="card space-y-2">
           <Toggle checked={live.show?.test_pattern ?? false} label="Test pattern"
-            onChange={(v) => void tp.run(() => api.show.testPattern(v))} />
+            onChange={(v) => { if (!v || confirmStopShow(live.show?.phase, 'The test pattern')) void tp.run(() => api.show.testPattern(v)) }} />
           <p className="text-xs text-mute">Alignment grid for keystone/focus. Stops any running show.</p>
           <ErrorText error={tp.error} />
         </div>

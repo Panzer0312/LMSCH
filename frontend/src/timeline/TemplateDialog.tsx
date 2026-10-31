@@ -145,7 +145,7 @@ export function TemplateDialog({ effects, saved, onPreview, onInsert, onDeleteSa
                       {t.name}
                     </button>
                     <button type="button" className="shrink-0 rounded px-2 py-1 text-mute hover:text-blood"
-                      aria-label={`Delete ${t.name}`} title="Delete" onClick={() => onDeleteSaved(t.id)}>
+                      aria-label={`Delete ${t.name}`} title="Delete" onClick={() => { if (window.confirm(`Delete template "${t.name}"?`)) onDeleteSaved(t.id) }}>
                       ×
                     </button>
                   </div>

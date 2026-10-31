@@ -5,7 +5,7 @@ import { useAdoptedBoards, useLive } from '../live'
 import type { CheckStatus, LightState, Media, Settings } from '../types'
 import { BlackoutButton } from '../components/BlackoutButton'
 import { ErrorText, StatusDot } from '../components/ui'
-import { fmtTime, useAction } from '../lib'
+import { fmtTime, useAction, useSettle } from '../lib'
 
 const dotColor: Record<CheckStatus, string> = { ok: 'bg-slime', warn: 'bg-pumpkin', fail: 'bg-blood' }
 
@@ -54,7 +54,7 @@ function Header() {
             disabled={lockBusy || settings == null}
             onClick={toggleLock}
           >
-            {locked ? 'Locked' : 'Lock'}
+            {locked ? 'Unlock' : 'Lock'}
           </button>
         </div>
       </div>
@@ -89,6 +89,7 @@ function Controls() {
   useEffect(() => () => window.clearTimeout(msgTimer.current), [])
 
   const playing = show?.phase === 'playing' || show?.phase === 'paused'
+  const settle = useSettle(playing, 3000)
   const isVideo = show?.profile?.type === 'video'
 
   const trigger = async () => {
@@ -109,8 +110,8 @@ function Controls() {
         <button
           type="button"
           className="btn h-28 text-2xl"
-          disabled={busy || !isVideo}
-          onClick={() => run(() => (playing ? api.show.stop() : api.show.play(0)))}
+          disabled={busy || settle.pending || !isVideo}
+          onClick={() => { settle.arm(); void run(() => (playing ? api.show.stop() : api.show.play(0))) }}
         >
           {playing ? 'Stop' : 'Play'}
         </button>
@@ -172,6 +173,8 @@ function LevelSlider({ label, field, scale, max, unit }: {
   const timer = useRef<number | undefined>(undefined)
   const pending = useRef<number | null>(null)
   const { error, run } = useAction()
+  const liveRef = useRef(live)
+  useEffect(() => { liveRef.current = live }, [live])
 
   useEffect(() => {
     if (!dragging.current && live != null) setVal(Math.round(live * scale))
@@ -189,7 +192,10 @@ function LevelSlider({ label, field, scale, max, unit }: {
     if (v == null) return
     pending.current = null
     lastSent.current = Date.now()
-    void run(() => api.settings.update({ [field]: v / scale } as Partial<Settings>))
+    void run(() => api.settings.update({ [field]: v / scale } as Partial<Settings>)).then((r) => {
+      // A refused update must not leave the slider showing a level the hub never applied.
+      if (r === undefined && !dragging.current && liveRef.current != null) setVal(Math.round(liveRef.current * scale))
+    })
   }
 
   const onInput = (v: number) => {
@@ -312,7 +318,7 @@ function BoardPanel() {
             <span className="truncate font-semibold">{b.name}</span>
           </div>
           <div className="grid grid-cols-3 gap-2">
-            {([['Base', null], ['Off', OFF], ['White', WHITE]] as const).map(([name, st]) => (
+            {([['Auto', null], ['Off', OFF], ['White', WHITE]] as const).map(([name, st]) => (
               <button
                 key={name}
                 type="button"

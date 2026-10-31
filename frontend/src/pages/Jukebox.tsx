@@ -88,6 +88,15 @@ export default function Jukebox() {
     ? { state, recvMs: live.recvMs, guests: live.guests, guestsMs: live.guestsMs, me: me.guest, isAdmin, call, toast: push }
     : null), [state, live.recvMs, live.guests, live.guestsMs, me, isAdmin, call, push])
 
+  // Guests on the wrong WiFi would otherwise stare at the loading line forever.
+  const loading = !!saved.token && !checkErr && !ctx
+  const [slow, setSlow] = useState(false)
+  useEffect(() => {
+    if (!loading) return
+    const t = setTimeout(() => setSlow(true), 5000)
+    return () => { clearTimeout(t); setSlow(false) }
+  }, [loading])
+
   const claimHost = async () => {
     if (!me) return
     const r = await call(() => jukeApi.join(me.guest.name))
@@ -110,7 +119,12 @@ export default function Jukebox() {
       </div>
     )
   } else if (!ctx) {
-    body = <p className="py-16 text-center text-mute">Summoning the jukebox…</p>
+    body = (
+      <div className="space-y-2 px-4 py-16 text-center">
+        <p className="text-mute">Summoning the jukebox…</p>
+        {slow && <p className="text-sm text-blood">Can’t reach the hub – check you’re on the party WiFi.</p>}
+      </div>
+    )
   } else {
     const showHost = ctx.isAdmin && tab === 'host'
     body = (
@@ -149,6 +163,7 @@ export default function Jukebox() {
               </span>
             )}
           </div>
+          {!live.connected && <p className="pb-2 text-center text-xs text-blood">Reconnecting…</p>}
         </header>
       )}
       {body}

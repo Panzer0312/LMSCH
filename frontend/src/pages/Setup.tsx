@@ -9,7 +9,7 @@ import { ago, useAction } from '../lib'
 import { useDisplayState, useSetupSession } from '../video/hooks'
 
 const LOCK_HINT = 'A show is playing or setup is busy. Stop the show to change this.'
-const SHOW_LOCK_HINT = 'Show mode is on — turn it off in Settings or Show mode'
+const SHOW_LOCK_HINT = 'Show lock is on — turn it off in Settings or Show mode'
 
 function useLockHint() {
   const { settings } = useLive()

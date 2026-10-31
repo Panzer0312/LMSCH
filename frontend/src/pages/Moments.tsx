@@ -97,6 +97,8 @@ export default function Moments() {
     ? Math.min(1, (moment.elapsed_s + (tick.of === moment ? tick.s : 0)) / moment.duration_s)
     : null
 
+  const pending = useRef(new Set<number>())
+
   const showFlash = (id: number, msg: string) => {
     setFlash({ id, msg })
     window.clearTimeout(flashTimer.current)
@@ -104,15 +106,21 @@ export default function Moments() {
   }
 
   const press = async (m: Moment) => {
+    // Cooldown only arrives over WS, so a fast double tap would otherwise fire twice.
+    if (pending.current.has(m.id)) return
     const rem = remaining(m.id)
     if (rem > 0) {
       showFlash(m.id, `cooldown ${Math.ceil(rem)} s`)
       return
     }
+    pending.current.add(m.id)
     try {
       await api.moments.play(m.id)
     } catch (e) {
       showFlash(m.id, e instanceof Error ? e.message : String(e))
+    } finally {
+      // Cooldown can reach us over WS after the response; hold a moment longer.
+      window.setTimeout(() => pending.current.delete(m.id), 1000)
     }
   }
 
@@ -137,7 +145,9 @@ export default function Moments() {
     const next = [...list]
     ;[next[i], next[j]] = [next[j], next[i]]
     setList(next)
-    void run(() => api.moments.reorder(next.map((m) => m.id)))
+    void run(() => api.moments.reorder(next.map((m) => m.id))).then((r) => {
+      if (r === undefined) void api.moments.list().then(setList, () => undefined)
+    })
   }
 
   const remove = (m: Moment) => {

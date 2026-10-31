@@ -259,7 +259,7 @@ function Controls({ c }: { c: JukeCtx }) {
         <span className="w-14 text-mute">Volume</span>
         <input type="range" min={0} max={100} step={1} className="flex-1 accent-pumpkin" value={shown}
           onChange={(e) => setVol(Number(e.target.value))}
-          onPointerUp={() => void commit()} onKeyUp={() => void commit()} onTouchEnd={() => void commit()} />
+          onPointerUp={() => void commit()} onKeyUp={() => void commit()} />
         <span className="w-8 text-right tabular-nums">{shown}</span>
       </label>
     </NowPlaying>
