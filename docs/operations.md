@@ -137,6 +137,7 @@ or `[mpv] vo` in config). Plain `gpu` ignores the shader; preflight warns "Keyst
 | Service restarts every 30 s | Watchdog firing: event loop hung. `journalctl -u spookhub` before the restart. |
 | Edits return 423 | Show mode is on. Unlock on `/show` or Settings (PIN if set). |
 | Preflight red | Click the failing check; the fix link points to the page. |
+| Jukebox: songs queued, "Silence in the crypt…" | The card names the reason. Speaker not found ⇒ row below. "Spotify is playing on X" ⇒ stop it there. Host **▶ Play** starts the queue by hand and shows the error as a toast. |
 | Jukebox: device not found | `systemctl status raspotify`. Select "Spookhub" once in a Spotify app on the same WiFi. Name must match `[jukebox] device_name` (re-run `install.sh` after changing it). |
 | Jukebox: no sound from Spotify, mpv works | `journalctl -u raspotify -e` (ALSA open errors). `/etc/raspotify/conf` has `LIBRESPOT_DEVICE=default`? Drop-in `raspotify.service.d/spookhub.conf` present (group `audio` for dmix)? `/etc/asound.conf` is dmix with `ipc_gid audio`. |
 | Jukebox: Spotify 403 | Account is not Premium, or the Spotify app is in development mode and the account is missing from its User Management. |

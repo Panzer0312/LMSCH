@@ -70,9 +70,26 @@ export function voteKey(now: JukeNow): string {
   return `${now.entry_id ?? 'x'}:${now.uri}`
 }
 
+/**
+ * Why nothing plays although songs wait. The hub starts the queue only with Spotify connected,
+ * the speaker found and nothing paused; otherwise the queue sits silently.
+ */
+export function idleReason(state: JukeboxState): string {
+  const sp = state.spotify
+  if (!sp.connected) return 'Spotify isn’t connected yet. The host sets it up on the Host tab.'
+  if (state.queue.length === 0) return 'Add a song to get the party going.'
+  if (state.paused) return 'Paused. The queue waits.'
+  if (sp.error) return sp.error
+  if (!sp.device_found) {
+    return `Speaker “${sp.device_name}” not found. On a phone in this WiFi open Spotify, tap the devices icon and pick “${sp.device_name}” once.`
+  }
+  return 'Starting the next song…'
+}
+
 /** User-facing text for HTTP failures where the server detail is too technical. */
 export function friendlyError(status: number, detail: string): string {
-  if (status === 503) return 'Spotify isn’t connected yet. Ask the host to set it up.'
+  // 503 also means "speaker not found", which the host can fix; keep that detail.
+  if (status === 503) return detail.startsWith('Speaker') ? detail : 'Spotify isn’t connected yet. Ask the host to set it up.'
   if (status === 0) return detail
   if (status >= 500) return 'The hub hiccupped. Try again.'
   return detail
