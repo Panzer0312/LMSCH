@@ -9,11 +9,12 @@ import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from spookhub.api.deps import get_hub
 from spookhub.hub import Hub
+from spookhub.jukebox.player_page import PAGE
 from spookhub.jukebox.service import JukeboxError, JukeboxService
 
 log = logging.getLogger(__name__)
@@ -53,6 +54,14 @@ async def get_admin(jb: JukeDep, g: GuestDep) -> dict[str, Any]:
 
 
 AdminDep = Annotated[dict[str, Any], Depends(get_admin)]
+
+
+async def get_player(jb: JukeDep, x_player_key: Annotated[str | None, Header()] = None) -> None:
+    if not jb.player_auth(x_player_key):
+        raise HTTPException(403, "player key required")
+
+
+PlayerDep = Annotated[None, Depends(get_player)]
 OK = {"ok": True}
 
 
@@ -235,6 +244,26 @@ async def spotify_callback(
         except JukeboxError as exc:
             log.warning("jukebox: Spotify callback failed: %s", exc.detail)
     return RedirectResponse("/music?spotify=error", status_code=302)
+
+
+@router.get("/player", include_in_schema=False)
+async def player_page() -> HTMLResponse:
+    return HTMLResponse(PAGE, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/player/token")
+async def player_token(jb: JukeDep, _: PlayerDep) -> dict[str, str]:
+    return await jb.player_token()
+
+
+class PlayerStatusIn(BaseModel):
+    error: str | None = Field(default=None, max_length=1000)
+
+
+@router.post("/player/status")
+async def player_status(body: PlayerStatusIn, jb: JukeDep, _: PlayerDep) -> dict[str, bool]:
+    jb.player_status(body.error)
+    return OK
 
 
 # ----- outside the open prefix -----
