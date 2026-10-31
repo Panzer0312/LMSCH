@@ -105,6 +105,10 @@ class JukeboxService:
     SKIP_DEBOUNCE_S = 1.5
     BACKOFF_MIN_S = 5.0
     BACKOFF_MAX_S = 60.0
+    # A track that stops before half of it played, with nothing else on the speaker, was cut by
+    # the speaker (librespot exits when it can't open the audio device). Retry it, don't burn the
+    # queue through a dead speaker.
+    LOST_RETRY_S = 10.0
 
     def __init__(
         self,
@@ -151,6 +155,13 @@ class JukeboxService:
         self._transferred: str | None = None
         self._volume_sent: tuple[str, int] | None = None
         self._play_fails: dict[int, int] = {}
+        self._lost = 0
+        self._lost_msg: str | None = None
+        self._cur_progress = 0  # last progress Spotify reported for our current track
+        self._other_device = False  # last poll: playback sat on another (paused) device
+        # Our last track's uri (or Spotify autoplay's follow-up), paused at the end so autoplay
+        # can't play random songs; hidden from "now playing".
+        self._ended_uri: str | None = None
         self._op = asyncio.Lock()
         self._wake = asyncio.Event()
         self._tasks: list[asyncio.Task[None]] = []
@@ -619,6 +630,7 @@ class JukeboxService:
                         await self._play_fallback(dev)
                 else:
                     await self._quiet_pause(dev)
+                    self._ended_uri = self.now["uri"] if self.now else None
                     self.current = None
                     self.now = None
                     self._save()
@@ -677,6 +689,52 @@ class JukeboxService:
         except SpotifyError as exc:
             if exc.status != 403:  # 403 = already playing
                 raise
+
+    # ----- audio output -----
+
+    def write_audio_device(self, name: str | None) -> bool:
+        """Store the mpv audio device for the music sink. True when the file changed."""
+        path = self.jc.audio_device_file
+        if path is None or not path.parent.is_dir():
+            return False
+        text = f"{name or 'auto'}\n"
+        try:
+            if path.read_text() == text:
+                return False
+        except OSError:
+            pass
+        try:
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(text)
+            tmp.chmod(0o644)  # raspotify runs as another (dynamic) user
+            tmp.replace(path)
+        except OSError as exc:
+            log.warning("jukebox: audio device not written to %s: %s", path, exc)
+            return False
+        return True
+
+    async def set_audio_device(self, name: str | None) -> None:
+        if not self.write_audio_device(name):
+            return
+        # The sink reads the file when it starts, and librespot stops it on pause: pause and
+        # resume move a playing song to the new output now.
+        async with self._op:
+            dev = self.device_id
+            if not (dev and self.spotify.connected and self.paused is None):
+                return
+            if not (self.now and self.now.get("is_playing")):
+                return
+            try:
+                await self._quiet_pause(dev)
+                await asyncio.sleep(0.5)
+                await self._quiet_resume(dev)
+            except SpotifyError as exc:
+                # Left paused: show it as a host pause so Resume is offered, not a silent stall.
+                log.warning("jukebox: sink restart failed: %s", exc.message)
+                self.paused = "admin"
+                if self.now:
+                    self.now = {**self.now, "is_playing": False, "at": time.time()}
+                self._publish()
 
     # ----- Spotify setup -----
 
@@ -869,17 +927,25 @@ class JukeboxService:
             if pb.get("is_playing"):
                 elsewhere = str((pb.get("device") or {}).get("name") or "another device")
             pb = None
+            self._other_device = True
         elif pb is not None:
             dev = pb.get("device") or {}
             if dev.get("id"):
                 self.device_id, self.device_found = str(dev["id"]), True
+        if pb is not None or elsewhere:
+            self._other_device = elsewhere is not None
         self._absorb(pb)
         await self._apply_show(pb)
         playing = bool(pb and pb.get("is_playing"))
         delay = self.jc.poll_active_s if (playing or self.queue) else self.jc.poll_idle_s
         if self.paused is None and self.device_id and elsewhere is None:
             delay = await self._decide(pb, delay)
-        self.error = f"Spotify is playing on '{elsewhere}'; the queue waits" if elsewhere else None
+        if elsewhere:
+            self.error = f"Spotify is playing on '{elsewhere}'; the queue waits"
+        else:
+            if not self.queue and self.current is None:
+                self._lost = 0  # the requeued song was removed: nothing to retry
+            self.error = self._lost_msg if self._lost else None
         self._publish()
         return delay
 
@@ -889,6 +955,9 @@ class JukeboxService:
             self.now = None
             return
         t = track_info(item)
+        if t["uri"] == self._ended_uri and not (pb or {}).get("is_playing"):
+            self.now = None
+            return
         cur = self.current
         ours = cur is not None and t["uri"] == cur["uri"]
         if cur is not None and not ours and self._in_grace():
@@ -943,6 +1012,8 @@ class JukeboxService:
 
         if self.current is not None:
             self._foreign_uri = None
+            if uri == self.current["uri"] and progress > 0:
+                self._cur_progress = progress
             if uri != self.current["uri"]:
                 if self._in_grace():
                     return min(delay, 0.5)
@@ -952,14 +1023,26 @@ class JukeboxService:
                 if progress >= 1000 or self._in_grace():
                     return delay  # paused in the Spotify app: reflect, don't advance
             elif left > margin:
+                if progress >= 10_000:
+                    self._lost = 0  # the retry plays: the speaker is back
                 return self._until_end(left, delay)
+            if self._lost_speaker(uri, playing, progress):
+                return self._requeue_lost()
             # Our track ended (or is in its last 300 ms).
+            self._lost = 0
+            dur = int(self.current.get("duration_ms") or 0)
             self.current = None
             self._dirty = True
             if self.queue:
                 await self._advance(dev)
             elif self.settings["fallback_uri"]:
                 await self._play_fallback(dev)
+            elif uri is not None and self._cur_progress >= dur - 2 * self.NEAR_END_MS:
+                # Our song ran out: Spotify autoplay would start "similar" random songs. A track
+                # picked by hand in the Spotify app mid-song keeps playing.
+                await self._quiet_pause(dev)
+                self._ended_uri = uri
+                self.now = None
             return delay
 
         prev, self._foreign_uri = self._foreign_uri, uri
@@ -969,7 +1052,7 @@ class JukeboxService:
             # Never cut the fallback (or anything not ours) mid-song, playing or paused in the
             # Spotify app: wait for its end or a track change.
             changed = prev is not None and uri != prev
-            stopped = not playing and (uri is None or progress < 1000)
+            stopped = not playing and (uri is None or progress < 1000 or uri == self._ended_uri)
             if stopped or left <= margin or changed:
                 await self._advance(dev)
                 return delay
@@ -979,6 +1062,36 @@ class JukeboxService:
         if fb and not playing and not paused_mid:
             await self._play_fallback(dev)
         return delay
+
+    def _lost_speaker(self, uri: str | None, playing: bool, progress: int) -> bool:
+        cur = self.current
+        assert cur is not None
+        if self._other_device:
+            return False  # moved to another device in the Spotify app: the user's choice
+        gone = uri is None or (uri == cur["uri"] and not playing and progress < 1000)
+        # Spotify's progress, not wall time: show pauses and host pauses don't count.
+        return gone and self._cur_progress < int(cur.get("duration_ms") or 0) / 2
+
+    def _requeue_lost(self) -> float:
+        cur = self.current
+        assert cur is not None
+        self.current = None
+        self.now = None
+        self.seq += 1
+        self.queue.append({**cur, "bumped_seq": self.seq})
+        if self.history and self.history[0].get("title") == cur.get("title"):
+            self.history.pop(0)
+        self._lost += 1
+        self._dirty = True
+        msg = (
+            f"Speaker '{self.device_name}' stopped playing. Check Setup → Audio output and "
+            "`systemctl status raspotify`; retrying"
+        )
+        self._lost_msg = msg
+        self._set_error(msg)
+        if self._lost == 1:
+            self.bus.event("warn", f"Jukebox: {msg}")
+        return min(self.BACKOFF_MAX_S, self.LOST_RETRY_S * self._lost)
 
     def _until_end(self, left_ms: int, delay: float) -> float:
         if left_ms < self.NEAR_END_MS:
@@ -1023,6 +1136,8 @@ class JukeboxService:
         self._started_at = time.monotonic()
         self._fallback_on = False
         self._foreign_uri = None
+        self._ended_uri = None
+        self._cur_progress = 0
         self.votes.clear()
         self._votes_uri = entry["uri"]
         self.now = {
@@ -1069,5 +1184,6 @@ class JukeboxService:
         self.current = None
         self._fallback_on = True
         self._foreign_uri = None
+        self._ended_uri = None
         self._started_at = time.monotonic()
         self._dirty = True

@@ -35,6 +35,8 @@ id -u "$USER_NAME" >/dev/null 2>&1 || useradd --system --home-dir "$DATA" --shel
 for g in video render audio; do getent group "$g" >/dev/null && usermod -aG "$g" "$USER_NAME"; done
 install -d -m 0755 "$APP" "$ETC"
 install -d -m 0750 -o "$USER_NAME" -g "$USER_NAME" "$DATA" "$DATA/media"
+# The hub writes its audio output here for the jukebox sink, which runs as raspotify's dynamic user.
+install -d -m 0755 -o "$USER_NAME" -g "$USER_NAME" /var/lib/spookhub-audio
 
 log "Frontend"
 # frontend/dist is not in git. Rebuild whenever its inputs changed (git pull workflow), not only when
@@ -119,35 +121,63 @@ if [[ ! -e /etc/asound.conf ]] \
       echo "WARNING: no HDMI playback device found (aplay missing or no HDMI card); using hw:0,${ALSA_DEVICE}" >&2
     fi
   fi
-  cat >/etc/asound.conf <<CONF
+  # One shared output (plug -> dmix) per playback port, listed in Setup → Audio output as
+  # "Spookhub shared: …" (alsa/spook_C_D). Video, effects, ambience and the jukebox all share the
+  # port picked there; the default points at the detected port.
+  APLAY="${APLAY:-$(LC_ALL=C aplay -l 2>/dev/null || true)}"
+  PORTS="$(sed -nE 's/^card ([0-9]+): [^ ]+ \[([^]]*)\], device ([0-9]+): ([^[]*)\[([^]]*)\].*/\1 \3 \2|\4|\5/p' <<<"$APLAY")"
+  grep -q "^${ALSA_CARD} ${ALSA_DEVICE} " <<<"$PORTS" || PORTS="${ALSA_CARD} ${ALSA_DEVICE} card ${ALSA_CARD}|device ${ALSA_DEVICE}|
+${PORTS}"
+  {
+    cat <<CONF
 # spookhub-managed
-# Written by Spookhub install.sh (dmix default so several players share the card).
+# Written by Spookhub install.sh (dmix per port so several players share it).
 # Remove the marker line above to keep install.sh from rewriting this file.
 pcm.!default {
   type plug
-  slave.pcm "spookmix"
-}
-pcm.spookmix {
-  type dmix
-  ipc_key 5150
-  ipc_gid audio
-  ipc_perm 0660
-  slave {
-    pcm "hw:${ALSA_CARD},${ALSA_DEVICE}"
-    rate 48000
-  }
+  slave.pcm "spookmix_${ALSA_CARD}_${ALSA_DEVICE}"
 }
 ctl.!default {
   type hw
   card ${ALSA_CARD}
 }
 CONF
+    while read -r C D REST; do
+      [[ -n "$C" ]] || continue
+      IFS='|' read -r CARDNAME DEVNAME ELD <<<"$REST"
+      DEVNAME="${DEVNAME% }"
+      # An HDMI port with a display shows the display's name instead of "HDMI N".
+      LABEL="$DEVNAME"
+      [[ -n "$ELD" && "$ELD" != "$DEVNAME" && ! "$ELD" =~ ^HDMI\ [0-9]+$ ]] && LABEL="$DEVNAME · $ELD"
+      LABEL="${LABEL//\"/} (${CARDNAME//\"/}, hw:$C,$D)"
+      cat <<CONF
+pcm.spookmix_${C}_${D} {
+  type dmix
+  ipc_key $((5200 + C * 100 + D))
+  ipc_gid audio
+  ipc_perm 0660
+  slave {
+    pcm "hw:${C},${D}"
+    rate 48000
+  }
+}
+pcm.spook_${C}_${D} {
+  type plug
+  slave.pcm "spookmix_${C}_${D}"
+  hint {
+    show on
+    description "Spookhub shared: ${LABEL}"
+  }
+}
+CONF
+    done <<<"$PORTS"
+  } >/etc/asound.conf
   echo "wrote /etc/asound.conf (dmix on hw:${ALSA_CARD},${ALSA_DEVICE})"
 else
   echo "keeping existing /etc/asound.conf (not spookhub-managed): make sure it defines a dmix default"
 fi
-echo "note: mpv audio device must be 'auto' or 'alsa/default' so all players share dmix;"
-echo "      raw 'alsa/hdmi:...' or 'alsa/hw:...' devices grab the card and block the effects players."
+echo "note: pick a 'Spookhub shared: …' output (alsa/spook_C_D) or 'auto' in Setup → Audio output;"
+echo "      raw 'alsa/hdmi:...' or 'alsa/hw:...' devices grab the port and block effects and music."
 
 log "Jukebox: Spotify Connect speaker (raspotify)"
 # Optional: any failure (no network, repo down, no package for this arch) only warns. Each step
@@ -189,9 +219,9 @@ install_raspotify() {
 # spookhub-managed
 # Written by Spookhub install.sh. Remove the marker line above to keep your own settings.
 LIBRESPOT_NAME="${JUKEBOX_NAME}"
-LIBRESPOT_BACKEND=alsa
-# "default" is the Spookhub dmix (/etc/asound.conf), shared with the mpv players.
-LIBRESPOT_DEVICE=default
+# The sink plays on Spookhub's Setup → Audio output (scripts/music-sink.sh, aplay on the dmix).
+LIBRESPOT_BACKEND=subprocess
+LIBRESPOT_DEVICE="$APP/scripts/music-sink.sh"
 LIBRESPOT_BITRATE=320
 LIBRESPOT_INITIAL_VOLUME=70
 LIBRESPOT_SYSTEM_CACHE=/var/cache/raspotify
@@ -199,7 +229,7 @@ LIBRESPOT_ENABLE_VOLUME_NORMALISATION=
 LIBRESPOT_DISABLE_AUDIO_CACHE=
 LIBRESPOT_QUIET=
 CONF
-    echo "/etc/raspotify/conf: speaker \"${JUKEBOX_NAME}\", ALSA default"
+    echo "/etc/raspotify/conf: speaker \"${JUKEBOX_NAME}\", sink follows Spookhub audio output"
   else
     echo "keeping existing /etc/raspotify/conf (not spookhub-managed)"
   fi

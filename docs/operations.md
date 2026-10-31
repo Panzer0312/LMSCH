@@ -41,27 +41,32 @@ device allows one opener; `dmix` lets them share it.
 - `install.sh` writes `/etc/asound.conf` when it is absent or carries the `# spookhub-managed`
   marker (older installs: the `# Written by Spookhub install.sh` header). Any other file is kept;
   it must define a dmix default itself. Delete the marker line to stop rewrites.
-- Content: `pcm.!default` = plug → `spookmix` (dmix, `ipc_gid audio`, `ipc_perm 0660`, 48 kHz) on
-  `hw:CARD,DEVICE`, `ctl.!default` on that card.
+- Content: per playback port of `aplay -l` a dmix `spookmix_C_D` (`ipc_key 5200+100·C+D`,
+  `ipc_gid audio`, `ipc_perm 0660`, 48 kHz on `hw:C,D`) and a plug `spook_C_D` with an ALSA hint, so
+  Setup → Audio output lists it as "Spookhub shared: HDMI 0 · <display> (card, hw:C,D)".
+  `pcm.!default` = plug → dmix of the detected port, `ctl.!default` on that card.
 - Device choice: `SPOOKHUB_ALSA_CARD` / `SPOOKHUB_ALSA_DEVICE` env when set
   (`sudo SPOOKHUB_ALSA_CARD=1 SPOOKHUB_ALSA_DEVICE=3 scripts/install.sh`). Else the first HDMI
   port with a connected display (aplay shows its name instead of `[HDMI N]`), else the first HDMI
   port, else `hw:0,0` with a warning.
-- mpv audio device must be `auto` or `alsa/default` (Setup → Audio output or `mpv_audio_device`).
-  A raw `alsa/hdmi:…` or `alsa/hw:…` device grabs the card and blocks the effects players.
+- Pick a "Spookhub shared" output (`alsa/spook_C_D`) or Default in Setup → Audio output. A raw
+  `alsa/hdmi:…` or `alsa/hw:…` device grabs the port and blocks effects, ambience and the
+  jukebox; Setup and preflight warn. Re-run `install.sh` after plugging in a new display so its
+  name shows.
 - Dev desktop (PipeWire) needs nothing.
 
 ## Jukebox (Spotify)
 
 Guests open `http://<hub-ip>/music`, search Spotify and queue songs. The hub plays them through
-librespot (package `raspotify`), a Spotify Connect speaker on the same dmix as mpv.
+librespot (package `raspotify`), a Spotify Connect speaker. Music plays on Setup → Audio output,
+like video and effects.
 
 **What `install.sh` does** (idempotent):
 
 | Step | Detail | Opt-out |
 |---|---|---|
 | raspotify | Adds apt repo `https://dtcooper.github.io/raspotify` (key `/usr/share/keyrings/raspotify_key.asc`), installs `raspotify`. | `SPOOKHUB_SPOTIFY=0` |
-| `/etc/raspotify/conf` | Written when absent or marked `# spookhub-managed` (else kept). Name = `[jukebox] device_name` (default `Spookhub`), ALSA `default` (dmix), 320 kbit/s, initial volume 70, normalisation on, audio cache off, credential cache on. | delete the marker line |
+| `/etc/raspotify/conf` | Written when absent or marked `# spookhub-managed` (else kept). Name = `[jukebox] device_name` (default `Spookhub`), backend `subprocess` = `/opt/spookhub/scripts/music-sink.sh` (aplay on the device in `/var/lib/spookhub-audio/device`, written by the hub; dir 0755 owned by `spookhub`), 320 kbit/s, initial volume 70, normalisation on, audio cache off, credential cache on. | delete the marker line |
 | Unit drop-in | `raspotify.service.d/spookhub.conf`: `SupplementaryGroups=audio` (dmix `ipc_gid audio`), `CacheDirectory=raspotify` (cached login). Enables raspotify; restarts it only when conf or drop-in changed or it is not running, so a re-deploy mid-party keeps the music. Network steps time out (curl 60 s, apt 300 s). | |
 | Port 80 | `spookhub-http.socket` (`ListenStream=80`) + `spookhub-http.service` (`systemd-socket-proxyd 127.0.0.1:<port>`, `DynamicUser=yes`). Port = `SPOOKHUB_SERVER__PORT` from the spookhub unit or a drop-in, else `[server] port`, else 8080. Proxy restarts only when its unit changed. Skipped with a warning when another program listens on :80; guests then use `http://<ip>:<port>/music`. | `SPOOKHUB_PORT80=0` (also disables an existing forward) |
 
@@ -139,7 +144,8 @@ or `[mpv] vo` in config). Plain `gpu` ignores the shader; preflight warns "Keyst
 | Preflight red | Click the failing check; the fix link points to the page. |
 | Jukebox: songs queued, "Silence in the crypt…" | The card names the reason. Speaker not found ⇒ row below. "Spotify is playing on X" ⇒ stop it there. Host **▶ Play** starts the queue by hand and shows the error as a toast. |
 | Jukebox: device not found | `systemctl status raspotify`. Select "Spookhub" once in a Spotify app on the same WiFi. Name must match `[jukebox] device_name` (re-run `install.sh` after changing it). |
-| Jukebox: no sound from Spotify, mpv works | `journalctl -u raspotify -e` (ALSA open errors). `/etc/raspotify/conf` has `LIBRESPOT_DEVICE=default`? Drop-in `raspotify.service.d/spookhub.conf` present (group `audio` for dmix)? `/etc/asound.conf` is dmix with `ipc_gid audio`. |
+| Jukebox: skips through songs, "Speaker … stopped playing" | The sink can't open the output (raw device held by mpv). Setup → Audio output: pick "Spookhub shared: …". `scripts/hubcheck.sh` jukebox section shows the music output and the last raspotify errors. |
+| Jukebox: no sound from Spotify, mpv works | `journalctl -u raspotify -e` (ALSA open errors). `/etc/raspotify/conf` has `LIBRESPOT_BACKEND=subprocess` and the `music-sink.sh` device (re-run `install.sh`)? `/var/lib/spookhub-audio/device` names the Setup output? Drop-in `raspotify.service.d/spookhub.conf` present (group `audio` for dmix)? `/etc/asound.conf` is dmix with `ipc_gid audio`. |
 | Jukebox: Spotify 403 | Account is not Premium, or the Spotify app is in development mode and the account is missing from its User Management. |
 | Guests can't open `http://<ip>/music` | `systemctl status spookhub-http.socket`. Installer warned about another :80 listener? Use `http://<ip>:<port>/music`. |
 | Keystone/mask has no effect | mpv `vo` is not `gpu-next`. Set it in Settings → "mpv video output (vo)" or `[mpv] vo` in config. |

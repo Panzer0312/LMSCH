@@ -38,7 +38,7 @@ A failed blackout request shows "FAILED – RETRY" on the button for 4 s.
 | Step | Does |
 |---|---|
 | Projector output | DRM connector (connected first) and mode dropdowns. Applying restarts mpv (screen black ~1 s). Test pattern button. Alignment pattern picker (enters setup mode, saved geometry applied; empty choice or leaving the page leaves it; disabled while a show plays) and "Open video setup" link |
-| Audio output | Device dropdown (friendly names), volume, audio delay, "Play test sound", reload devices |
+| Audio output | Device dropdown (friendly names; "Spookhub shared: …" outputs share one port), volume, audio delay, "Play test sound", reload devices. Exclusive raw devices (`alsa/hdmi:…`, `alsa/hw:…`) show a warning. The jukebox plays here too |
 | Boards | Online/adopted count, "Check all settings", link to Boards |
 | Trigger devices | Token, curl and ESPHome snippets with hub URL, live "waiting for trigger" light, "Send test trigger" |
 | Sync calibration | Loops a clip on the projector; boards flash white on the beat. Global offset and per-board offset sliders apply live. Move until flashes match |

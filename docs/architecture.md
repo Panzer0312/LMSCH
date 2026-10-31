@@ -223,6 +223,14 @@ displayed, rotated frame), brightness/contrast/gamma/saturation (±100), corners
   mid-song. Show or moment running ⇒ pause (`paused: show`), resume after. A track Spotify refuses
   3× (400/403) is dropped. Another device of the account playing ⇒ wait. Skips carry a target
   track (no double skip). Publishes `jukebox` only when state minus progress changed.
+  Our track gone (no playback, or stopped at 0) before Spotify reported half its length played (another device of the account excluded) ⇒ dead speaker: the
+  song goes back to the front of the queue, error "Speaker … stopped playing", retry after
+  10 s × failures (≤ 60 s). Last song ended, empty queue, no fallback ⇒ pause, so Spotify autoplay
+  never starts random songs; that paused track is hidden from `now`.
+- **Jukebox audio output.** The hub writes `mpv_audio_device` (or `auto`) to
+  `[jukebox] audio_device_file` (`/var/lib/spookhub-audio/device`) at start and on change.
+  raspotify uses the subprocess sink `scripts/music-sink.sh` (aplay on that ALSA device, fallback
+  `default`). On change while playing: pause + resume, so librespot restarts the sink.
 
 ## API and WebSocket
 

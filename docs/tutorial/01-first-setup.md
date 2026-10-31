@@ -65,7 +65,9 @@ Corners, mask and flip need `vo = gpu-next`; a banner warns when they have no ef
 
 ## 1.5 Audio
 
-**Setup → Audio output**: pick the device (HDMI or USB), set volume, **Play test sound**.
+**Setup → Audio output**: pick a **"Spookhub shared: …"** output, e.g. "HDMI 0 · <projector name>",
+set volume, **Play test sound**. Shared outputs let video, effects, ambience and the jukebox play at
+once; a plain "HDMI" entry is exclusive and Setup warns. The jukebox music follows this choice.
 No sound? Try the next device in the list, then **reload devices**.
 
 ## 1.6 Trigger device (optional)

@@ -27,6 +27,8 @@ device_name = "Spookhub"   # Spotify Connect speaker name; install.sh writes it 
 # OAuth redirect registered in the Spotify app. Default: http://127.0.0.1:<server.port>/api/jukebox/spotify/callback
 # (Spotify allows plain http only on loopback.)
 # redirect_uri = "http://127.0.0.1:8080/api/jukebox/spotify/callback"
+# The hub writes Setup → Audio output here; raspotify's sink (scripts/music-sink.sh) plays on it.
+# audio_device_file = "/var/lib/spookhub-audio/device"
 
 [timing]
 health_interval_s = 3.0

@@ -147,6 +147,9 @@ function ProjectorStep({ locked }: { locked: boolean }) {
   )
 }
 
+// Raw ALSA ports allow one opener: video, effects, ambience and the jukebox can't share them.
+const EXCLUSIVE_AUDIO = /^alsa\/(hdmi|hw|plughw|iec958|front):/
+
 function AudioStep({ locked }: { locked: boolean }) {
   const { settings } = useLive()
   const [devs, setDevs] = useState<AudioDevice[] | null>(null)
@@ -173,6 +176,13 @@ function AudioStep({ locked }: { locked: boolean }) {
         <option value="">Default</option>
         {(devs ?? []).map((d) => <option key={d.name} value={d.name}>{d.description || d.name}</option>)}
       </select>
+      {settings?.mpv_audio_device && EXCLUSIVE_AUDIO.test(settings.mpv_audio_device) && (
+        <p className="text-sm text-pumpkin">
+          This output is exclusive: sound effects, ambience and the jukebox can't play on it at the same
+          time. Pick the matching “Spookhub shared: …” output instead.
+        </p>
+      )}
+      <p className="text-xs text-mute">The jukebox (Spotify) plays on this output too.</p>
       {settings && (
         <>
           <LiveSlider label="Volume" value={settings.master_volume} min={0} max={settings.volume_cap || 130} step={1} unit="%"

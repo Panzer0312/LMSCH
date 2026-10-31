@@ -72,6 +72,9 @@ class JukeboxCfg(BaseModel):
     redirect_uri: str | None = None
     poll_active_s: float = 3.0
     poll_idle_s: float = 15.0
+    # Spookhub writes its audio output here; raspotify's sink (scripts/music-sink.sh) plays on it,
+    # so music follows Setup → Audio output. Skipped when the directory is missing (dev).
+    audio_device_file: Path | None = Path("/var/lib/spookhub-audio/device")
     accounts_url: str = "https://accounts.spotify.com"
     api_url: str = "https://api.spotify.com/v1"
 

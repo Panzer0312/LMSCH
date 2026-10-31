@@ -195,8 +195,62 @@ async def test_advance_and_end_of_track(cfg) -> None:
     n = len(fake.play_calls())
     await svc._tick()
     assert len(fake.play_calls()) == n and svc.state()["now"]["is_playing"] is False
-    # Finished and stopped at 0: advance.
+    # Played to near its end, then stopped at 0: finished, advance.
+    fake.set_playing(2, 170_000)
+    await svc._tick()
     fake.set_playing(2, 0, playing=False)
+    await svc._tick()
+    assert fake.play_calls()[-1] == {"uris": [f"spotify:track:{tid(3)}"]}
+
+
+async def test_dead_speaker_keeps_queue(cfg) -> None:
+    svc, fake, _ = make_service(cfg)
+    connect(svc)
+    bob = svc.guest_for(svc.join("Bob", None)["token"])
+    await svc.add(bob, f"spotify:track:{tid(1)}")
+    await svc.add(bob, f"spotify:track:{tid(2)}")
+    await svc._tick()
+    # librespot died seconds into the song: playback gone. Song 1 goes back first, no advance.
+    fake.playback = None
+    delay = await svc._tick()
+    assert delay == svc.LOST_RETRY_S and svc.current is None
+    assert [x["uri"] for x in ordered(svc.queue)] == [
+        f"spotify:track:{tid(1)}",
+        f"spotify:track:{tid(2)}",
+    ]
+    assert "stopped playing" in svc.state()["spotify"]["error"]
+    assert len(fake.play_calls()) == 1 and len(svc.history) == 0
+    # Retry plays song 1 again; error stays until it really plays.
+    await svc._tick()
+    assert fake.play_calls()[-1] == {"uris": [f"spotify:track:{tid(1)}"]}
+    assert svc.state()["spotify"]["error"]
+    fake.set_playing(1, 20_000)
+    await svc._tick()
+    assert svc.state()["spotify"]["error"] is None
+
+
+async def test_queue_end_pauses_against_autoplay(cfg) -> None:
+    svc, fake, _ = make_service(cfg)
+    connect(svc)
+    bob = svc.guest_for(svc.join("Bob", None)["token"])
+    await svc.add(bob, f"spotify:track:{tid(1)}")
+    await svc._tick()
+    fake.set_playing(1, 180_000 - 100)
+    await svc._tick()
+    assert fake.paths()[-1] == "PUT /me/player/pause"
+    assert svc.state()["now"] is None
+    await svc._tick()  # the paused last track stays hidden
+    assert svc.state()["now"] is None
+    # Late poll: autoplay already started a random song; it is paused too.
+    await svc.add(bob, f"spotify:track:{tid(2)}")
+    await svc._tick()
+    fake.set_playing(2, 176_000)
+    await svc._tick()
+    fake.set_playing(7, 2_000)
+    await svc._tick()
+    assert fake.paths()[-1] == "PUT /me/player/pause" and svc.state()["now"] is None
+    # A new song starts normally.
+    await svc.add(bob, f"spotify:track:{tid(3)}")
     await svc._tick()
     assert fake.play_calls()[-1] == {"uris": [f"spotify:track:{tid(3)}"]}
 
@@ -524,3 +578,81 @@ def test_backup_strips_jukebox_secrets(cfg) -> None:
     con.close()
     assert data["tokens"] is None and data["settings"]["volume"] == 42
     assert data["guests"][0]["name"] == "Host" and "token_hash" not in data["guests"][0]
+
+
+async def test_audio_device_file_and_sink_restart(cfg, tmp_path) -> None:
+    svc, fake, _ = make_service(cfg)
+    svc.jc.audio_device_file = tmp_path / "missing" / "device"
+    assert svc.write_audio_device("alsa/spook_0_3") is False  # dev: no directory, no error
+    path = tmp_path / "device"
+    svc.jc.audio_device_file = path
+    assert svc.write_audio_device(None) is True and path.read_text() == "auto\n"
+    assert svc.write_audio_device(None) is False  # unchanged
+    connect(svc)
+    bob = svc.guest_for(svc.join("Bob", None)["token"])
+    await svc.add(bob, f"spotify:track:{tid(1)}")
+    await svc._tick()
+    n = len(fake.calls)
+    await svc.set_audio_device("alsa/spook_0_3")
+    assert path.read_text() == "alsa/spook_0_3\n"
+    assert fake.paths()[n:] == ["PUT /me/player/pause", "PUT /me/player/play"]
+
+
+async def test_review_edge_cases(cfg) -> None:
+    svc, fake, _ = make_service(cfg)
+    connect(svc)
+    bob = svc.guest_for(svc.join("Bob", None)["token"])
+    # Track picked by hand in the Spotify app mid-song, queue empty: keeps playing.
+    await svc.add(bob, f"spotify:track:{tid(1)}")
+    await svc._tick()
+    fake.set_playing(1, 30_000)
+    await svc._tick()
+    fake.set_playing(8, 1_000)
+    await svc._tick()
+    assert "PUT /me/player/pause" not in fake.paths()
+    # Host skip with an empty queue: the skipped track stays hidden.
+    await svc.add(bob, f"spotify:track:{tid(2)}")
+    fake.set_playing(8, 179_900)
+    await svc._tick()
+    fake.set_playing(2, 5_000)
+    await svc._tick()
+    await svc.skip()
+    await svc._tick()
+    assert svc.state()["now"] is None
+    # Playback moved to another (paused) device early in a song: not a dead speaker.
+    await svc.add(bob, f"spotify:track:{tid(3)}")
+    await svc._tick()
+    fake.playback = {
+        "device": {"id": "phone", "name": "Phone"},
+        "item": track(3),
+        "is_playing": False,
+        "progress_ms": 1_000,
+    }
+    await svc._tick()
+    assert svc._lost == 0 and not any(x["uri"].endswith(tid(3)) for x in svc.queue)
+
+
+async def test_lost_error_clears_when_song_removed(cfg) -> None:
+    svc, fake, _ = make_service(cfg)
+    connect(svc)
+    host = svc.guest_for(svc.join("Host", None)["token"])
+    await svc.add(host, f"spotify:track:{tid(1)}")
+    await svc._tick()
+    fake.playback = None
+    await svc._tick()
+    assert svc.state()["spotify"]["error"]
+    svc.clear()
+    await svc._tick()
+    assert svc.state()["spotify"]["error"] is None
+
+
+async def test_sink_restart_failure_shows_pause(cfg, tmp_path) -> None:
+    svc, fake, _ = make_service(cfg)
+    svc.jc.audio_device_file = tmp_path / "device"
+    connect(svc)
+    bob = svc.guest_for(svc.join("Bob", None)["token"])
+    await svc.add(bob, f"spotify:track:{tid(1)}")
+    await svc._tick()
+    fake.fail["/me/player/play"] = [500]
+    await svc.set_audio_device("alsa/spook_0_3")
+    assert svc.paused == "admin"

@@ -107,6 +107,7 @@ class Hub:
         self.player.drm_connector_override = s.mpv_drm_connector
         self.player.drm_mode_override = s.mpv_drm_mode
         self.player.audio_device_override = s.mpv_audio_device
+        self.jukebox.write_audio_device(s.mpv_audio_device)
         await self.player.apply_audio(min(s.master_volume, s.volume_cap), s.audio_delay_s)
         for fx in self.effects:
             fx.audio_device_override = s.mpv_audio_device
@@ -200,6 +201,7 @@ class Hub:
             spawn(self.player.set_audio_device(new.mpv_audio_device))
             for fx in self.effects:
                 spawn(fx.set_audio_device(new.mpv_audio_device))
+            spawn(self.jukebox.set_audio_device(new.mpv_audio_device))
         audio_old = (min(old.master_volume, old.volume_cap), old.audio_delay_s)
         audio_new = (min(new.master_volume, new.volume_cap), new.audio_delay_s)
         if audio_old != audio_new:

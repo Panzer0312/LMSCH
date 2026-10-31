@@ -81,6 +81,19 @@ async def test_audio_device_check(client, fake, monkeypatch):  # noqa: F811
     hub.settings.value.mpv_audio_device = "alsa/gone"
     assert (await _check(hub, "audio_device"))["status"] == "warn"
 
+    async def shared():
+        return [
+            {"name": "alsa/hdmi:CARD=PCH,DEV=0", "description": ""},
+            {"name": "alsa/spook_0_3", "description": ""},
+        ]
+
+    monkeypatch.setattr(fake, "audio_devices", shared)
+    hub.settings.value.mpv_audio_device = "alsa/hdmi:CARD=PCH,DEV=0"
+    c = await _check(hub, "audio_device")
+    assert c["status"] == "warn" and "exclusive" in c["detail"]
+    hub.settings.value.mpv_audio_device = "alsa/spook_0_3"
+    assert (await _check(hub, "audio_device"))["status"] == "ok"
+
     async def none():
         return []
 

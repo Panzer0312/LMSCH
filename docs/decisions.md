@@ -84,3 +84,6 @@ Choices made where the spec was open. Append new rows; mark replaced rows "super
 | Moments, scenes and groups | No own board picker: moments and scenes reuse light/video profiles, which carry the room selection. |
 | Test presets | Built in (`presets.py`), applied from Settings. Everything named `[Test] …`, upserted by name, removed by prefix only. |
 | Group edits during a show | Allowed and applied live, like profile edits. Show lock is the guard. |
+| Jukebox audio output | raspotify subprocess sink (aplay) reading the hub's audio device from a file, instead of rewriting ALSA config at runtime: no root at runtime, a Setup change applies on the next sink start (pause/resume). Shared per-port dmix outputs come from `install.sh`. |
+| Jukebox dead speaker | A track gone before half its length played (no other track on the speaker) is requeued first and retried with backoff, not counted as ended: a crashing librespot used to burn the whole queue. |
+| Jukebox queue end | Pause after the last song when no fallback is set: Spotify autoplay would otherwise play random songs. |

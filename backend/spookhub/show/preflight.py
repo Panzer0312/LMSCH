@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import shutil
 import time
 from collections.abc import Awaitable, Callable
@@ -38,6 +39,8 @@ INTERVAL_S = 10.0
 LATENCY_WARN_MS = 100.0
 MIN_FREE_BYTES = 2 * 1024**3
 TRIGGER_STALE_S = 30 * 60
+# Raw ALSA ports allow one opener (mpv mains, effects, ambience and the jukebox sink all need it).
+_EXCLUSIVE_AUDIO = re.compile(r"^alsa/(hdmi|hw|plughw|iec958|front):")
 GOOD_CODECS = {"h264", "hevc"}
 MAX_HEIGHT = 1080
 RESTART_GRACE_S = 15.0
@@ -251,6 +254,14 @@ class Preflight:
             return _c("audio_device", label, "ok", "device list unavailable")
         if dev not in names:
             return _c("audio_device", label, "warn", f"{dev} not found", "/setup")
+        if _EXCLUSIVE_AUDIO.match(dev) and any(n.startswith("alsa/spook_") for n in names):
+            return _c(
+                "audio_device",
+                label,
+                "warn",
+                f"{dev} is exclusive: pick a Spookhub shared output",
+                "/setup",
+            )
         return _c("audio_device", label, "ok", dev)
 
     def _active_media(self) -> tuple[bool, list[tuple[str, Media | None]]]:
