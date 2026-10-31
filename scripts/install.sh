@@ -213,7 +213,13 @@ install_raspotify() {
   # Same rule as asound.conf: a file with the marker is ours to rewrite, any other file is kept.
   # No LIBRESPOT_DISABLE_CREDENTIAL_CACHE: the speaker only shows up in the Web API device list
   # after it was picked once in a Spotify app, and that login must survive restarts.
-  if [[ ! -e /etc/raspotify/conf ]] || grep -q '^# spookhub-managed' /etc/raspotify/conf; then
+  # apt ships its own /etc/raspotify/conf: an untouched package copy (md5 = dpkg conffile) is ours
+  # to replace too, else a fresh install keeps the stock ALSA speaker and never uses the sink.
+  local pristine=0 want_md5
+  want_md5="$(dpkg-query -W -f='${Conffiles}\n' raspotify 2>/dev/null | awk '$1 == "/etc/raspotify/conf" {print $2}')"
+  [[ -n "$want_md5" && -e /etc/raspotify/conf ]] \
+    && [[ "$(md5sum </etc/raspotify/conf | cut -d' ' -f1)" == "$want_md5" ]] && pristine=1
+  if [[ ! -e /etc/raspotify/conf || $pristine -eq 1 ]] || grep -q '^# spookhub-managed' /etc/raspotify/conf; then
     install -d /etc/raspotify || return 1
     put_file /etc/raspotify/conf <<CONF || return 1
 # spookhub-managed
@@ -231,7 +237,7 @@ LIBRESPOT_QUIET=
 CONF
     echo "/etc/raspotify/conf: speaker \"${JUKEBOX_NAME}\", sink follows Spookhub audio output"
   else
-    echo "keeping existing /etc/raspotify/conf (not spookhub-managed)"
+    warn "keeping your edited /etc/raspotify/conf: music will not follow Setup → Audio output (delete it and re-run to use Spookhub's)"
   fi
   # The packaged unit uses DynamicUser. dmix needs group audio (/dev/snd, ipc_gid audio) and the
   # credential cache needs a persistent writable dir. Restated so an upstream unit change can't

@@ -109,6 +109,7 @@ class JukeboxService:
     # the speaker (librespot exits when it can't open the audio device). Retry it, don't burn the
     # queue through a dead speaker.
     LOST_RETRY_S = 10.0
+    LOST_PROGRESS_MS = 3000
 
     def __init__(
         self,
@@ -1027,7 +1028,15 @@ class JukeboxService:
                     self._lost = 0  # the retry plays: the speaker is back
                 return self._until_end(left, delay)
             if self._lost_speaker(uri, playing, progress):
-                return self._requeue_lost()
+                delay = self._requeue_lost()
+                # librespot skips a song it can't load to the next one (autoplay) and fails
+                # that too: stop it instead of letting it hammer Spotify for audio keys.
+                if uri is not None and playing:
+                    try:
+                        await self._quiet_pause(dev)
+                    except SpotifyError as exc:
+                        log.info("jukebox: pause after failed track: %s", exc.message)
+                return delay
             # Our track ended (or is in its last 300 ms).
             self._lost = 0
             dur = int(self.current.get("duration_ms") or 0)
@@ -1069,6 +1078,8 @@ class JukeboxService:
         if self._other_device:
             return False  # moved to another device in the Spotify app: the user's choice
         gone = uri is None or (uri == cur["uri"] and not playing and progress < 1000)
+        # Replaced before it ever got going: librespot couldn't load it ("Skipping to next track").
+        gone = gone or (uri != cur["uri"] and self._cur_progress < self.LOST_PROGRESS_MS)
         # Spotify's progress, not wall time: show pauses and host pauses don't count.
         return gone and self._cur_progress < int(cur.get("duration_ms") or 0) / 2
 
@@ -1084,8 +1095,9 @@ class JukeboxService:
         self._lost += 1
         self._dirty = True
         msg = (
-            f"Speaker '{self.device_name}' stopped playing. Check Setup → Audio output and "
-            "`systemctl status raspotify`; retrying"
+            f"Speaker '{self.device_name}' couldn't play '{cur.get('title')}'. Check "
+            "`journalctl -u raspotify` (audio key errors: Spotify refused the song) and "
+            "Setup → Audio output; retrying"
         )
         self._lost_msg = msg
         self._set_error(msg)

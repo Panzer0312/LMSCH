@@ -218,7 +218,7 @@ async def test_dead_speaker_keeps_queue(cfg) -> None:
         f"spotify:track:{tid(1)}",
         f"spotify:track:{tid(2)}",
     ]
-    assert "stopped playing" in svc.state()["spotify"]["error"]
+    assert "couldn't play 'Song 1'" in svc.state()["spotify"]["error"]
     assert len(fake.play_calls()) == 1 and len(svc.history) == 0
     # Retry plays song 1 again; error stays until it really plays.
     await svc._tick()
@@ -656,3 +656,19 @@ async def test_sink_restart_failure_shows_pause(cfg, tmp_path) -> None:
     fake.fail["/me/player/play"] = [500]
     await svc.set_audio_device("alsa/spook_0_3")
     assert svc.paused == "admin"
+
+
+async def test_librespot_skip_is_a_failure(cfg) -> None:
+    svc, fake, _ = make_service(cfg)
+    connect(svc)
+    bob = svc.guest_for(svc.join("Bob", None)["token"])
+    await svc.add(bob, f"spotify:track:{tid(1)}")
+    await svc.add(bob, f"spotify:track:{tid(2)}")
+    await svc._tick()
+    # librespot: "unable to load track", skips to an autoplay track that plays (or fails too).
+    fake.set_playing(7, 500)
+    delay = await svc._tick()
+    assert delay == svc.LOST_RETRY_S
+    assert fake.paths()[-1] == "PUT /me/player/pause"
+    assert [x["uri"] for x in ordered(svc.queue)][0] == f"spotify:track:{tid(1)}"
+    assert len(fake.play_calls()) == 1  # song 2 was not burned
