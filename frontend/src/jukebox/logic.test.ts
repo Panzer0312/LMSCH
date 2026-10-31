@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fmtMs, friendlyError, initialLive, isLoopback, isSpotifyTrackLink, joinUrl, myPending, progressMs, reduceJuke, voteKey } from './logic'
+import { fmtMs, friendlyError, idleReason, initialLive, isLoopback, isSpotifyTrackLink, joinUrl, myPending, progressMs, reduceJuke, voteKey } from './logic'
 import type { JukeboxState, JukeNow } from './types'
 
 const now = (o: Partial<JukeNow> = {}): JukeNow => ({
@@ -83,5 +83,25 @@ describe('helpers', () => {
   it('maps 503 to a friendly message', () => {
     expect(friendlyError(503, 'spotify not connected')).toMatch(/host/)
     expect(friendlyError(409, 'limit reached')).toBe('limit reached')
+  })
+})
+
+describe('idleReason', () => {
+  const sp = state().spotify
+  const q = state({ queue: [{} as never] }).queue
+  it('explains a waiting queue', () => {
+    expect(idleReason(state())).toMatch(/Add a song/)
+    expect(idleReason(state({ spotify: { ...sp, connected: false }, queue: q }))).toMatch(/isn’t connected/)
+    expect(idleReason(state({ queue: q, paused: 'admin' }))).toMatch(/Paused/)
+    expect(idleReason(state({ queue: q, spotify: { ...sp, error: 'boom' } }))).toBe('boom')
+    expect(idleReason(state({ queue: q, spotify: { ...sp, device_found: false } }))).toMatch(/Speaker “Spookhub” not found/)
+    expect(idleReason(state({ queue: q }))).toMatch(/Starting/)
+  })
+})
+
+describe('friendlyError 503', () => {
+  it('keeps the speaker detail', () => {
+    expect(friendlyError(503, "Speaker 'Spookhub' not found in Spotify")).toMatch(/^Speaker/)
+    expect(friendlyError(503, 'Spotify is not connected')).toMatch(/isn’t connected/)
   })
 })

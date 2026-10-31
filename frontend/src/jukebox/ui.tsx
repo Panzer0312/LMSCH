@@ -4,7 +4,7 @@ import { jukeApi } from './api'
 import type { JukeboxState, JukeGuest, JukeGuestRef, JukeNow } from './types'
 import type { Toast } from './hooks'
 import { useTick } from './hooks'
-import { fmtMs, progressMs, voteKey } from './logic'
+import { fmtMs, idleReason, progressMs, voteKey } from './logic'
 
 /** What every jukebox view needs; built once in the page. */
 export interface JukeCtx {
@@ -78,13 +78,17 @@ export function NowPlaying({ c, showVote = true, children }: { c: JukeCtx; showV
   const { state, recvMs } = c
   const now = state.now
   if (!now) {
+    // Host controls stay: Play/Skip is how the host starts a waiting queue by hand.
     return (
-      <div className="card flex items-center gap-4">
-        <div className="grid size-20 shrink-0 place-items-center rounded-xl bg-panel-2 text-4xl">🦇</div>
-        <div>
-          <p className="font-semibold">Silence in the crypt…</p>
-          <p className="text-sm text-mute">Add a song to get the party going.</p>
+      <div className="card space-y-3">
+        <div className="flex items-center gap-4">
+          <div className="grid size-20 shrink-0 place-items-center rounded-xl bg-panel-2 text-4xl">🦇</div>
+          <div>
+            <p className="font-semibold">Silence in the crypt…</p>
+            <p className="text-sm text-mute">{idleReason(state)}</p>
+          </div>
         </div>
+        {children}
       </div>
     )
   }

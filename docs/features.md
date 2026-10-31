@@ -173,6 +173,8 @@ Mobile-first, works on a desktop for the host. Live over `/ws/jukebox`, reconnec
   is disabled with a hint.
 - **My songs:** `n / limit` (host: ∞). **Up next:** play order, position, requester, own songs
   marked "yours" with remove. **Recently played:** collapsible, last 20.
+- **Nothing playing:** "Silence in the crypt…" with the reason a waiting queue does not start
+  (Spotify not connected, paused, speaker not found, Spotify error).
 - **Banners:** "Paused for the show 👻", paused by the host, requests closed, DJ booth not set up.
 - **Become host:** shown when nobody is host (after a reset).
 
@@ -186,7 +188,7 @@ Mobile-first, works on a desktop for the host. Live over `/ws/jukebox`, reconnec
 - **Invite guests:** QR + big join URL (`http://<host>/music` when port 80 is proxied, else the
   current origin). Warns on `localhost`. "Show big" fills the screen for a TV or print.
 - **Controls:** pause/resume, skip, volume slider (sent on release). Pause is off while the show
-  holds the speaker.
+  holds the speaker. Shown also when nothing plays; Skip then reads **▶ Play** and starts the queue.
 - **Queue:** ⤒ plays an entry next, ✕ removes, "Clear queue" (confirm).
 - **Rules:** guests can add, explicit allowed (switch, instant), songs per guest, max length,
   skip vote %, fallback playlist (Save rules).

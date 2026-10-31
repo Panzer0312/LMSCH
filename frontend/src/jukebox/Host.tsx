@@ -252,7 +252,9 @@ function Controls({ c }: { c: JukeCtx }) {
           {paused ? '▶ Resume' : '⏸ Pause'}
         </button>
         <button className="btn min-h-12 text-base" disabled={g.busy || (!state.now && state.queue.length === 0)}
-          onClick={() => void g.run(() => jukeApi.admin.skip(state.now?.uri))}>⏭ Skip</button>
+          onClick={() => void g.run(() => jukeApi.admin.skip(state.now?.uri))}>
+          {state.now ? '⏭ Skip' : '▶ Play'}
+        </button>
       </div>
       {state.paused === 'show' && <p className="text-xs text-mute">The show has the speaker. Music resumes when it ends.</p>}
       <label className="flex items-center gap-3 text-sm">
